@@ -9,11 +9,9 @@
 #SBATCH -o /dev/null # Standard out goes to this file
 #SBATCH -e /dev/null # Standard err goes to this file
 
-export ATLAS12_DATA=/n/holystore01/LABS/conroy_lab/Lab/cconroy/kurucz/atlas12/data
-
 cd workdir
 
-../scripts/atlas12.sh 2 2 1 0.00 new test >& out
+../scripts/atlas12.sh 5 5 1 0.00 new test >& out
 
 
 

@@ -12,11 +12,6 @@
 #define the mixing length
 mlt=2.03
 
-#run the atmospheres through SYNTHE (yes=1, no=0)
-synthe=1
-
-khome=$KURUCZ_HOME
-
 #----------------------------------------------------------#
 
 # Asplund et al. (2009) abundances of first 99 elements
@@ -57,7 +52,7 @@ ind=$6
 #-------------------Setup filenames and directories-----------------#
 
 # output directory
-outdir=$khome/grids/$5/
+outdir=$KURUCZ_HOME/grids/$5/
 
 # create an output file head, stripping off the possible pre-directories
 head=$5
@@ -81,7 +76,7 @@ if [ ! -d $outdir ]; then
 fi
 
 # input atmospheres
-indir=$khome/grids/$ind/atm/
+indir=$KURUCZ_HOME/grids/$ind/atm/
 
 # get a list of the input atmospheres
 arr=(`ls $indir`)
@@ -193,8 +188,6 @@ tot=$(echo "scale=5; 1 - $tot " | bc)
 # note that the He abundnace stays constant
 habnd=$(echo "scale=5; $habnd + $tot" | bc)
 
-#---------------loop over the models to analyze-------------------#
-
 # get the model filename
 model=${arr[$i1]}
 # we want a filename with all the header info stripped off
@@ -265,10 +258,9 @@ ln -s ${indir}${model} input_model.dat
 # Check to see if the atm file already exists
 if [ ! -f ${outdir}/atm/${outfile}.atm ]; then
 
-
 # Run ATLAS12
 
-$khome/atlas12/bin/atlas12c.exe ${outfile} <<EOF> ${outfile}.out
+$ATLAS12/bin/atlas12c.exe ${outfile} <<EOF> ${outfile}.out
 MOLECULES ON
 READ MOLECULES
 READ PUNCH
@@ -311,10 +303,6 @@ echo "atlas is finished"
 
 exit
 
-iter="${outfile/atm/iter}"
-tcorr="${outfile/atm/tcorr}"
-taunu="${outfile/atm/taunu}"
-
 # Check if the atm file was sucessfully created
 if [ -f fort.7 ]; then
     #test convergence
@@ -338,13 +326,6 @@ if [ -f fort.7 ]; then
 	/bin/mv fort.8 $outdir/flux/$flux
         #clean up
 	rm -f fort.* tmp.bin
-
-	if [ $synthe -eq 1 ]; then
-            #now run the new model through synthe
-	    echo "running synthe"
-	    $krun/synthe/synthe.sh ${i1} ${i1} $5 $outfile 1 >& /dev/null
-
-	fi
     fi 
 else
     echo "atlas12 apparently crashed, exiting..."
@@ -354,27 +335,8 @@ else
     fi
 fi
 
-# In this case the atm file exists but the spec file does not
-else
-    echo "atm file already exists.."
-    rm -f fort.*
+fi
 
-    if [ $synthe -eq 1 ]; then
-	#now run the new model through synthe
-	echo "running synthe"
-	$$krun/synthe/synthe.sh ${i1} ${i1} $5 $outfile $molflag >& /dev/null
-
-	echo "running combine_spec"
-	spec="${outfile/atm/spec}"
-	sed="${outfile/atm/sed}"
-	flux="${outfile/atm/flux}"
-	if [ -f $outdir/spec/$spec.gz ]; then
-	    /bin/gunzip -f $outdir/spec/$spec.gz
-	fi
-	/n/home12/cconroy/kurucz/bin/combine_spec.exe $outdir/flux/$flux $outdir/spec/$spec $outdir/sed/$sed
-	/bin/gzip -f $outdir/spec/$spec
-    fi
-fi 
 
 # Clean up
 echo "Removing working directory"

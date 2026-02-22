@@ -318,7 +318,7 @@ module mod_atlas_data
   character(1) :: TITLE(74) = ' '
   real*8  :: XSCALE = 1.0d0
   character(4) :: WLTE = 'LTE '
-  character(256) :: DATADIR    ! Path to data files (from $ATLAS12_DATA)
+  character(256) :: DATADIR    ! Path to data files (from $ATLAS12)
   integer :: INPUTDATA
 
   ! --- Radiative transfer J-coefficient matrix ---
@@ -650,15 +650,18 @@ PROGRAM ATLAS12
   open(unit=66, file=trim(OUTBASE)//'.iter',  status='REPLACE')
   open(unit=67, file=trim(OUTBASE)//'.tcorr', status='REPLACE')
 
-  ! --- Locate data files via $ATLAS12_DATA environment variable ---
-  call GET_ENVIRONMENT_VARIABLE('ATLAS12_DATA', ENVVAL, ENVLEN, ENVSTAT)
+  ! --- Locate data files via $ATLAS12 environment variable ---
+  call GET_ENVIRONMENT_VARIABLE('ATLAS12', ENVVAL, ENVLEN, ENVSTAT)
   if (ENVSTAT == 0 .and. ENVLEN > 0) then
     DATADIR = trim(ENVVAL)
     if (DATADIR(ENVLEN:ENVLEN) /= '/') DATADIR = trim(DATADIR) // '/'
+    DATADIR = TRIM(DATADIR) // 'data/'
   else
     DATADIR = 'data/'
   end if
 
+  write(*,*) DATADIR
+  
   ! --- Pre-tabulate Voigt profile H(a,v) at 200 steps per Doppler width ---
   VSTEPS = 200.0
   call TABVOIGT(VSTEPS, 2001)
@@ -13200,11 +13203,13 @@ SUBROUTINE SELECTLINES
   1882 N18 = N12 + N122 + N22 + N32 + N42 + N52 + N62
   write(6, '(I12,A)') N18, ' LINES TOTAL'
   write(6, '(I12,A,F6.2,A)') NLINES_STORED, ' LINES STORED IN MEMORY (', &
-    NLINES_STORED * 16.0D0 / 1.0D9, ' GB)'
+       NLINES_STORED * 16.0D0 / 1.0D9, ' GB)'
   if (NLINES_STORED == 0) then
     stop 'SELECTLINES ERROR: no lines found'
   end if
 
+  FLUSH(6)
+  
 END SUBROUTINE SELECTLINES
 
 !=========================================================================
