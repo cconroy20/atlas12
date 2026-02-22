@@ -3,7 +3,7 @@
 !
 !  Robert L. Kurucz, Harvard-Smithsonian Center for Astrophysics
 !  Translated from Fortran 77 (fixed-form) to Fortran 90 (free-form),
-!  February 2026.
+!  February 2026.  dd
 !
 !  Compile:
 !    gfortran -O2 -ffree-line-length-none -std=legacy \
