@@ -3,17 +3,13 @@
 !
 !  Robert L. Kurucz, Harvard-Smithsonian Center for Astrophysics
 !  Translated from Fortran 77 (fixed-form) to Fortran 90 (free-form),
-!  February 2026.  dd
 !
-!  Compile:
-!    gfortran -O2 -ffree-line-length-none -std=legacy \
-!             -fallow-argument-mismatch -c atlas12_f90.f90
-!    ifort -O2 -c atlas12_f90.f90
+!  Data files are located via the environment variable
+!  ATLAS12.  If unset, defaults to ./data/
+!       export ATLAS12=/path/to/atlas12/
 !
-!  Data files (pfiron.dat, pfsaha.dat, blockj.dat, blockh.dat,
-!  ionpots.dat, isotopes.dat) are located via the environment variable
-!  ATLAS12_DATA.  If unset, defaults to ./data/
-!    export ATLAS12_DATA=/path/to/atlas12/data/
+!  CHANGE LOG:
+!    2/26: initial translation from F77 to F90 (C. Conroy w/ Claude.ai)
 !
 !=========================================================================
 !
