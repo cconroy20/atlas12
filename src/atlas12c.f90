@@ -8,6 +8,11 @@
 !  ATLAS12.  If unset, defaults to ./data/
 !       export ATLAS12=/path/to/atlas12/
 !
+!  LIMITATIONS:
+!    - The iron PF and CH, OH cross sections have a low-T limit of 2000K
+!    - The OS grid only extends to ~14.5um, which might not be red enough
+!      for very cool stars
+!
 !  CHANGE LOG:
 !    2/26: initial translation from F77 to F90 (C. Conroy w/ Claude.ai)
 !
@@ -77,9 +82,9 @@
 !    HERAOP                  He I Rayleigh scattering
 !
 !  CONTINUOUS OPACITY  — Metals
-!    C1OP, C2OP              Carbon  I–II  (C3OP, C4OP removed: were unimplemented stubs)
-!    N1OP                    Nitrogen I    (N2OP–N5OP removed: were unimplemented stubs)
-!    O1OP                    Oxygen   I    (O2OP–O6OP removed: were unimplemented stubs)
+!    C1OP, C2OP              Carbon  I–II
+!    N1OP                    Nitrogen I
+!    O1OP                    Oxygen   I 
 !    MG1OP, MG2OP            Magnesium I–II
 !    AL1OP                   Aluminum I
 !    SI1OP, SI2OP            Silicon  I–II
@@ -96,15 +101,12 @@
 !    HOTOP                   Hot-star opacity (T > 12000 K)
 !    ELECOP                  Electron scattering
 !    XCONOP                  Tabulated continuum opacity lookup
-!    XSOP                    (removed: was unimplemented stub)
 !    ROSSTAB                 Rosseland opacity table interpolation
 !
 !  LINE OPACITY
 !    SELECTLINES             Line selection for current frequency
 !    LINOP1                  Line opacity computation (single frequency)
 !    XLINOP                  Extended line opacity computation
-!    LINSOP                  (removed: was unimplemented stub)
-!    XLISOP                  (removed: was unimplemented stub, call was commented out)
 !    IONPOTS                 Load ionization potentials
 !    ISOTOPES                Load isotope data
 !
@@ -191,7 +193,7 @@ module mod_atlas_data
   real*8  :: GRDADB(kw) = 0.0d0, HSCALE(kw) = 0.0d0, FLXCNV(kw) = 0.0d0, VCONV(kw) = 0.0d0
   real*8  :: MIXLTH = 1.0d0, OVERWT = 1.0d0
   real*8  :: FLXCNV0(kw), FLXCNV1(kw)
-  integer :: IFCONV = 0, NCONV = 36
+  integer :: IFCONV = 0, NCONV = 20
 
   ! --- NLTE departure coefficients ---
   ! COMMON /DEPART/
@@ -1271,11 +1273,21 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! --- MODE 3 locals: Lambda correction ---
   real*8  :: DTLAMB(kw)        ! Lambda-iteration temperature correction
   real*8  :: DTSURF(kw)        ! surface boundary correction
-  real*8  :: T1(kw)            ! total correction = DTFLUX + DTLAMB + DTSURF
+  real*8  :: DTCONV(kw)        ! convective flux correction (Crivellari-Simonneau)
+  real*8  :: T1(kw)            ! total correction
   real*8  :: TEFF25            ! clamp: Teff/25
   real*8  :: DTSUR             ! surface correction magnitude
   real*8  :: DUM(kw), TINTEG(kw), TAV
   real*8  :: TONE_ARR(1), TTWO_ARR(1), XNEW_TMP(1)
+
+  ! --- MODE 3 locals: convective adiabatic sweep ---
+  real*8  :: T_SWEEP(kw)       ! corrected T for adiabatic integration
+  real*8  :: DT_RAD            ! radiative correction at a layer
+  real*8  :: DT_ADIAB          ! adiabatic sweep correction at a layer
+  real*8  :: DLNP              ! Δln P between adjacent layers
+  real*8  :: T_ADIAB           ! adiabatic extrapolation temperature
+  real*8  :: FCONV_RATIO       ! convective flux fraction at a depth
+  integer :: JANCHOR           ! shallowest convective layer (anchor)
 
   ! --- MODE 3 locals: RHOX correction / remapping ---
   real*8  :: TPLUS(kw), TNEW1(kw), TNEW2(kw), PRDNEW(kw)
@@ -1455,12 +1467,26 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! (C) DTFLUX: flux-constancy correction
   !     Integrate CODRHX to get G(RHOX), then integrate G*(flux error)
   !     over tau_Ross and convert to temperature correction.
+  !
+  !     Crivellari-Simonneau modification: suppress the GFLUX integrand
+  !     in convection-dominated layers. A persistent flux error at depth
+  !     (from MLT or opacity sampling limitations) accumulates in the
+  !     DTAU integral and corrupts DTFLUX at all depths. Weight GFLUX
+  !     by (1 - f_conv) so deep convective layers contribute negligibly.
   !---------------------------------------------------------------------
   call INTEG(RHOX, CODRHX, G, NRHOX, 0.0D0)
   do J = 1, NRHOX
     G(J) = exp(G(J))
     GFLUX(J) = G(J) * (FLXRAD(J) + CNVFLX(J) - FLUX) &
              / (FLXRAD(J) + CNVFLX(J) * 1.5D0 * DLTDLP(J) * DDEL(J))
+
+    ! Suppress GFLUX in convection-dominated layers (with hysteresis)
+    if (IFCONV == 1 .and. &
+        (CNVFLX(J) > 0.0D0 .or. FLXCNV0(J) > 0.0D0)) then
+      FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
+                  / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
+      GFLUX(J) = GFLUX(J) * (1.0D0 - FCONV_RATIO)
+    end if
   end do
 
   call INTEG(TAUROS, GFLUX, DTAU, NRHOX, 0.0D0)
@@ -1471,6 +1497,27 @@ SUBROUTINE TCORR(MODE, RCOWT)
     ABROSS_safe = max(ABROSS(J), ABROSS_FLOOR)
     DTFLUX(J) = -DTAU(J) * DTDRHX(J) / ABROSS_safe
   end do
+
+  TEFF25 = TEFF / 25.0D0
+
+  !---------------------------------------------------------------------
+  ! (C2) Suppress DTFLUX in convective layers.
+  !      The Avrett-Krook integral handles radiative flux errors only;
+  !      in convective layers, DTFLUX is attenuated by (1 - f_conv).
+  !      The convective correction (adiabatic sweep) is applied later,
+  !      after DTLAMB and DTSURF have been computed.
+  !---------------------------------------------------------------------
+  DTCONV(:) = 0.0D0
+
+  if (IFCONV == 1) then
+    do J = 1, NRHOX
+      if (CNVFLX(J) > 0.0D0 .or. FLXCNV0(J) > 0.0D0) then
+        FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
+                    / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
+        DTFLUX(J) = DTFLUX(J) * (1.0D0 - FCONV_RATIO)
+      end if
+    end do
+  end if
 
   !---------------------------------------------------------------------
   ! (D) DTLAMB: Lambda-iteration correction (optically thin layers)
@@ -1483,8 +1530,6 @@ SUBROUTINE TCORR(MODE, RCOWT)
     FLXERR(J) = (FLXRAD(J) + CNVFLX(J) - FLUX) / FLUX * 100.0D0
   end do
   call DERIV(TAUROS, FLXERR, FLXDRV, NRHOX)
-
-  TEFF25 = TEFF / 25.0D0
 
   ! Find first layer where convection becomes significant
   ! (used to safely bound the DTLAMB backward-damping reach)
@@ -1550,32 +1595,93 @@ SUBROUTINE TCORR(MODE, RCOWT)
   end do
 
   !---------------------------------------------------------------------
+  ! (E2) DTCONV: convective temperature correction via adiabatic sweep
+  !
+  !      Now that DTFLUX, DTLAMB, and DTSURF are all computed, we can
+  !      build the adiabatic sweep. Strategy:
+  !        1. Find the anchor (shallowest convective layer)
+  !        2. Anchor T = current T + radiative corrections
+  !        3. Sweep downward: each layer's T follows the adiabat from
+  !           the corrected layer above
+  !        4. Blend using f_conv: radiative corrections at low f_conv,
+  !           adiabatic sweep at high f_conv
+  !---------------------------------------------------------------------
+
+  if (IFCONV == 1) then
+
+    ! --- Find anchor: shallowest layer with convective flux ---
+    JANCHOR = 0
+    do J = 1, NRHOX
+      if (CNVFLX(J) > 0.0D0 .or. FLXCNV0(J) > 0.0D0) then
+        JANCHOR = J
+        exit
+      end if
+    end do
+
+    ! --- Adiabatic sweep from anchor downward ---
+    if (JANCHOR > 0) then
+      ! Anchor gets normal radiative corrections only (DTCONV=0 there).
+      ! T_SWEEP tracks the corrected temperature for integration.
+      T_SWEEP(JANCHOR) = T(JANCHOR) + DTFLUX(JANCHOR) &
+                       + DTLAMB(JANCHOR) + DTSURF(JANCHOR)
+
+      do J = JANCHOR + 1, NRHOX
+        ! Convective fraction at this layer (with hysteresis)
+        if (CNVFLX(J) > 0.0D0 .or. FLXCNV0(J) > 0.0D0) then
+          FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
+                      / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
+        else
+          FCONV_RATIO = 0.0D0
+        end if
+
+        if (FCONV_RATIO > 0.0D0 .and. PTOTAL(J) > 0.0D0 &
+            .and. PTOTAL(J-1) > 0.0D0) then
+          ! Adiabatic extrapolation from corrected layer above
+          DLNP = log(PTOTAL(J) / PTOTAL(J-1))
+          T_ADIAB = T_SWEEP(J-1) * exp(GRDADB(J) * DLNP)
+
+          ! Normal (radiative) correction for this layer
+          DT_RAD = DTFLUX(J) + DTLAMB(J) + DTSURF(J)
+
+          ! Adiabatic correction: what sweep says T should be minus current T
+          DT_ADIAB = T_ADIAB - T(J)
+
+          ! Blend: f_conv=0 → pure radiative, f_conv=1 → pure adiabat
+          DTCONV(J) = FCONV_RATIO * DT_ADIAB &
+                    + (1.0D0 - FCONV_RATIO) * DT_RAD - DT_RAD
+          ! Note: total correction T1 = DT_RAD + DTCONV, so
+          !   T1 = DT_RAD + f*DT_ADIAB + (1-f)*DT_RAD - DT_RAD
+          !      = f*DT_ADIAB + (1-f)*DT_RAD   ← the desired blend
+
+          ! Clamp to ±Teff/25
+          DTCONV(J) = max(-TEFF25, min(TEFF25, DTCONV(J)))
+
+          ! Update sweep temperature to reflect what we actually apply
+          ! so next layer integrates from the right place
+          T_SWEEP(J) = T(J) + DT_RAD + DTCONV(J)
+        else
+          ! Non-convective layer below anchor: no DTCONV, pass through
+          T_SWEEP(J) = T(J) + DTFLUX(J) + DTLAMB(J) + DTSURF(J)
+        end if
+      end do
+    end if
+  end if
+
+  !---------------------------------------------------------------------
   ! (F) Total correction and iteration damping
   !---------------------------------------------------------------------
   do J = 1, NRHOX
-    T1(J) = DTFLUX(J) + DTLAMB(J) + DTSURF(J)
+    T1(J) = DTFLUX(J) + DTLAMB(J) + DTSURF(J) + DTCONV(J)
   end do
-
-  ! Diagnostic output
-  if (IFPRNT(ITER) /= 0) then
-    write(67, 100) (J, RHOX(J), T(J), DTLAMB(J), DTSURF(J), DTFLUX(J), &
-                    T1(J), HRATIO(J), FLXERR(J), FLXDRV(J), J=1,NRHOX)
-100 format('0', 8X, 'RHOX', 8X, 'T', 6X, 'DTLAMB   DTSURF   DTFLUX', &
-      6X, 'T1   CONV/TOTAL      ERROR     DERIV', / &
-      (I3, 1PE12.4, 0PF10.1, 4F9.1, 1X, 1PE11.3, 1X, 0P, 2F10.3))
-  end if
 
   ! Iteration damping: compare current correction T1 against previous
   ! iteration's correction OLDT1 to detect convergence behavior.
   !   Same sign, shrinking  → accelerate by 1.25x (monotone convergence)
   !   Same sign, growing    → cap at previous magnitude (prevent runaway)
   !   Sign flip             → damp by 0.5x (oscillation control)
-  ! Skip damping in convective layers and on first iteration.
+  ! Skip damping on first iteration only (no history).
   do J = 1, NRHOX
-    ! Skip damping when: convection active at this layer, or deep
-    ! interior with convection on, or first iteration (no history)
-    if ( (IFCONV == 1 .and. (HRATIO(J) > 0.0D0 .or. J >= NRHOX / 3)) &
-         .or. ITER == 1 ) then
+    if (ITER == 1) then
       ! No damping — accept raw correction
     else if (OLDT1(J) * T1(J) > 0.0D0) then
       ! Same sign as previous iteration
@@ -1592,6 +1698,19 @@ SUBROUTINE TCORR(MODE, RCOWT)
     end if
     OLDT1(J) = T1(J)
   end do
+
+  ! Diagnostic output (after damping, so T1 reflects what is actually applied)
+  if (IFPRNT(ITER) /= 0) then
+    write(67, 100) (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), &
+                    DTSURF(J), DTFLUX(J), DTCONV(J), T1(J), HRATIO(J), &
+                    FLXERR(J), FLXDRV(J), DLTDLP(J), GRDADB(J), J=1,NRHOX)
+100 format('0', 2X, 'lgTAUROS', 6X, 'T', 6X, &
+      'DTLAMB   DTSURF   DTFLUX   DTCONV', 5X, &
+      'T1   CONV/TOTAL      ERROR     DERIV   NABLA  NABLA_AD', / &
+      (I3, F8.3, F10.1, 5F9.1, 1X, 1PE11.3, 1X, &
+       0P, 2F10.3, 2F8.4))
+    flush(67)
+  end if
 
   !---------------------------------------------------------------------
   ! (G) Compute RHOX correction to maintain constant TAUROS grid
@@ -1643,9 +1762,11 @@ SUBROUTINE TCORR(MODE, RCOWT)
     T(J) = min(T(J), T(J+1) - 1.0D0)
   end do
 
-  ! Floor temperature at 1000 K
+  ! Floor temperature options
+  ! various opacity tables only extend to 2000K
   do J = 1, NRHOX
-    T(J) = max(T(J), 1000.0D0)
+     T(J) = max(T(J), 2000.0D0)
+    ! T(J) = max(T(J),0.7*TEFF)
   end do
 
   !---------------------------------------------------------------------
@@ -4686,12 +4807,15 @@ SUBROUTINE READMOL
   integer :: ID                  ! atomic number extracted from code
   integer :: ION                 ! ionization state from decimal part
   integer :: II                  ! starting position in XCODE for decoding
-  integer :: I, IEQUA
+  integer :: I, IEQUA, IOS
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING READMOL'
 
   open(UNIT=2, FILE=trim(DATADIR)//'molecules.dat', &
-       STATUS='OLD', ACTION='READ')
+       STATUS='OLD', ACTION='READ', iostat=IOS)
+    if (IOS /= 0) then
+      stop 'molecules.dat file not found'
+    end if
   write(6, '(A)') 'MOLECULES INPUT:'
 
   ! --- Initialize: no elements require equations yet ---
@@ -6783,6 +6907,8 @@ SUBROUTINE CONVEC
 
   ! --- Other locals ---
   integer :: J, K, L
+  integer :: JTOP, JBOT, JA, JB  ! gap-filling indices
+  real*8  :: WGHT                 ! interpolation weight
 
   ! --- External functions ---
   real*8  :: ROSSTAB
@@ -6944,13 +7070,8 @@ SUBROUTINE CONVEC
     if (IFCONV == 0) ITS30 = 1
 
     do IDELTAT = 1, ITS30
-      !     PRINT 5555, J, IDELTAT, T(J), DELTAT(J), DPLUS, ROSST(J),
-      !    1  DMINUS, ABCONV(J), ABROSS(J)
       DPLUS  = ROSSTAB(T(J) + DELTAT(J), P(J), VTURB(J)) / ROSST(J)
       DMINUS = ROSSTAB(T(J) - DELTAT(J), P(J), VTURB(J)) / ROSST(J)
-      !     PRINT 5555, J, IDELTAT, T(J), DELTAT(J), DPLUS, ROSST(J),
-      !    1  DMINUS, ABCONV(J), ABROSS(J)
-      ! 5555 FORMAT(2I5,1P7E12.3)
       ABCONV(J) = 2.0D0 / (1.0D0 / DPLUS + 1.0D0 / DMINUS) * ABROSS(J)
 
       ! Radiative damping parameter
@@ -6999,6 +7120,11 @@ SUBROUTINE CONVEC
           DELTAT(J) > OLDDELT - 0.5D0) exit
       OLDDELT = DELTAT(J)
     end do  ! IDELTAT
+    if (IDELTAT > ITS30) then
+      write(6,'(A,I3,A,F8.1,A,F8.1)') &
+        ' CONVEC WARNING: opacity iteration did not converge at layer ', &
+        J, '  DELTAT=', DELTAT(J), '  OLDDELT=', OLDDELT
+    end if
 
   end do  ! J depth loop
 
@@ -7037,6 +7163,42 @@ SUBROUTINE CONVEC
   end do
   ! Asymmetric boundary kernel at deepest layer: 75-25 split
   FLXCNV(NRHOX) = 0.75D0 * FLXCNV0(NRHOX) + 0.25D0 * FLXCNV0(NRHOX - 1)
+
+  ! Fill radiative gaps inside the convection zone.
+  ! If layers above and below are both convective, the layer in between
+  ! must be too — a radiative pocket inside a convection zone is unphysical.
+  ! Find the shallowest and deepest convective layers, then fill any
+  ! zero-flux layers between them by interpolating from the boundaries.
+  JTOP = 0
+  JBOT = 0
+  do J = 1, NRHOX
+    if (FLXCNV(J) > 0.0D0) then
+      if (JTOP == 0) JTOP = J
+      JBOT = J
+    end if
+  end do
+  if (JTOP > 0 .and. JBOT > JTOP + 1) then
+    do J = JTOP + 1, JBOT - 1
+      if (FLXCNV(J) == 0.0D0) then
+        ! Linear interpolation in log between nearest convective neighbors
+        ! Find nearest convective layer above
+        JA = J - 1
+        do while (JA > JTOP .and. FLXCNV(JA) == 0.0D0)
+          JA = JA - 1
+        end do
+        ! Find nearest convective layer below
+        JB = J + 1
+        do while (JB < JBOT .and. FLXCNV(JB) == 0.0D0)
+          JB = JB + 1
+        end do
+        if (FLXCNV(JA) > 0.0D0 .and. FLXCNV(JB) > 0.0D0) then
+          WGHT = dble(J - JA) / dble(JB - JA)
+          FLXCNV(J) = FLXCNV(JA) * (1.0D0 - WGHT) + FLXCNV(JB) * WGHT
+        end if
+      end if
+    end do
+  end if
+
   do J = 1, NRHOX
     FLXCNV0(J) = FLXCNV(J)
   end do
@@ -7356,7 +7518,6 @@ END SUBROUTINE COMPUTE_PTURB
 !        IFOP(13) H2RAOP  — H2 Rayleigh scattering
 !        IFOP(14) HLINOP  — hydrogen line opacity (Stark broadened)
 !        IFOP(19) XCONOP  — extra continuum opacity (user-defined)
-!        IFOP(20) (XSOP removed — was unimplemented stub)
 !   3. Assembles the total true absorption (ACONT, ALINE), scattering
 !      (SIGMAC, SIGMAL), and source functions (SCONT, SLINE) from
 !      the source-weighted contributions.
@@ -7421,11 +7582,7 @@ SUBROUTINE KAPP
   if (IFOP(12) == 1) call ELECOP
   if (IFOP(13) == 1) call H2RAOP
   if (IFOP(14) == 1) call HLINOP
-  !     LINSOP removed: was unimplemented stub
-  !      IF(IFOP(17).EQ.1.AND.N.GT.0)CALL XLINOP
-  !      IF(IFOP(18).EQ.1.AND.N.GT.0)CALL XLISOP
   if (IFOP(19) == 1) call XCONOP
-  !     XSOP removed: was unimplemented stub
 
   ! Assemble totals: true absorption, source function, and scattering
   do J = 1, NRHOX
@@ -15525,15 +15682,15 @@ END FUNCTION PFGROUND
 !
 ! H2 partition function by linear interpolation in temperature.
 !
-! Table: T = 100 K to 20000 K in steps of 100 K (200 entries).
-! Returns a stable (clamped) answer for any T.
+! Reads a two-column text file (T, Q) on first call. The file
+! must have comment lines starting with '#' and data lines with
+! T(K) and Q(H2) in free format, sorted by ascending T.
+! The table is assumed to be on a uniform 100K grid starting at 100K.
 !
-! Reference: Kurucz, R.L. 1985, "A comment on molecular partition
-!   functions." CfA preprint no. 2162.
+! Default file: 'partfnh2_table.dat' (can be replaced with updated
+! data, e.g. from Barklem & Collet 2016).
 !
-! Revised 8 Nov 2005: extended to 20000 K for white dwarfs.
-! Includes all X, B, C singlet levels. Ignores higher states,
-! triplet states, and collisional effects (negligible below 15000 K).
+! Original hardcoded table: Kurucz, R.L. 1985, CfA preprint no. 2162.
 !=======================================================================
 
 FUNCTION PARTFNH2(T)
@@ -15544,76 +15701,55 @@ FUNCTION PARTFNH2(T)
   real*8, intent(in) :: T
   real*8 :: PARTFNH2
 
-  integer :: N
-  real*8  :: frac
+  integer, parameter :: NMAX = 500   ! max table entries
+  real*8,  save :: PF(NMAX)          ! partition function values
+  real*8,  save :: TSTEP = 100.0d0   ! temperature step (K)
+  real*8,  save :: TSTART = 100.0d0  ! first temperature in table
+  integer, save :: NPF = 0           ! number of entries loaded
+  logical, save :: INITIALIZED = .false.
+  
+  integer :: N, IOS, LUN
+  real*8  :: frac, TDUM, QDUM
+  character(len=256) :: LINE
 
-  ! Partition function table: PF(k) = Q(H2) at T = k * 100 K
-  real*8, save :: PF(200) = (/ &
-  !  T=  100     200     300     400     500     600     700
-      0.667d0, 1.340d0, 1.941d0, 2.534d0, 3.128d0, 3.724d0, 4.324d0, &
-  !     800     900    1000    1100    1200    1300    1400
-      4.927d0, 5.535d0, 6.150d0, 6.773d0, 7.406d0, 8.050d0, 8.708d0, &
-  !    1500    1600    1700    1800    1900    2000    2100
-      9.381d0,10.070d0,10.777d0,11.503d0,12.248d0,13.014d0,13.802d0, &
-  !    2200    2300    2400    2500    2600    2700    2800
-     14.611d0,15.444d0,16.300d0,17.180d0,18.085d0,19.016d0,19.972d0, &
-  !    2900    3000    3100    3200    3300    3400    3500
-     20.954d0,21.963d0,23.000d0,24.064d0,25.156d0,26.277d0,27.427d0, &
-  !    3600    3700    3800    3900    4000    4100    4200
-     28.607d0,29.817d0,31.057d0,32.329d0,33.632d0,34.967d0,36.334d0, &
-  !    4300    4400    4500    4600    4700    4800    4900
-     37.735d0,39.168d0,40.636d0,42.138d0,43.676d0,45.248d0,46.857d0, &
-  !    5000    5100    5200    5300    5400    5500    5600
-     48.501d0,50.183d0,51.902d0,53.659d0,55.453d0,57.287d0,59.159d0, &
-  !    5700    5800    5900    6000    6100    6200    6300
-     61.071d0,63.023d0,65.015d0,67.047d0,69.121d0,71.235d0,73.391d0, &
-  !    6400    6500    6600    6700    6800    6900    7000
-     75.589d0,77.828d0,80.110d0,82.434d0,84.800d0,87.210d0,89.662d0, &
-  !    7100    7200    7300    7400    7500    7600    7700
-     92.157d0,94.695d0,97.276d0,99.900d0,102.567d0,105.277d0,108.030d0, &
-  !    7800    7900    8000    8100    8200    8300    8400
-    110.826d0,113.665d0,116.546d0,119.470d0,122.437d0,125.446d0,128.496d0, &
-  !    8500    8600    8700    8800    8900    9000    9100
-    131.589d0,134.723d0,137.899d0,141.115d0,144.372d0,147.670d0,151.008d0, &
-  !    9200    9300    9400    9500    9600    9700    9800
-    154.386d0,157.803d0,161.260d0,164.755d0,168.288d0,171.860d0,175.469d0, &
-  !    9900   10000   10100   10200   10300   10400   10500
-    179.115d0,182.798d0,186.517d0,190.272d0,194.062d0,197.888d0,201.748d0, &
-  !   10600   10700   10800   10900   11000   11100   11200
-    205.642d0,209.569d0,213.530d0,217.523d0,221.549d0,225.606d0,229.694d0, &
-  !   11300   11400   11500   11600   11700   11800   11900
-    233.812d0,237.962d0,242.140d0,246.348d0,250.584d0,254.850d0,259.140d0, &
-  !   12000   12100   12200   12300   12400   12500   12600
-    263.460d0,267.806d0,272.179d0,276.578d0,281.003d0,285.451d0,289.925d0, &
-  !   12700   12800   12900   13000   13100   13200   13300
-    294.422d0,298.943d0,303.486d0,308.052d0,312.641d0,317.251d0,321.882d0, &
-  !   13400   13500   13600   13700   13800   13900   14000
-    326.534d0,331.206d0,335.900d0,340.611d0,345.342d0,350.092d0,354.861d0, &
-  !   14100   14200   14300   14400   14500   14600   14700
-    359.646d0,364.450d0,369.271d0,374.109d0,378.963d0,383.833d0,388.720d0, &
-  !   14800   14900   15000   15100   15200   15300   15400
-    393.621d0,398.538d0,403.469d0,408.415d0,413.375d0,418.349d0,423.336d0, &
-  !   15500   15600   15700   15800   15900   16000   16100
-    428.336d0,433.349d0,438.375d0,443.414d0,448.464d0,453.527d0,458.601d0, &
-  !   16200   16300   16400   16500   16600   16700   16800
-    463.686d0,468.783d0,473.891d0,479.009d0,484.137d0,489.276d0,494.424d0, &
-  !   16900   17000   17100   17200   17300   17400   17500
-    499.583d0,504.751d0,509.929d0,515.116d0,520.311d0,525.516d0,530.728d0, &
-  !   17600   17700   17800   17900   18000   18100   18200
-    535.952d0,541.184d0,546.422d0,551.669d0,556.924d0,562.187d0,567.459d0, &
-  !   18300   18400   18500   18600   18700   18800   18900
-    572.737d0,578.024d0,583.317d0,588.617d0,593.926d0,599.241d0,604.565d0, &
-  !   19000   19100   19200   19300   19400   19500   19600
-    609.892d0,615.229d0,620.572d0,625.922d0,631.279d0,636.640d0,642.010d0, &
-  !   19700   19800   19900   20000
-    647.387d0,652.769d0,658.160d0,663.556d0 /)
+  ! Read table from file on first call
+  if (.not. INITIALIZED) then
+    INITIALIZED = .true.
+    NPF = 0
+    LUN = 89
+    open(LUN, file='partfnh2.dat', status='old', iostat=IOS)
+    if (IOS /= 0) then
+      stop ' PARTFNH2 ERROR: cannot open partfnh2_table.dat'
+   endif
+   do while (NPF < NMAX)
+      read(LUN, '(A)', iostat=IOS) LINE
+      if (IOS /= 0) exit
+      ! Skip comment and blank lines
+      LINE = adjustl(LINE)
+      if (LINE(1:1) == '#' .or. len_trim(LINE) == 0) cycle
+      read(LINE, *, iostat=IOS) TDUM, QDUM
+      if (IOS /= 0) cycle
+      NPF = NPF + 1
+      PF(NPF) = QDUM
+      if (NPF == 1) TSTART = TDUM
+      if (NPF == 2) TSTEP = TDUM - TSTART
+   end do
+   close(LUN)
+  end if
 
-  ! Table index from temperature (T=100→N=1, T=200→N=2, etc.)
-  N = INT(T / 100.d0)
-  N = MIN(199, MAX(1, N))
+  ! Fallback if no table loaded
+  if (NPF == 0) then
+    PARTFNH2 = max(T / 100.0d0, 0.5d0)
+    return
+  end if
+
+  ! Table index from temperature
+  N = INT((T - TSTART) / TSTEP) + 1
+  N = MIN(NPF - 1, MAX(1, N))
 
   ! Linear interpolation
-  frac = (T - dble(N)*100.d0) / 100.d0
+  frac = (T - (TSTART + (N-1) * TSTEP)) / TSTEP
+  frac = MIN(1.0d0, MAX(0.0d0, frac))
   PARTFNH2 = PF(N) + (PF(N+1) - PF(N)) * frac
 
 END FUNCTION PARTFNH2
