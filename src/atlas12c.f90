@@ -15719,7 +15719,7 @@ FUNCTION PARTFNH2(T)
     LUN = 89
     open(LUN, file='partfnh2.dat', status='old', iostat=IOS)
     if (IOS /= 0) then
-      stop ' PARTFNH2 ERROR: cannot open partfnh2_table.dat'
+      stop ' PARTFNH2 ERROR: cannot open partfnh2.dat'
    endif
    do while (NPF < NMAX)
       read(LUN, '(A)', iostat=IOS) LINE
