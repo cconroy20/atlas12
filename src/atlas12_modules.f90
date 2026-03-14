@@ -3500,11 +3500,11 @@ SUBROUTINE READIN(MODE)
           WRITE(6, '(" NUMITS",I3,"  IFPRNT",45I2/18x,15I2/' // &
             '10X,"  IFPNCH",45I2/18x,15I2)') NUMITS, IFPRNT, IFPNCH
         end if
-        WRITE(6, '(//,8X,"RHOX",9X,"T",8X,"P",8X,"XNE",6X,"ABROSS",' // &
-          '5X,"PRAD",6X,"VTURB",24X,"BHYD",25X,"BMIN",/' // &
-          '(I3,1PE13.6,0PF9.1,1P5E10.3,1X,0P,7F8.4))') &
-          (J, RHOX(J), T(J), P(J), XNE(J), ABROSS(J), PRAD(J), &
-          VTURB(J), (BHYD(J,I), I=1,6), BMIN(J), J=1,NRHOX)
+        !WRITE(6, '(//,8X,"RHOX",9X,"T",8X,"P",8X,"XNE",6X,"ABROSS",' // &
+        !  '5X,"PRAD",6X,"VTURB",24X,"BHYD",25X,"BMIN",/' // &
+        !  '(I3,1PE13.6,0PF9.1,1P5E10.3,1X,0P,7F8.4))') &
+        !  (J, RHOX(J), T(J), P(J), XNE(J), ABROSS(J), PRAD(J), &
+        !  VTURB(J), (BHYD(J,I), I=1,6), BMIN(J), J=1,NRHOX)
         RETURN
 
       !-----------------------------------------------------------------
@@ -4427,7 +4427,8 @@ SUBROUTINE READMOL
     ! Code = 0 terminates the list
     if (C == 0.0D0) exit
 
-    write(6, '(I5, F18.2, F7.3, 1P5E11.4)') JMOL, C, E1, E2, E3, E4, E5, E6
+    if (IDEBUG == 1) write(6, '(I5, F18.2, F7.3, 1P5E11.4)') &
+         JMOL, C, E1, E2, E3, E4, E5, E6
 
     ! --- Decode species code into atomic components ---
     ! Find the leading non-zero pair of digits

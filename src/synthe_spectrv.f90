@@ -1,6 +1,3 @@
-! synthe_spectrv.f90 -- Merged XNFPELSYN + SYNTHE + SPECTRV main program
-! Requires: atlas12_modules.f90, synthe_module.f90 (compile in that order)
-!
 ! ============================================================================
 !  PROGRAM SYNTHE_SPECTRV
 !
@@ -21,7 +18,7 @@
 !  interfaces have been replaced with module variable access.
 !
 !  Unit assignments:
-!    5   input : fort.5 model atmosphere control cards (read by READIN)
+!    5   input : model atmosphere control cards (command-line arg, read by READIN)
 !   11   output: ASCII spectrum (wavelength in Angstroms, flux, continuum flux)
 !   12   input : preprocessed LTE line data (unformatted sequential)
 !   13   scratch: merged line archive (deleted after use)
@@ -35,7 +32,7 @@
 !   25   input : spectrv.input run parameters (rhoxj, r1, r101, fudge exponents)
 !   93   input : run parameters from SYNBEG (unformatted, deleted after read)
 !
-!  ASCII spectrum output format (fort.11):
+!  ASCII spectrum output format (<model>.spec):
 !    One line per wavelength point:
 !      col  1-11 : wavelength (Angstroms), F11.4
 !      col 12-26 : flux or specific intensity, E15.6
@@ -46,7 +43,7 @@
 !    8   -- was: n9 count SYNTHE->SPECTRV             (now: nlines_sv)
 !    9   -- was: opacity vectors + line data           (now: in-memory)
 !   10   -- was: fort.10 model atmosphere file         (now: module arrays)
-!    7   -- was: binary spectrum for PLOTSY              (now: ASCII fort.11)
+!    7   -- was: binary spectrum for PLOTSY              (now: <model>.spec)
 !   14*  -- was: direct-access opacity matrix scratch  (now: in-memory arrays)
 !   28   -- was: XNFPEL diagnostic dump               (removed)
 !   29   -- was: opacity spectrum diagnostic           (removed)
@@ -132,6 +129,10 @@ PROGRAM synthe_spectrv
   REAL(4), ALLOCATABLE :: opacity_matrix(:,:)   ! (length, kw) wavelength × depth
   REAL(4), ALLOCATABLE :: linecen_matrix(:,:)   ! (n9, kw) line × depth
 
+  ! In-memory merged line archive (replaces unit 13 scratch file)
+  REAL(8), ALLOCATABLE :: merged_lindat8(:,:)   ! (14, nlines)
+  REAL(4), ALLOCATABLE :: merged_lindat4(:,:)   ! (28, nlines)
+
   ! --- Run parameters (unit 93) ---
   INTEGER   :: nlines_in, ifvac, ifnlte, n19, ifpred, linout
   REAL(4)   :: turbv, cutoff
@@ -203,6 +204,9 @@ PROGRAM synthe_spectrv
   ! ASCII plot array
   CHARACTER(LEN=1) :: aplot(101)
 
+  ! Command-line model filename and derived .spec output name
+  CHARACTER(LEN=512) :: model_file, spec_file, linform_file
+
   ! SPECTRV run parameters
   REAL(8)   :: rhoxj, r1, r101, ph1, pc1, psi1
   REAL(8)   :: slope, origin
@@ -241,7 +245,34 @@ PROGRAM synthe_spectrv
   END BLOCK
 
   ! ==========================================================================
-  !  SECTION 1.  READ RUN PARAMETERS FROM UNIT 93
+  !  PARSE COMMAND-LINE ARGUMENT: model atmosphere filename
+  !
+  !  Usage:  synthe_spectrv.exe <model_file>
+  !  The input extension is stripped and replaced with .spec for the
+  !  ASCII spectrum output (unit 11).
+  ! ==========================================================================
+  BLOCK
+    INTEGER :: dotpos
+    IF (COMMAND_ARGUMENT_COUNT() < 1) THEN
+      WRITE(6, '(A)') ' ERROR: expected model filename as argument'
+      WRITE(6, '(A)') ' Usage: synthe_spectrv.exe <model_file>'
+      STOP 1
+    END IF
+    CALL GET_COMMAND_ARGUMENT(1, model_file)
+    WRITE(6, '(A,A)') ' Model file = ', TRIM(model_file)
+
+    ! Strip extension: find last '.' and replace with .spec / .linform
+    dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
+    IF (dotpos > 1) THEN
+      spec_file    = model_file(1:dotpos-1) // '.spec'
+      linform_file = model_file(1:dotpos-1) // '.linform'
+    ELSE
+      spec_file    = TRIM(model_file) // '.spec'
+      linform_file = TRIM(model_file) // '.linform'
+    END IF
+    WRITE(6, '(A,A)') ' Spectrum output  = ', TRIM(spec_file)
+    WRITE(6, '(A,A)') ' Linform output   = ', TRIM(linform_file)
+  END BLOCK
   ! ==========================================================================
   OPEN(UNIT=93, FORM='UNFORMATTED')
   READ(93) nlines_in, length, ifvac, ifnlte, n19, turbv, deckj, ifpred, &
@@ -266,27 +297,30 @@ PROGRAM synthe_spectrv
   ! ==========================================================================
   ! Unit 10 (fort.10) eliminated -- data now in module arrays from run_xnfpelsyn()
   OPEN(UNIT=12, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
-  OPEN(UNIT=13, STATUS='SCRATCH', FORM='UNFORMATTED')
   OPEN(UNIT=14, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
   OPEN(UNIT=19, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
   OPEN(UNIT=20, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
 
   ! ==========================================================================
-  !  SECTION 3.  MERGE LINE ARCHIVES INTO UNIT 13
+  !  SECTION 3.  MERGE LINE ARCHIVES INTO MEMORY
+  !
+  !  Read predicted lines (unit 20) and atomic/molecular lines (unit 14)
+  !  into merged_lindat8/merged_lindat4 arrays.  Replaces the former
+  !  scratch file on unit 13.
   ! ==========================================================================
-  IF (linout >= 0) THEN
+  IF (linout >= 0 .AND. (n19 + nlines_in) > 0) THEN
+    ALLOCATE(merged_lindat8(14, n19 + nlines_in))
+    ALLOCATE(merged_lindat4(28, n19 + nlines_in))
     IF (n19 > 0) THEN
       REWIND 20
       DO i = 1, n19
-        READ(20)  lindat8, lindat4
-        WRITE(13) lindat8, lindat4
+        READ(20) merged_lindat8(:,i), merged_lindat4(:,i)
       END DO
     END IF
     IF (nlines_in > 0) THEN
       REWIND 14
       DO i = 1, nlines_in
-        READ(14)  lindat8, lindat4
-        WRITE(13) lindat8, lindat4
+        READ(14) merged_lindat8(:, n19+i), merged_lindat4(:, n19+i)
       END DO
     END IF
   END IF
@@ -329,7 +363,7 @@ PROGRAM synthe_spectrv
   ! --- Run READIN then run_xnfpelsyn ---
   ! IFPRES is set by READIN from the model cards (e.g. "PRESSURE OFF").
   itemp_a  = 1
-  OPEN(UNIT=5,  FILE='fort.5',  STATUS='OLD', ACTION='READ')
+  OPEN(UNIT=5,  FILE=TRIM(model_file),  STATUS='OLD', ACTION='READ')
   OPEN(UNIT=17, FILE=trim(DATADIR)//'continua.dat', STATUS='OLD', ACTION='READ')
   CALL readin(20)
   ! Keep unit 5 open: MOLEC reads molecular data from INPUTDATA (=5)
@@ -646,7 +680,7 @@ PROGRAM synthe_spectrv
     ! Store opacity buffer into in-memory matrix (replaces unit 14 write)
     opacity_matrix(1:length, j) = buffer(1:length)
 
-    WRITE(6,'(30X,2I10,A)') j, mlines, ' LINES USED'
+    !sWRITE(6,'(30X,2I10,A)') j, mlines, ' LINES USED'
     mlinej(j) = mlines
     ilines    = ilines + mlines
 
@@ -662,7 +696,8 @@ PROGRAM synthe_spectrv
   n9 = 0
 
   ! Open ASCII spectrum output (replaces standalone syntoascanga post-processing)
-  OPEN(UNIT=11, FILE='fort.11', STATUS='REPLACE', ACTION='WRITE')
+  OPEN(UNIT=11, FILE=TRIM(spec_file), STATUS='REPLACE', ACTION='WRITE')
+  OPEN(UNIT=33, FILE=TRIM(linform_file), STATUS='REPLACE', ACTION='WRITE')
   BLOCK
     REAL(8) :: wend_loc, vstep_loc
     wend_loc  = wbegin * ratio**(length-1)
@@ -698,10 +733,8 @@ PROGRAM synthe_spectrv
       line_flag(iline) = 1
     END DO
 
-    ! First pass: count used lines
-    REWIND 13
+    ! First pass: count used lines and assign compacted indices
     DO i = 1, nlines
-      READ(13) lindat8, lindat4
       IF (line_flag(i) == 0) CYCLE
       line_flag(i) = 0
       n9 = n9 + 1
@@ -714,8 +747,10 @@ PROGRAM synthe_spectrv
   CLOSE(UNIT=12, STATUS='DELETE')
 
   IF (ilines == 0 .OR. linout < 0) THEN
-    CLOSE(UNIT=13, STATUS='DELETE')
+    IF (ALLOCATED(merged_lindat8)) DEALLOCATE(merged_lindat8)
+    IF (ALLOCATED(merged_lindat4)) DEALLOCATE(merged_lindat4)
     CLOSE(UNIT=11)
+    CLOSE(UNIT=33)
     STOP
   END IF
 
@@ -726,16 +761,14 @@ PROGRAM synthe_spectrv
     INTEGER :: k9
 
     ALLOCATE(lindat8_arr(14, n9), lindat4_arr(28, n9))
-    REWIND 13
     k9 = 0
     DO i = 1, nlines
-      READ(13) lindat8, lindat4
       IF (line_flag(i) == 0) CYCLE
       k9 = k9 + 1
-      lindat8_arr(:, k9) = lindat8
-      lindat4_arr(:, k9) = lindat4
+      lindat8_arr(:, k9) = merged_lindat8(:, i)
+      lindat4_arr(:, k9) = merged_lindat4(:, i)
     END DO
-    CLOSE(UNIT=13, STATUS='DELETE')
+    DEALLOCATE(merged_lindat8, merged_lindat4)
 
   ! ==========================================================================
   !  SECTION 10.  LINE-CENTRE OPACITIES AND IDENTIFICATION RECORDS
@@ -835,6 +868,7 @@ PROGRAM synthe_spectrv
   END IF
 
   CLOSE(UNIT=11)
+  CLOSE(UNIT=33)
 
   STOP
 
@@ -943,15 +977,6 @@ CONTAINS
       IF (IFSURF == 1) resid = HNU(1)    / surf_sv(mu_loc)
       IF (IFSURF == 2) resid = SURFI(mu_loc) / surf_sv(mu_loc)
 
-      IF (nu_idx <= ABS(linout) .AND. mu_loc == 1) THEN
-        iresid_loc   = NINT(resid * 1000.0D0)
-        iplot_loc    = INT(resid * slope_sv + origin_sv)
-        iplot_loc    = MAX(1, MIN(101, iplot_loc))
-        aplot(iplot_loc) = 'X'
-        WRITE(6, '(1X,I5,F11.4,I7,101A1)') nu_idx, wave_nm, iresid_loc, aplot
-        aplot(iplot_loc) = ' '
-      END IF
-
       q_loc(mu_loc)        = resid * surf_sv(mu_loc)
       q_loc(mu_loc + NMU) = surf_sv(mu_loc)
     END DO
@@ -1020,15 +1045,6 @@ CONTAINS
     IF (IFSURF == 1) center_loc = HNU(1)
     IF (IFSURF == 2) center_loc = SURFI(1)
     resid = center_loc / concen_loc
-
-    ! Write line identification record to unit 16
-    WRITE(16, '(F10.4,F7.3,F5.1,F12.3,F5.1,F12.3,F9.2,A8,A2,A8,A2,' // &
-               '/0PF10.4,I4,F6.2,F6.2,F6.2,A4,I2,I2,I3,F7.3,I3,F7.3,' // &
-               'A8,A2,A8,A2,F7.4,F7.3,3F6.2,F10.4)') &
-      wl_c, gflog_c, xj_c, e_c, xjp_c, ep_c, code_c, label_c, labelp_c, &
-      wl_c, nelion_c, gr_c, gs_c, gw_c, ref_c, nblo_c, nbup_c, &
-      iso1_c, x1_c, iso2_c, x2_c, &
-      other1_c, other2_c, dwl_c, dgflog_c, dgammar_c, dgammas_c, dgammaw_c, wl_c
 
   END SUBROUTINE process_linecen_record
 
