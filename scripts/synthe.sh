@@ -4,6 +4,7 @@
 
 # calling sequence: synthe.sh directory input_atm
 
+echo " "
 date
 
 bindir="$ATLAS12/bin/"
@@ -25,7 +26,7 @@ if [ ! -d $outdir ]; then
     mkdir $outdir
 fi
 
-echo "Output Dir: ${outdir}"
+echo " Output Dir: ${outdir}"
 
 arr=(`ls $indir`)
 len=${#arr[*]}
@@ -35,16 +36,14 @@ rundir=${ATLAS12}/workdir/$1_$2
 #delete an old version of the tmp dir if one exists
 /bin/rm -rf $rundir
 
-echo "Moving into temporary working directory...."
 mkdir $rundir
 cd $rundir
 
 # Set the directory containing the line information
 linedir="Lines_RV31new"
-echo $linedir
+echo " Input line dir:" $linedir
 
 #generate synthe-ready input file
-echo $indir$model
 $bindir/at12tosyn.exe $indir$2 $2
 
 #link the input files generated from synthe.setup
@@ -55,7 +54,7 @@ ln -s ${ATLAS12}/${linedir}/tfort.20 fort.20
 ln -s ${ATLAS12}/${linedir}/tfort.93 fort.93
 
 #run synthe, the main program
-echo "running synthe...."
+echo " Running synthe...."
 $bindir/synthe_spectrv.exe $2
 
 #save the molecular number density profiles

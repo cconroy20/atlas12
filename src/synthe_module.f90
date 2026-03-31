@@ -186,8 +186,14 @@ MODULE synthe_module
   REAL(4), SAVE :: BUFFER(MAXBUFF), PROFILE(MAXPROF)
   REAL(4), SAVE :: CONTINUUM(MAXBUFF)
 
-  ! ====================================================================
-  !  XNFPELSYN SHARED DATA
+  ! In-memory line-centre journal (replaces unit 15 scratch file).
+  ! Stores (iline, kapcen) pairs written during the depth loop, grouped
+  ! by depth point (mlinej(j) records per depth).  Filled by journal_append()
+  ! from both the main program and compute_line_opacity().
+  INTEGER,  ALLOCATABLE, SAVE :: journal_iline(:)
+  REAL(4),  ALLOCATABLE, SAVE :: journal_kapcen(:)
+  INTEGER,               SAVE :: journal_count = 0
+  INTEGER,               SAVE :: journal_size  = 0
   !
   !  These arrays replace the fort.10 file written by XNFPELSYN and read
   !  by SYNTHE / SPECTRV.  They are filled by run_xnfpelsyn() and
@@ -2705,7 +2711,7 @@ CONTAINS
         IF (ibuff > nbuff2) tail = REAL(nbuff3 - ibuff) / dnbuff
         buffer(ibuff) = buffer(ibuff) + kappa * tail
       END DO
-      IF (linout >= 0) WRITE(15) iline, kappa
+      IF (linout >= 0) CALL journal_append(iline, kappa)
       mlines = mlines + 1
       CYCLE line_loop
 
@@ -2739,7 +2745,7 @@ CONTAINS
       END IF
       adamp  = REAL((gammar_loc + gammas_loc*xne(j) + gammaw_loc*txnxn(j)) / dopple(nelion))
       kapcen = kappa0 * voigt_profile(0.0, adamp)
-      IF (linout >= 0) WRITE(15) iline, kapcen
+      IF (linout >= 0) CALL journal_append(iline, kapcen)
       dopwl  = REAL(dopple(nelion)) * REAL(wl_loc)
       ! Red wing
       IF (wl_loc <= wlend) THEN
@@ -2787,7 +2793,7 @@ CONTAINS
       IF (itype == -2) dopph(j) = dopph(j) / 1.4142    ! deuterium
       kappa0 = kappa0 * bolth
       IF (kappa0 < kapmin) CYCLE line_loop
-      IF (linout >= 0) WRITE(15) iline, kappa0
+      IF (linout >= 0) CALL journal_append(iline, kappa0)
       mlines = mlines + 1
       ! Alpha (Nbup=Nblo+1) and beta-blue (Nbup=Nblo+2) treated as isolated
       IF (ncon == 0)            GOTO 620
@@ -2925,7 +2931,7 @@ CONTAINS
       IF (kappa0 < kapmin) CYCLE line_loop
       kappa0 = kappa0 * REAL(EXP(-elo_loc * hckt(j)))
       IF (kappa0 < kapmin) CYCLE line_loop
-      IF (linout >= 0) WRITE(15) iline, kappa0
+      IF (linout >= 0) CALL journal_append(iline, kappa0)
       mlines = mlines + 1
       frelin = REAL(CLIGHT_NM_HZ / wl_loc)
       ! Red wing
@@ -2962,7 +2968,33 @@ CONTAINS
 
 
   ! ============================================================================
-  !  SUBROUTINE run_xnfpelsyn
+  !  SUBROUTINE journal_append(il, kc)
+  !
+  !  Append one (iline, kapcen) pair to the in-memory line-centre journal.
+  !  Grows the arrays by doubling when full.
+  ! ============================================================================
+  SUBROUTINE journal_append(il, kc)
+    INTEGER, INTENT(IN) :: il
+    REAL(4), INTENT(IN) :: kc
+    INTEGER, ALLOCATABLE :: tmp_i(:)
+    REAL(4), ALLOCATABLE :: tmp_k(:)
+    INTEGER :: newsize
+
+    IF (journal_count >= journal_size) THEN
+      newsize = MAX(journal_size * 2, 65536)
+      ALLOCATE(tmp_i(newsize), tmp_k(newsize))
+      IF (journal_size > 0) THEN
+        tmp_i(1:journal_size) = journal_iline(1:journal_size)
+        tmp_k(1:journal_size) = journal_kapcen(1:journal_size)
+      END IF
+      CALL MOVE_ALLOC(tmp_i, journal_iline)
+      CALL MOVE_ALLOC(tmp_k, journal_kapcen)
+      journal_size = newsize
+    END IF
+    journal_count = journal_count + 1
+    journal_iline(journal_count)  = il
+    journal_kapcen(journal_count) = kc
+  END SUBROUTINE journal_append
   !
   !  F90 translation of the XNFPELSYN program (Kurucz).
   !  Replaces the standalone xnfpelsyn executable and the fort.10 file it

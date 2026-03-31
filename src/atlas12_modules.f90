@@ -3447,11 +3447,12 @@ SUBROUTINE READIN(MODE)
         if (ABUND(2) < 0.0D0) ABUND(2) = 10.0D0**ABUND(2)
         do IZ = 3, 99
           if (ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
-        end do
-        WRITE(6, '(///" TEFF",F7.0,"   LOG G",F8.4,3X,A4,"TITLE: ",74A1/' // &
-          '"    1",A2,F10.6,"       2",A2,F10.6/(5(I5,A2,F7.3,F6.3)))') &
-          TEFF, GLOG, WLTE, TITLE, ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
-          (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,99)
+       end do
+       !write abbreviated list of abundances
+       WRITE(6, '(/" TEFF",F7.0,"   LOGG",F8.4/' // &
+            '"   1",A2,F10.6,"     2",A2,F10.6/(5(I4,A2,F7.2,F5.2)))') &
+            TEFF, GLOG, ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
+          (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,32)
         do J = 1, NRHOX
           do IZ = 3, 99
             XABUND(J,IZ) = 10.0D0**(ABUND(IZ) + XRELATIVE(IZ))
@@ -3485,12 +3486,12 @@ SUBROUTINE READIN(MODE)
           ! higher-ion correction is negligible for this purpose.
           CHARGESQ(J) = XNE(J)
         end do
-        WRITE(6, '("H1",I2," H2PLUS",I2," HMINUS",I2," HRAY",I2,' // &
+        WRITE(6, '(/" H1",I2," H2PLUS",I2," HMINUS",I2," HRAY",I2,' // &
           '" HE1",I2," HE2",I2," HEMINUS",I2," HERAY",I2," COOL",I2,' // &
           '" LUKE",I2/" HOT",I2," ELECTRON",I2," H2RAY",I2," HLINES",' // &
           'I2," LINES",I2," LINESCAT",I2," XLINES",I2," XLSCAT",I2,' // &
           '" XCONT",I2," XSCAT",I2)') IFOP
-        WRITE(6, '("IFCORR",I2,"  IFPRES",I2,"  IFSURF",I2,' // &
+        WRITE(6, '(" IFCORR",I2,"  IFPRES",I2,"  IFSURF",I2,' // &
           '"  IFSCAT",I2,"  IFCONV",I2,"  MIXLTH",F6.2,"  IFMOL",I2/' // &
           '" IFTURB",I2,"  TRBFDG",F6.2,"  TRBPOW",F6.2,' // &
           '"  TRBSND",F6.2,"  TRBCON",F6.2)') &
@@ -3526,8 +3527,7 @@ SUBROUTINE READIN(MODE)
       ! END
       !-----------------------------------------------------------------
       else if (MIAC == 7367) then
-        if (MODE /= 20) stop 1
-        NRHOX = 0
+        if (MODE == 20) NRHOX = 0
         RETURN
 
       !-----------------------------------------------------------------
@@ -4405,7 +4405,6 @@ SUBROUTINE READMOL
     if (IOS /= 0) then
       stop 'molecules.dat file not found'
     end if
-  write(6, '(A)') 'MOLECULES INPUT:'
 
   ! --- Initialize: no elements require equations yet ---
   IFEQUA(:) = 0
@@ -4509,6 +4508,7 @@ SUBROUTINE READMOL
     KCOMPS(I) = IFEQUA(ID)
   end do
 
+  write(6,*)
   write(6, '(A,I4,A,I4)') ' MOLECULES  USED', NUMMOL, '  MAX', MAXMOL
   write(6, '(A,I4,A,I4)') ' COMPONENTS USED', NLOC,   '  MAX', MAXLOC
   write(6, '(A,I4,A,I4)') ' EQUATIONS  USED', NEQUA,  '  MAX', MAXEQ
@@ -5753,12 +5753,12 @@ SUBROUTINE NMOLEC(MODE)
   end do
   if (ID == 100) XN(NEQUA) = X
   XNE(1) = X
-
+  
   !=====================================================================
   ! Main depth loop: solve molecular equilibrium at each depth
   !=====================================================================
   do J = 1, NRHOX
-
+     
     XNTOT = P(J) / TK(J)
 
     ! Extrapolate from previous depth as initial guess

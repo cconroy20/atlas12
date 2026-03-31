@@ -241,7 +241,7 @@ PROGRAM synthe_spectrv
     ELSE
       DATADIR = 'data/'
     END IF
-    WRITE(6, '(A,A)') ' DATADIR = ', TRIM(DATADIR)
+    WRITE(6, '(/A,A)') ' DATADIR = ', TRIM(DATADIR)
   END BLOCK
 
   ! ==========================================================================
@@ -259,7 +259,7 @@ PROGRAM synthe_spectrv
       STOP 1
     END IF
     CALL GET_COMMAND_ARGUMENT(1, model_file)
-    WRITE(6, '(A,A)') ' Model file = ', TRIM(model_file)
+    WRITE(6, '(A,A)') ' Input model      = ', TRIM(model_file)
 
     ! Strip extension: find last '.' and replace with .spec / .linform
     dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
@@ -277,12 +277,6 @@ PROGRAM synthe_spectrv
   OPEN(UNIT=93, FORM='UNFORMATTED')
   READ(93) nlines_in, length, ifvac, ifnlte, n19, turbv, deckj, ifpred, &
        wlbeg, wlend, resolu, ratio, ratiolg, cutoff, linout
-  WRITE(6,*) 'SYNTHE INPUT (UNIT 93): '
-  WRITE(6,*) 'nlines,length,ifvac,ifnlte,n19,ifpred,', &
-             'wlbeg,wlend,resolu,cutoff,linout'
-  WRITE(6,'(I8,I6,1x,I1,1x,I1,1x,I5,1x,I1,1x,F7.1,1x,F7.1,1x,F9.1,1x,ES12.3,1x,I8)') &
-       nlines_in, length, ifvac, ifnlte, n19, ifpred, &
-       wlbeg, wlend, resolu, cutoff, linout
   CLOSE(UNIT=93, STATUS='DELETE')
 
   ixwlbeg = INT(LOG(wlbeg) / ratiolg)
@@ -386,8 +380,6 @@ PROGRAM synthe_spectrv
   DO i = 1, 74
     title(i) = DBLE(ICHAR(title_atlas(i)))
   END DO
-  WRITE(6,'(A,F10.1,3X,A,F6.3,3X,74A1)') ' TEFF=', teff, 'GRAV=', glog, &
-        (CHAR(INT(title(i))), i=1,74)
 
   nedge  = nedge_m
   DO iedge = 1, nedge_m
@@ -477,9 +469,9 @@ PROGRAM synthe_spectrv
     title(74) = TRANSFER(itmp, title(74))
   END BLOCK
 
-  WRITE(6, '(A,F10.4,A,F10.1,A,F10.4,A,I6,A,I2)') &
-    ' WLBEG=', wlbeg, '   RESOLU=', resolu, '   WLEND=', wlend, &
-    '   LENGTH=', length, '   NRHOX=', nrhox
+  WRITE(6, '(/A,F6.1,A,I8,A,F6.1,A,I6,A,I2)') &
+    ' WLBEG=', wlbeg, 'nm,   RESOLU=', int(resolu), ',   WLEND=', wlend, &
+    'nm,   LENGTH=', length, ',   NRHOX=', nrhox
 
   ! NOTE: turbv is NOT added to vturb_a here.  In the original code,
   ! XNFPELSYN computed Doppler widths using only the model's vturb.
@@ -517,7 +509,7 @@ PROGRAM synthe_spectrv
   ilines   = 0
   n12      = nlines_in
   nlines   = nlines_in + n19
-  WRITE(6,'(A,I10,A,I10,A,I10)') ' TOTAL LINES: n12=', n12, '  n19=', n19, '  nlines=', nlines
+  WRITE(6,'(A,I9)') ' TOTAL LINES=', nlines
 
   depth_loop: DO j = 1, nrhox
 
@@ -579,7 +571,7 @@ PROGRAM synthe_spectrv
       xnfpel(i)   = xnfpel(i) / rho(j)
       xnfdop(i)   = qxnfpel(i) / xf_rho(j) / qdopple(i)
     END DO
-
+    
     txnxn(j) = (xnfh(j) + 0.42*xnfhe(j,1) + 0.85*xnfh2(j)) * &
                (t(j)/10000.0)**0.3
 
@@ -625,7 +617,7 @@ PROGRAM synthe_spectrv
         ELSE
           kapcen_s = kappa0_s * voigt_profile(0.0, adamp_s)
         END IF
-        IF (linout >= 0) WRITE(15) iline, kapcen_s
+        IF (linout >= 0) CALL journal_append(iline, kapcen_s)
         buffer(nbuff_s) = buffer(nbuff_s) + kapcen_s
       END IF centre_on_grid
 
@@ -686,6 +678,8 @@ PROGRAM synthe_spectrv
 
   END DO depth_loop
 
+  CLOSE(UNIT=19, STATUS='DELETE')
+
   ! ==========================================================================
   !  SECTION 8.  SPECTRV WAVELENGTH LOOP
   !
@@ -727,10 +721,8 @@ PROGRAM synthe_spectrv
 
     line_flag(1:nlines) = 0
 
-    REWIND 15
     DO i = 1, ilines
-      READ(15) iline
-      line_flag(iline) = 1
+      line_flag(journal_iline(i)) = 1
     END DO
 
     ! First pass: count used lines and assign compacted indices
@@ -749,6 +741,8 @@ PROGRAM synthe_spectrv
   IF (ilines == 0 .OR. linout < 0) THEN
     IF (ALLOCATED(merged_lindat8)) DEALLOCATE(merged_lindat8)
     IF (ALLOCATED(merged_lindat4)) DEALLOCATE(merged_lindat4)
+    IF (ALLOCATED(journal_iline))  DEALLOCATE(journal_iline)
+    IF (ALLOCATED(journal_kapcen)) DEALLOCATE(journal_kapcen)
     CLOSE(UNIT=11)
     CLOSE(UNIT=33)
     STOP
@@ -773,24 +767,30 @@ PROGRAM synthe_spectrv
   ! ==========================================================================
   !  SECTION 10.  LINE-CENTRE OPACITIES AND IDENTIFICATION RECORDS
   !
-  !  Build in-memory line-centre opacity matrix from unit 15 (iline, kapcen)
+  !  Build in-memory line-centre opacity matrix from journal_iline/journal_kapcen
   !  pairs, then loop over lines calling process_linecen_record for each.
   ! ==========================================================================
-  REWIND 15
-
   ALLOCATE(linecen_matrix(n9, nrhox))
   linecen_matrix = 0.0
 
-  DO j = 1, nrhox
-    maxline = mlinej(j)
-    IF (maxline == 0) CYCLE
-    DO l = 1, maxline
-      READ(15) iline, kapcen_s
-      i9 = line_flag(iline)
-      IF (i9 == 0) CYCLE
-      linecen_matrix(i9, j) = kapcen_s
+  BLOCK
+    INTEGER :: jptr
+    jptr = 0
+    DO j = 1, nrhox
+      maxline = mlinej(j)
+      IF (maxline == 0) CYCLE
+      DO l = 1, maxline
+        jptr = jptr + 1
+        i9 = line_flag(journal_iline(jptr))
+        IF (i9 == 0) CYCLE
+        linecen_matrix(i9, j) = journal_kapcen(jptr)
+      END DO
     END DO
-  END DO
+  END BLOCK
+
+  DEALLOCATE(journal_iline, journal_kapcen)
+  journal_count = 0
+  journal_size  = 0
 
   IF (n9 > maxlin_p) THEN
     WRITE(6,'(A)') ' TOO MANY LINES TO TRANSPOSE'
@@ -825,7 +825,6 @@ PROGRAM synthe_spectrv
   DEALLOCATE(lindat8_arr, lindat4_arr)
   END BLOCK
 
-  CLOSE(UNIT=15, STATUS='DELETE')
   WRITE(6,'(I10,A)') ncen, ' LINE CENTER RECORDS PROCESSED'
 
   ! --- SPECTRV Section 8: NLTE line centres (unit 20) ---

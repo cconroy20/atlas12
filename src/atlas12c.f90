@@ -101,8 +101,6 @@ PROGRAM ATLAS12
     DATADIR = 'data/'
   end if
 
-  write(*,*) DATADIR
-  
   ! --- Pre-tabulate Voigt profile H(a,v) at 200 steps per Doppler width ---
   VSTEPS = 200.0
   call TABVOIGT(VSTEPS, 2001)
@@ -125,12 +123,11 @@ PROGRAM ATLAS12
   ITEMP = 0
 
   ! =====================================================================
-  ! MODEL LOOP — read successive input models until input is exhausted
+  ! =====================================================================
+  ! Read and compute a single model
   ! =====================================================================
 
-  model_loop: do
-
-    call READIN(1)
+  call READIN(1)
 
     ! --- Zero out number densities and Doppler widths for all species ---
     do NELION = 1, MION
@@ -376,29 +373,29 @@ PROGRAM ATLAS12
       end do frequency_loop
 
       ! For surface-only mode, skip the iteration finishing steps
-      if (IFSURF > 0) cycle model_loop
+      if (IFSURF <= 0) then
 
-      ! ---------------------------------------------------------------
-      ! FINISH ITERATION — Rosseland mean, convection, T-correction
-      ! ---------------------------------------------------------------
-      call ROSS(3, 0.0D0)
-      RX = ROSSTAB(0.D0, 0.D0, 0.D0)
-      call RADIAP(3, 0.0D0)
-      call COMPUTE_HEIGHT
-      if (IFPRES == 1 .and. IFCONV == 1) call CONVEC
-      if (IFCORR == 1)  call TCORR(3, 0.0D0)
-      if (NLTEON == 1)  call STATEQ(3, 0.0D0)
-      if (IFTURB == 1)  call COMPUTE_PTURB
-      call PUTOUT(5)
+        ! ---------------------------------------------------------------
+        ! FINISH ITERATION — Rosseland mean, convection, T-correction
+        ! ---------------------------------------------------------------
+        call ROSS(3, 0.0D0)
+        RX = ROSSTAB(0.D0, 0.D0, 0.D0)
+        call RADIAP(3, 0.0D0)
+        call COMPUTE_HEIGHT
+        if (IFPRES == 1 .and. IFCONV == 1) call CONVEC
+        if (IFCORR == 1)  call TCORR(3, 0.0D0)
+        if (NLTEON == 1)  call STATEQ(3, 0.0D0)
+        if (IFTURB == 1)  call COMPUTE_PTURB
+        call PUTOUT(5)
 
-      call system_clock(CLOCK_END)
-      write(6, '(A,I3,A,F8.1,A)') ' ITERATION ', ITERAT, ' completed in ', &
-           dble(CLOCK_END - CLOCK_START) / dble(CLOCK_RATE), ' seconds'
-      write(6,*)
-      FLUSH(6)
+        call system_clock(CLOCK_END)
+        write(6, '(A,I3,A,F8.1,A)') ' ITERATION ', ITERAT, ' completed in ', &
+             dble(CLOCK_END - CLOCK_START) / dble(CLOCK_RATE), ' seconds'
+        write(6,*)
+        FLUSH(6)
+
+      end if
 
     end do iteration_loop
-
-  end do model_loop
 
 END PROGRAM ATLAS12
