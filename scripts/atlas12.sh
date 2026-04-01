@@ -245,24 +245,9 @@ abund_cards=$(awk 'BEGIN {
 
 if [ ! -f "${outdir}/atm/${outfile}.atm" ]; then
 
-"${ATLAS12}/bin/atlas12c.exe" "${outfile}" <<EOF> "${outfile}.out"
-MOLECULES ON
-READ MOLECULES
-READ PUNCH
-READ LINES
-TITLE ATLAS12 l/H=$mlt
-OPACITY ON LINES
-OPACITY ON XLINES
-CONVECTION OVER $mlt 0 30
-ITERATIONS 30
-PRINT 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 3
-PUNCH 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2
-SCALE MODEL 80 -6.875 0.125 ${teff}. ${logg}
-VTURB 2.00E+05
+${ATLAS12}/bin/atlas12c.exe ${outfile} numit=30 vturb=2.0 mlt=${mlt} teff=${teff} logg=${logg} <<EOF> ${outfile}.out
 ABUNDANCE SCALE   $zabnd ABUNDANCE CHANGE 1 $habnd 2 $heabnd
 ${abund_cards}
-BEGIN
-END
 EOF
 
 date "+%Y-%m-%d %H:%M:%S"

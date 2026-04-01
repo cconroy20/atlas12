@@ -66,25 +66,83 @@ PROGRAM ATLAS12
   character(256)     :: ENVVAL
   integer            :: ENVLEN, ENVSTAT
 
-  ! --- Command-line output file base name ---
-  character(256)     :: OUTBASE
-  integer            :: NARGS
+  ! --- Command-line output file base name and options ---
+  character(256)     :: OUTBASE, ARGBUF
+  integer            :: NARGS, IEQPOS, ISTAT
+  real*8             :: VTURB_KMS
+  real*8             :: CMD_TEFF, CMD_LOGG
 
   ! =====================================================================
   ! INITIALIZATION PHASE
   ! =====================================================================
 
-  ! --- Parse command-line argument for output file base name ---
-  !     Usage: atlas12.exe <basename>
-  !     Output files: <basename>.7, <basename>.8, <basename>.50,
-  !                   <basename>.66, <basename>.67
-  !     If no argument given, uses Fortran default fort.N naming.
+  ! --- Parse command-line arguments ---
+  !     Usage: atlas12.exe [basename] [numit=N] [vturb=X] [mlt=X] [teff=X] [logg=X]
+  !     Output files: <basename>.atm, .flux, .taunu, .iter, .tcorr
+  !     If no basename given, defaults to 'mystar'.
+  !     If numit=N given, sets number of iterations (default 30).
+  !     If vturb=X given, sets microturbulence in km/s (default: from model).
+  !     If mlt=X given, sets mixing length parameter (default 2.0).
+  !     If teff=X given, rescale model to this Teff (default: from model).
+  !     If logg=X given, rescale model to this log g (default: from model).
+  OUTBASE = 'mystar'
+  NUMITS = 30
+  VTURB_KMS = -1.0D0   ! sentinel: not set
+  CMD_TEFF  = -1.0D0   ! sentinel: not set
+  CMD_LOGG  = -99.0D0  ! sentinel: not set
   NARGS = command_argument_count()
-  if (NARGS >= 1) then
-    call get_command_argument(1, OUTBASE)
-  else
-    OUTBASE = 'mystar'
-  end if
+  do I = 1, NARGS
+    call get_command_argument(I, ARGBUF)
+    IEQPOS = INDEX(ARGBUF, '=')
+    if (IEQPOS > 0) then
+      ! keyword=value argument
+      if (ARGBUF(1:IEQPOS) == 'numit=') then
+        read(ARGBUF(IEQPOS+1:), *, IOSTAT=ISTAT) NUMITS
+        if (ISTAT /= 0) then
+          write(6, '(A)') ' ERROR: invalid numit value: '//trim(ARGBUF)
+          stop 1
+        end if
+      else if (ARGBUF(1:IEQPOS) == 'vturb=') then
+        read(ARGBUF(IEQPOS+1:), *, IOSTAT=ISTAT) VTURB_KMS
+        if (ISTAT /= 0) then
+          write(6, '(A)') ' ERROR: invalid vturb value: '//trim(ARGBUF)
+          stop 1
+        end if
+      else if (ARGBUF(1:IEQPOS) == 'mlt=') then
+        read(ARGBUF(IEQPOS+1:), *, IOSTAT=ISTAT) MIXLTH
+        if (ISTAT /= 0) then
+          write(6, '(A)') ' ERROR: invalid mlt value: '//trim(ARGBUF)
+          stop 1
+        end if
+      else if (ARGBUF(1:IEQPOS) == 'teff=') then
+        read(ARGBUF(IEQPOS+1:), *, IOSTAT=ISTAT) CMD_TEFF
+        if (ISTAT /= 0) then
+          write(6, '(A)') ' ERROR: invalid teff value: '//trim(ARGBUF)
+          stop 1
+        end if
+      else if (ARGBUF(1:IEQPOS) == 'logg=') then
+        read(ARGBUF(IEQPOS+1:), *, IOSTAT=ISTAT) CMD_LOGG
+        if (ISTAT /= 0) then
+          write(6, '(A)') ' ERROR: invalid logg value: '//trim(ARGBUF)
+          stop 1
+        end if
+      else
+        write(6, '(A)') ' WARNING: unknown argument: '//trim(ARGBUF)
+      end if
+    else
+      ! positional argument = basename
+      OUTBASE = ARGBUF
+    end if
+  end do
+  ! Initialize IFPNCH: punch=2 only on last iteration
+  ! Initialize IFPRNT: print=1 except last iteration=3
+  do I = 1, NUMITS
+    IFPNCH(I) = 0
+    IFPRNT(I) = 1
+  end do
+  IFPNCH(NUMITS) = 2
+  IFPRNT(NUMITS) = 3
+
   open(unit=7,  file=trim(OUTBASE)//'.atm',   status='REPLACE')
   open(unit=8,  file=trim(OUTBASE)//'.flux',  status='REPLACE')
   open(unit=50, file=trim(OUTBASE)//'.taunu', status='REPLACE')
@@ -128,6 +186,39 @@ PROGRAM ATLAS12
   ! =====================================================================
 
   call READIN(1)
+
+    ! --- Regrid and rescale model to target Teff/logg if specified ---
+    !     If neither teff= nor logg= given, use values from the model file.
+    !     If only one is given, the other defaults to the model file value.
+    if (CMD_TEFF > 0.0D0 .or. CMD_LOGG > -98.0D0) then
+      if (CMD_TEFF < 0.0D0) CMD_TEFF = TEFF
+      if (CMD_LOGG < -98.0D0) CMD_LOGG = GLOG
+      call SCALE_MODEL(CMD_TEFF, CMD_LOGG)
+    end if
+
+    ! --- Apply command-line VTURB override (km/s → cm/s) if specified ---
+    if (VTURB_KMS >= 0.0D0) then
+      do J = 1, NRHOX
+        VTURB(J) = VTURB_KMS * 1.0D5
+      end do
+    end if
+
+    ! --- Recompute derived quantities after SCALE_MODEL / VTURB changes ---
+    !     READIN's finalization computed these from the original model;
+    !     if we regridded or changed VTURB, they need updating.
+    if (CMD_TEFF > 0.0D0 .or. CMD_LOGG > -98.0D0 .or. VTURB_KMS >= 0.0D0) then
+      do J = 1, NRHOX
+        TK(J) = 1.38054D-16 * T(J)
+        HKT(J) = 6.6256D-27 / TK(J)
+        HCKT(J) = HKT(J) * 2.99792458D10
+        TKEV(J) = 8.6171D-5 * T(J)
+        TLOG(J) = LOG(T(J))
+        XNATOM(J) = P(J) / TK(J) - XNE(J)
+        RHO(J) = XNATOM(J) * WTMOLE(J) * 1.660D-24
+        if (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
+        CHARGESQ(J) = XNE(J)
+      end do
+    end if
 
     ! --- Zero out number densities and Doppler widths for all species ---
     do NELION = 1, MION

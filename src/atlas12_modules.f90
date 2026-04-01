@@ -135,7 +135,7 @@
 !    READIN                  Read and parse all input control cards
 !    FREEFF                  Free-format floating point reader
 !    FREEFR                  Free-format real number reader
-!    IWORDF                  Free-format integer/word reader
+!    NEXTWORD                 Free-format word reader (returns character string)
 !    DUMP_ARRAY              Debug array print utility
 !
 !=========================================================================
@@ -191,9 +191,9 @@ module mod_atlas_data
   ! COMMON /CONV/
   real*8  :: DLTDLP(kw) = 0.0d0, HEATCP(kw) = 0.0d0, DLRDLT(kw) = 0.0d0, VELSND(kw) = 0.0d0
   real*8  :: GRDADB(kw) = 0.0d0, HSCALE(kw) = 0.0d0, FLXCNV(kw) = 0.0d0, VCONV(kw) = 0.0d0
-  real*8  :: MIXLTH = 1.0d0, OVERWT = 1.0d0
+  real*8  :: MIXLTH = 2.0d0, OVERWT = 0.0d0
   real*8  :: FLXCNV0(kw), FLXCNV1(kw)
-  integer :: IFCONV = 0, NCONV = 20
+  integer :: IFCONV = 1, NCONV = 30
 
   ! --- NLTE departure coefficients ---
   ! COMMON /DEPART/
@@ -245,17 +245,12 @@ module mod_atlas_data
   'NP','Pu','Am','Cm','Bk','Cf','Es'/)
 
 
-  ! --- Input file name ---
-  ! COMMON /FILENAME/
-  character(60) :: FILENAME
-
   ! --- Radiative flux and flux derivatives ---
   ! COMMON /FLUX/
   real*8  :: FLUX = 0.0d0, FLXERR(kw) = 0.0d0, FLXDRV(kw) = 0.0d0, FLXRAD(kw)
 
   ! --- Free-format input parser state ---
   ! COMMON /FREE/
-  character(1) :: WORD(6)
   integer :: NUMCOL, LETCOL, LAST, MORE, IFFAIL, MAXPOW
 
   ! --- Current frequency point ---
@@ -277,7 +272,7 @@ module mod_atlas_data
 
   ! --- Control flags ---
   ! COMMON /IF/
-  integer :: IFCORR = 1, IFPRES = 1, IFSURF = 0, IFSCAT = 1, IFMOL = 0, IFREADLINES = 0
+  integer :: IFCORR = 1, IFPRES = 1, IFSURF = 0, IFSCAT = 1, IFMOL = 1, IFREADLINES = 1
 
   ! ROSSTAB interpolation mode:
   !   1 = original bilinear (4-quadrant nearest neighbor)
@@ -292,7 +287,7 @@ module mod_atlas_data
 
   ! --- Opacity control flags ---
   ! COMMON /IFOP/
-  integer :: IFOP(20) = (/1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,0,0,0,0/)
+  integer :: IFOP(20) = (/1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,0,0/)
 
   ! --- Population control flag ---
   ! COMMON /IFPOP/
@@ -767,7 +762,8 @@ SUBROUTINE PUTOUT(MODE)
     !                  convective flux, convective velocity
     write(7, 554) NRHOX, (RHOX(J), T(J), P(J), XNE(J), ABROSS(J), ACCRAD(J), &
       VTURB(J), FLXCNV(J), VCONV(J), J=1,NRHOX)
-554 format('READ DECK6', I3, ' RHOX,T,P,XNE,ABROSS,ACCRAD,VTURB' &
+554 format('READ DECK6', I3, &
+      ' RHOX,T,P,XNE,ABROSS,ACCRAD,VTURB,FLXCNV,VCONV' &
       / (1PE15.8, 0PF9.1, 1P7E10.3))
 
     ! Surface radiation pressure constant
@@ -3019,57 +3015,63 @@ SUBROUTINE READIN(MODE)
   implicit none
 
   integer, intent(in) :: MODE
-!     MODE=1 COMPUTE A MODEL
-!     MODE=2 READ A PREVIOUSLY CALCULATED MODEL FOR SOME APPLICATION
-!     MODE=20 SAME AS 2 BUT ON ENCOUNTERING END RETURN WITH NRHOX=0
-
-  ! Local arrays
-  real*8  :: TABT(56), TABP(38), TABKAP(56,38,5), PKAP(38), TABV(5), PKAPV(5,38)
-  real*8  :: RHOXA(kw), DUM1(kw), DUM2(kw), DUM3(kw), DUM4(kw), DUM5(kw)
-  real*8  :: DUM6(kw), DUM7(kw), DUM8(kw)
-  integer :: IFOP1(20)
-  DATA IFOP1/ 324, 609929997, 579591588, 429928, 11165, 11166, 564793810, 15271257, 173061, 636997, 11527, &
-  369467847, 16486929, 577716835, 22965179, 849711626, 1687220147, 1687711471, 45152896, 45946435/
+!     MODE=1  COMPUTE A MODEL (ATLAS12: reads input_model.dat + stdin)
+!     MODE=20 READ A MODEL FOR SYNTHESIS (SYNTHE: caller opens file on unit 5)
 
   ! Local scalars
-  real*8  :: DUMMY, GNEW, PZER0, TEFF1, VNEW, WEND, XSCALELOG
-  integer :: I, IDUM, IFT, IFTABK, II, IP, ISWCH, IT, IV, IZ
-  integer :: J, KKKKK, MIAC, MU, NDUMMY, NNEW, NU, NUM
+  real*8  :: XSCALELOG
+  integer :: I, IZ
+  integer :: J, MU
+  integer :: IOS_CARD
   logical :: FIRST_KW
+  character(20) :: KEYWORD
 
-  ! External functions
-
-  ! Character variables
   character(1) :: CARD(132)
-  integer :: CCCC(133)
-  character(4) :: WWLTE = 'LTE ', WWNLTE = 'NLTE'
-  character(1) :: BLANK = ' '
+
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING READIN'
-  INPUTDATA=5
-!      CARD81=BLANK
+
+  if (MODE == 1) then
+    !-------------------------------------------------------------------
+    ! ATLAS12 path: read model from input_model.dat, then stdin overrides
+    !-------------------------------------------------------------------
+    OPEN(UNIT=3, FILE='input_model.dat', STATUS='OLD', ACTION='READ')
+    INPUTDATA = 3
+    IFPRES = 1
+    IFCORR = 1
+    call READMOL
+  else
+    !-------------------------------------------------------------------
+    ! SYNTHE path: caller has already opened the model file on unit 5
+    !-------------------------------------------------------------------
+    INPUTDATA = 5
+    IFPRES = 0
+  end if
+
   LAST=133
   MAXPOW=38
+
   !---------------------------------------------------------------------
   ! Main card-reading loop
   !---------------------------------------------------------------------
   card_loop: do
     MORE = 0
     LETCOL = 1
-    READ(INPUTDATA, '(132A1)') CARD
+    READ(INPUTDATA, '(132A1)', IOSTAT=IOS_CARD) CARD
+    if (IOS_CARD /= 0) exit card_loop
 
     !-------------------------------------------------------------------
     ! Keyword parsing loop (multiple keywords per card)
     !-------------------------------------------------------------------
-    MIAC = IWORDF(CARD)
+    KEYWORD = NEXTWORD(CARD)
     NUMCOL = LETCOL
     FIRST_KW = .true.
 
     keyword_loop: do
       if (.not. FIRST_KW) then
-        ! Get next keyword from same card (replicates original label 97)
+        ! Get next keyword from same card
         LETCOL = MAX(LETCOL, NUMCOL)
         MORE = 1
-        MIAC = IWORDF(CARD)
+        KEYWORD = NEXTWORD(CARD)
         if (IFFAIL == 1) exit keyword_loop
         MORE = 0
         NUMCOL = LETCOL
@@ -3079,7 +3081,7 @@ SUBROUTINE READIN(MODE)
       !-----------------------------------------------------------------
       ! TEFF
       !-----------------------------------------------------------------
-      if (MIAC == 1020133) then
+      if (trim(KEYWORD) == 'TEFF') then
         TEFF = FREEFF(CARD)
         FLUX = 5.6697D-5 / 12.5664D0 * TEFF**4
         cycle keyword_loop
@@ -3087,105 +3089,19 @@ SUBROUTINE READIN(MODE)
       !-----------------------------------------------------------------
       ! GRAVITY
       !-----------------------------------------------------------------
-      else if (MIAC == 519223721) then
+      else if (trim(KEYWORD) == 'GRAVITY') then
         GRAV = FREEFF(CARD)
         if (GRAV < 10.0D0) GRAV = 10.0D0**(GRAV)
         GLOG = LOG10(GRAV)
         cycle keyword_loop
 
       !-----------------------------------------------------------------
-      ! OPACITY (sub-keywords: ON, OFF, IFOP)
-      !-----------------------------------------------------------------
-      else if (MIAC == 1070201044) then
-        MIAC = IWORDF(CARD)
-        ! ON
-        if (MIAC == 569) then
-          ISWCH = 1
-        ! OFF
-        else if (MIAC == 20763) then
-          ISWCH = 0
-        ! IFOP
-        else if (MIAC == 464662) then
-          NUMCOL = LETCOL
-          do I = 1, 20
-            IFOP(I) = FREEFF(CARD)
-          end do
-          exit keyword_loop
-        else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-          stop 1
-        end if
-        ! ON/OFF: loop through opacity source keywords
-        MORE = 1
-        opacity_loop: do
-          MIAC = IWORDF(CARD)
-          if (IFFAIL == 1) cycle keyword_loop
-          do I = 1, 20
-            II = I
-            if (MIAC == IFOP1(I)) then
-              IFOP(II) = ISWCH
-              cycle opacity_loop
-            end if
-          end do
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-          stop 1
-        end do opacity_loop
-
-      !-----------------------------------------------------------------
-      ! KAPPA (not implemented)
-      !-----------------------------------------------------------------
-      else if (MIAC == 20688921) then
-        write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-        stop 1
-
-      !-----------------------------------------------------------------
-      ! ITERATIONS
-      !-----------------------------------------------------------------
-      else if (MIAC == 661856797) then
-        NUMITS = FREEFF(CARD)
-        do I = 1, NUMITS
-          IFPNCH(I) = 0
-        end do
-        IFPNCH(NUMITS) = 1
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! MOLECULES (sub-keywords: ON, OFF)
-      !-----------------------------------------------------------------
-      else if (MIAC == 930198669) then
-        MIAC = IWORDF(CARD)
-        if (MIAC == 569) then
-          IFMOL = 1
-        else if (MIAC == 20763) then
-          IFMOL = 0
-        else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-          stop 1
-        end if
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! CALCULATE
-      !-----------------------------------------------------------------
-      else if (MIAC == 210518764) then
-        NRHOX = FREEFF(CARD)
-        TAU1LG = FREEFF(CARD)
-        STEPLG = FREEFF(CARD)
-        do J = 1, NRHOX
-          TAUROS(J) = 10.0D0**(TAU1LG + (J-1)*STEPLG)
-          T(J) = TEFF * (.75D0*(.710D0 + TAUROS(J) - 0.1331D0*EXP(-3.4488D0*TAUROS(J))))**.25D0
-        end do
-        ! Initialize model from T-tau (shared with READ STARTING T-TAU)
-        call init_from_ttau()
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
       ! ABUNDANCE (sub-keywords: SCALE, CHANGE, ABSOLUTE, RELATIVE, TABLE)
       !-----------------------------------------------------------------
-      else if (MIAC == 74175307) then
-        MIAC = IWORDF(CARD)
+      else if (trim(KEYWORD) == 'ABUNDANCE') then
+        KEYWORD = NEXTWORD(CARD)
         ! SCALE
-        if (MIAC == 35762836) then
+        if (trim(KEYWORD) == 'SCALE') then
           NUMCOL = LETCOL
           XSCALE = FREEFF(CARD)
           if (XSCALE > 0.0D0) XSCALELOG = LOG10(XSCALE)
@@ -3195,7 +3111,7 @@ SUBROUTINE READIN(MODE)
           XSCALE = 1.0D0
           cycle keyword_loop
         ! CHANGE
-        else if (MIAC == 223095242) then
+        else if (trim(KEYWORD) == 'CHANGE') then
           MORE = 1
           do
             IZ = FREEFF(CARD)
@@ -3204,7 +3120,7 @@ SUBROUTINE READIN(MODE)
             if (IZ > 2 .and. ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
           end do
         ! ABSOLUTE
-        else if (MIAC == 74075686) then
+        else if (trim(KEYWORD) == 'ABSOLUTE') then
           MORE = 1
           do
             IZ = FREEFF(CARD)
@@ -3214,7 +3130,7 @@ SUBROUTINE READIN(MODE)
             XRELATIVE(IZ) = 0.0D0
           end do
         ! RELATIVE
-        else if (MIAC == 1258171985) then
+        else if (trim(KEYWORD) == 'RELATIVE') then
           MORE = 1
           do
             IZ = FREEFF(CARD)
@@ -3222,7 +3138,7 @@ SUBROUTINE READIN(MODE)
             XRELATIVE(IZ) = FREEFF(CARD)
           end do
         ! TABLE
-        else if (MIAC == 37537060) then
+        else if (trim(KEYWORD) == 'TABLE') then
           READ(INPUTDATA, '(7X,F10.6,10X,F10.6/(5(7X,F7.3,F6.3)))') &
             ABUND(1), ABUND(2), (ABUND(IZ), XRELATIVE(IZ), IZ=3,99)
           do IZ = 3, 99
@@ -3231,89 +3147,19 @@ SUBROUTINE READIN(MODE)
           XSCALE = 1.0D0
           exit keyword_loop
         else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
+          write(6, '(A,A)') ' ABUNDANCE: unknown sub-keyword: ', trim(KEYWORD)
           stop 1
         end if
 
       !-----------------------------------------------------------------
-      ! PRINT
+      ! READ (sub-keyword: DECK/DECK6)
       !-----------------------------------------------------------------
-      else if (MIAC == 30911189) then
-        do I = 1, NUMITS
-          IFPRNT(I) = FREEFF(CARD)
-        end do
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! PUNCH
-      !-----------------------------------------------------------------
-      else if (MIAC == 31069574) then
-        do I = 1, NUMITS
-          IFPNCH(I) = FREEFF(CARD)
-        end do
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! READ (sub-keywords: FREQUENCIES, DEPARTURE, STARTING, DECK, etc.)
-      !-----------------------------------------------------------------
-      else if (MIAC == 918640) then
-        MIAC = IWORDF(CARD)
+      else if (trim(KEYWORD) == 'READ') then
+        KEYWORD = NEXTWORD(CARD)
         NUMCOL = LETCOL
 
-        ! FREQUENCIES
-        if (MIAC == 450075960) then
-          NUM = FREEFF(CARD)
-          NULO = FREEFF(CARD)
-          NUHI = FREEFF(CARD)
-          NUMNU = NUM
-          LETCOL = NUMCOL
-          NDUMMY = IWORDF(CARD)
-          NUMCOL = LETCOL
-          do I = 1, NUMNU
-            NU = FREEFR(CARD)
-            WAVESET(NU) = FREEFF(CARD)
-            if (WAVESET(NU) < 1.D7) WAVESET(NU) = 2.99792458D17 / WAVESET(NU)
-            if (WAVESET(NU) > 1.D20) WAVESET(NU) = WAVESET(NU) * (2.99792458D10 / 1.D25)
-            RCOSET(NU) = FREEFF(CARD)
-          end do
-          exit keyword_loop
-
-        ! DEPARTURE COEFFICIENTS
-        else if (MIAC == 287559136) then
-          NRHOX = FREEFF(CARD)
-          do J = 1, NRHOX
-            NUMCOL = 1
-            READ(INPUTDATA, '(132A1)') CARD
-            DUMMY = FREEFF(CARD)
-            do I = 1, 6
-              BHYD(J,I) = FREEFF(CARD)
-            end do
-            BMIN(J) = FREEFF(CARD)
-          end do
-          WLTE = WWNLTE
-          NLTEON = 1
-          exit keyword_loop
-
-        ! STARTING T-TAU
-        else if (MIAC == 1355094447) then
-          NRHOX = FREEFF(CARD)
-          do J = 1, NRHOX
-            NUMCOL = 1
-            READ(INPUTDATA, '(132A1)') CARD
-            TAUROS(J) = FREEFF(CARD)
-            T(J) = FREEFF(CARD)
-          end do
-          if (TAUROS(1) <= 0.0D0) then
-            do J = 1, NRHOX
-              TAUROS(J) = 10.0D0**(TAUROS(J))
-            end do
-          end if
-          ! Initialize model from T-tau (shared with CALCULATE)
-          call init_from_ttau()
-          cycle keyword_loop
-
         ! DECK / DECK6
-        else if (MIAC == 209579 .or. MIAC == 7754456) then
+        if (trim(KEYWORD) == 'DECK' .or. trim(KEYWORD) == 'DECK6') then
           NRHOX = FREEFF(CARD)
           do J = 1, NRHOX
             NUMCOL = 1
@@ -3322,13 +3168,9 @@ SUBROUTINE READIN(MODE)
             T(J) = FREEFF(CARD)
             MORE = 1
             P(J) = FREEFF(CARD)
-            ! extra pressure model
-            ! CC: When was this added?!
-          !  PTURB(J) = 0.5D0 * P(J)
-          !  P(J) = 0.5D0 * P(J)
             XNE(J) = FREEFF(CARD)
             ABROSS(J) = FREEFF(CARD)
-            ! ACTUALLY ACCRAD
+            ! Column 6 is ACCRAD (labelled PRAD temporarily)
             PRAD(J) = FREEFF(CARD)
             VTURB(J) = FREEFF(CARD)
             MORE = 0
@@ -3341,9 +3183,9 @@ SUBROUTINE READIN(MODE)
           PRADK0 = 0.0D0
           PTURB0 = PTURB(1)
           PCON = 0.0D0
-          PZER0 = PCON + PRADK0 + PTURB0
+          PZERO = PCON + PRADK0 + PTURB0
           call INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
-          if (MIAC == 7754456) then
+          if (trim(KEYWORD) == 'DECK6') then
             ! DECK6: read additional PRADK0 card
             READ(INPUTDATA, '(132A1)') CARD
             NUMCOL = 1
@@ -3358,544 +3200,249 @@ SUBROUTINE READIN(MODE)
           end if
           exit keyword_loop
 
-        ! KAPPA
-        else if (MIAC == 20688921) then
-          OPEN(UNIT=1, STATUS='OLD', ACTION='READ')
-          READ(1, '(132A1)') CARD
-          !WRITE(6, '(132A1)') CARD
-          READ(1, '(132A1)')
-          do IT = 1, 56
-            do IP = 1, 38
-              READ(1, '(5X,5X,5F7.3)') (TABKAP(IT,IP,IV), IV=1,5)
-            end do
-          end do
-          IFTABK = 1
-          CLOSE(UNIT=1)
-          exit keyword_loop
-
-        ! MOLECULES
-        else if (MIAC == 930198669) then
-          call READMOL
-          exit keyword_loop
-
-        ! PUNCH
-        else if (MIAC == 31069574) then
-          WRITE(FILENAME, '(60A1)') (CARD(I), I=LETCOL,70)
-          if (INDEX(FILENAME, '.') == 0) then
-            OPEN(UNIT=3, FILE='input_model.dat', STATUS='OLD', ACTION='READ')
-          else
-            do I = 1, 60
-              if (FILENAME(I:I) /= ' ') exit
-            end do
-            OPEN(UNIT=3, FILE=FILENAME(I:60), STATUS='OLD', ACTION='READ')
-          end if
-          INPUTDATA = 3
-          exit keyword_loop
-
-        ! LINES
-        else if (MIAC == 22965179) then
-          IFREADLINES = 1
-          exit keyword_loop
-
         else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
+          write(6, '(A,A)') ' READ: unknown sub-keyword: ', trim(KEYWORD)
           stop 1
         end if
 
       !-----------------------------------------------------------------
-      ! LTE
+      ! BEGIN (in model file: switch back to stdin)
       !-----------------------------------------------------------------
-      else if (MIAC == 17173) then
-        NLTEON = 0
-        WLTE = WWLTE
-        do J = 1, kw
-          do I = 1, 6
-            BHYD(J,I) = 1.0D0
-          end do
-          BMIN(J) = 1.0D0
-        end do
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! NLTE
-      !-----------------------------------------------------------------
-      else if (MIAC == 726315) then
-        NLTEON = 1
-        WLTE = WWNLTE
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! BEGIN
-      !-----------------------------------------------------------------
-      else if (MIAC == 4011517) then
+      else if (trim(KEYWORD) == 'BEGIN') then
         if (INPUTDATA == 3) then
           CLOSE(UNIT=3)
           INPUTDATA = 5
           exit keyword_loop
         end if
-        if (MODE == 1) then
-          if (NUMITS == 0) write(6, '(A)') ' HOW MANY ITERATIONS'
-          if (NRHOX == 0)  write(6, '(A)') ' HOW MANY RHOX'
-          if (TEFF == 0.0D0)   write(6, '(A)') ' WHAT TEFF'
-          if (GRAV == 0.0D0)   write(6, '(A)') ' WHAT GRAVITY'
-          if (NUMITS == 0) stop 1
-          if (NRHOX == 0)  stop 1
-          if (TEFF == 0.0D0)   stop 1
-          if (GRAV == 0.0D0)   stop 1
-        end if
-        if (ABUND(1) < 0.0D0) ABUND(1) = 10.0D0**ABUND(1)
-        if (ABUND(2) < 0.0D0) ABUND(2) = 10.0D0**ABUND(2)
-        do IZ = 3, 99
-          if (ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
-       end do
-       !write abbreviated list of abundances
-       WRITE(6, '(/" TEFF",F7.0,"   LOGG",F8.4/' // &
-            '"   1",A2,F10.6,"     2",A2,F10.6/(5(I4,A2,F7.2,F5.2)))') &
-            TEFF, GLOG, ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
-          (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,32)
-        do J = 1, NRHOX
-          do IZ = 3, 99
-            XABUND(J,IZ) = 10.0D0**(ABUND(IZ) + XRELATIVE(IZ))
-          end do
-          XABUND(J,1) = ABUND(1)
-          XABUND(J,2) = ABUND(2)
-          WTMOLE(J) = 0.0D0
-          do IZ = 1, 99
-            WTMOLE(J) = WTMOLE(J) + XABUND(J,IZ) * ATMASS(IZ)
-          end do
-        end do
-        YABUND(1) = ABUND(1)
-        YABUND(2) = ABUND(2)
-        do IZ = 3, 99
-          YABUND(IZ) = ABUND(IZ) + XRELATIVE(IZ)
-        end do
-        do J = 1, NRHOX
-          TK(J) = 1.38054D-16 * T(J)
-          HKT(J) = 6.6256D-27 / TK(J)
-          HCKT(J) = HKT(J) * 2.99792458D10
-          TKEV(J) = 8.6171D-5 * T(J)
-          TLOG(J) = LOG(T(J))
-          XNATOM(J) = P(J) / TK(J) - XNE(J)
-          RHO(J) = XNATOM(J) * WTMOLE(J) * 1.660D-24
-          IF(IFTURB.GT.0) PTURB(J)=.5*RHO(J)*VTURB(J)**2
-          ! Initialise CHARGESQ from the converged electron density stored
-          ! in the model atmosphere.  NELECT will overwrite this when
-          ! IFPRES=1, but when IFPRES=0 (the SYNTHE path) NELECT is never
-          ! called and PFSAHA needs a nonzero Debye denominator.
-          ! CHARGESQ ≈ XNE is the dominant term (n_e * 1^2); the small
-          ! higher-ion correction is negligible for this purpose.
-          CHARGESQ(J) = XNE(J)
-        end do
-        WRITE(6, '(/" H1",I2," H2PLUS",I2," HMINUS",I2," HRAY",I2,' // &
-          '" HE1",I2," HE2",I2," HEMINUS",I2," HERAY",I2," COOL",I2,' // &
-          '" LUKE",I2/" HOT",I2," ELECTRON",I2," H2RAY",I2," HLINES",' // &
-          'I2," LINES",I2," LINESCAT",I2," XLINES",I2," XLSCAT",I2,' // &
-          '" XCONT",I2," XSCAT",I2)') IFOP
-        WRITE(6, '(" IFCORR",I2,"  IFPRES",I2,"  IFSURF",I2,' // &
-          '"  IFSCAT",I2,"  IFCONV",I2,"  MIXLTH",F6.2,"  IFMOL",I2/' // &
-          '" IFTURB",I2,"  TRBFDG",F6.2,"  TRBPOW",F6.2,' // &
-          '"  TRBSND",F6.2,"  TRBCON",F6.2)') &
-          IFCORR, IFPRES, IFSURF, IFSCAT, IFCONV, MIXLTH, IFMOL, &
-          IFTURB, TRBFDG, TRBPOW, TRBSND, TRBCON
-        if (MODE == 1) then
-          WRITE(6, '(" NUMITS",I3,"  IFPRNT",45I2/18x,15I2/' // &
-            '10X,"  IFPNCH",45I2/18x,15I2)') NUMITS, IFPRNT, IFPNCH
-        end if
-        !WRITE(6, '(//,8X,"RHOX",9X,"T",8X,"P",8X,"XNE",6X,"ABROSS",' // &
-        !  '5X,"PRAD",6X,"VTURB",24X,"BHYD",25X,"BMIN",/' // &
-        !  '(I3,1PE13.6,0PF9.1,1P5E10.3,1X,0P,7F8.4))') &
-        !  (J, RHOX(J), T(J), P(J), XNE(J), ABROSS(J), PRAD(J), &
-        !  VTURB(J), (BHYD(J,I), I=1,6), BMIN(J), J=1,NRHOX)
-        RETURN
-
-      !-----------------------------------------------------------------
-      ! SCATTERING (sub-keywords: ON, OFF)
-      !-----------------------------------------------------------------
-      else if (MIAC == 1323236444) then
-        MIAC = IWORDF(CARD)
-        if (MIAC == 569) then
-          IFSCAT = 1
-        else if (MIAC == 20763) then
-          IFSCAT = 0
-        else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-          stop 1
-        end if
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! END
-      !-----------------------------------------------------------------
-      else if (MIAC == 7367) then
-        if (MODE == 20) NRHOX = 0
-        RETURN
-
-      !-----------------------------------------------------------------
-      ! TITLE
-      !-----------------------------------------------------------------
-      else if (MIAC == 37966926) then
-        do I = 1, 74
-          TITLE(I) = CARD(I+6)
-        end do
-        exit keyword_loop
-
-      !-----------------------------------------------------------------
-      ! CONVECTION (sub-keywords: ON, OFF, OVER)
-      !-----------------------------------------------------------------
-      else if (MIAC == 236883734) then
-        MIAC = IWORDF(CARD)
-        if (MIAC == 569) then
-          ! ON
-          IFCONV = 1
-          NUMCOL = LETCOL
-          MIXLTH = FREEFF(CARD)
-        else if (MIAC == 20763) then
-          ! OFF
-          IFCONV = 0
-          MIXLTH = 1.0D0
-          do J = 1, NRHOX
-            DLTDLP(J) = 0.0D0
-            HEATCP(J) = 0.0D0
-            DLRDLT(J) = 0.0D0
-            VELSND(J) = 0.0D0
-            GRDADB(J) = 0.0D0
-            HSCALE(J) = 0.0D0
-            FLXCNV(J) = 0.0D0
-            VCONV(J) = 0.0D0
-          end do
-        else if (MIAC == 790116) then
-          ! OVER
-          IFCONV = 1
-          NUMCOL = LETCOL
-          MIXLTH = FREEFF(CARD)
-          OVERWT = FREEFF(CARD)
-          NCONV = FREEFF(CARD)
-        else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-          stop 1
-        end if
-        cycle keyword_loop
+        ! BEGIN on stdin: just exit card_loop to trigger finalization
+        exit card_loop
 
       !-----------------------------------------------------------------
       ! TURBULENCE (sub-keywords: ON, OFF)
       !-----------------------------------------------------------------
-      else if (MIAC == 1427151802) then
-        MIAC = IWORDF(CARD)
-        if (MIAC == 569) then
-          ! ON
+      else if (trim(KEYWORD) == 'TURBULENCE') then
+        KEYWORD = NEXTWORD(CARD)
+        if (trim(KEYWORD) == 'ON') then
           IFTURB = 1
           NUMCOL = LETCOL
           TRBFDG = FREEFF(CARD)
           TRBPOW = FREEFF(CARD)
           TRBSND = FREEFF(CARD)
           TRBCON = FREEFF(CARD)
-        else if (MIAC == 20763) then
-          ! OFF
+        else if (trim(KEYWORD) == 'OFF') then
           IFTURB = 0
           TRBFDG = 0.0D0
           TRBPOW = 0.0D0
           TRBSND = 0.0D0
           TRBCON = 0.0D0
         else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
+          write(6, '(A,A)') ' TURBULENCE: unknown sub-keyword: ', trim(KEYWORD)
           stop 1
         end if
         cycle keyword_loop
 
       !-----------------------------------------------------------------
-      ! CHANGE RHOX
-      !-----------------------------------------------------------------
-      else if (MIAC == 223095242) then
-        NNEW = FREEFF(CARD)
-        do J = 1, NNEW
-          RHOXA(J) = FREEFR(CARD)
-        end do
-        IDUM = MAP1(RHOX, T, NRHOX, RHOXA, DUM1, NNEW)
-        IDUM = MAP1(RHOX, P, NRHOX, RHOXA, DUM2, NNEW)
-        IDUM = MAP1(RHOX, XNE, NRHOX, RHOXA, DUM3, NNEW)
-        IDUM = MAP1(RHOX, ABROSS, NRHOX, RHOXA, DUM4, NNEW)
-        IDUM = MAP1(RHOX, VTURB, NRHOX, RHOXA, DUM5, NNEW)
-        IDUM = MAP1(RHOX, PRAD, NRHOX, RHOXA, DUM6, NNEW)
-        IDUM = MAP1(RHOX, BMIN, NRHOX, RHOXA, DUM7, NNEW)
-        do J = 1, NNEW
-          T(J) = DUM1(J)
-          P(J) = DUM2(J)
-          XNE(J) = DUM3(J)
-          ABROSS(J) = DUM4(J)
-          VTURB(J) = DUM5(J)
-          PRAD(J) = DUM6(J)
-          PRADK(J) = PRAD(J) + PRADK0
-          BMIN(J) = DUM7(J)
-        end do
-        do I = 1, 6
-          IDUM = MAP1(RHOX, BHYD(1,I), NRHOX, RHOXA, DUM1, NNEW)
-          do J = 1, NNEW
-            BHYD(J,I) = DUM1(J)
-          end do
-        end do
-        NRHOX = NNEW
-        do J = 1, NRHOX
-          RHOX(J) = RHOXA(J)
-        end do
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! FREQUENCIES
-      !-----------------------------------------------------------------
-      else if (MIAC == 450075960) then
-        NUM = FREEFF(CARD)
-        NULO = FREEFF(CARD)
-        NUHI = FREEFF(CARD)
-        LETCOL = NUMCOL
-        MIAC = IWORDF(CARD)
-        NUMNU = NUM
-        exit keyword_loop
-
-      !-----------------------------------------------------------------
       ! SURFACE (sub-keywords: INTENSITY, FLUX, OFF)
       !-----------------------------------------------------------------
-      else if (MIAC == 1357812572) then
-        MIAC = IWORDF(CARD)
-        if (MIAC == 651354309) then
-          ! INTENSITY
+      else if (trim(KEYWORD) == 'SURFACE') then
+        KEYWORD = NEXTWORD(CARD)
+        if (trim(KEYWORD) == 'INTENSITY') then
           NMU = FREEFF(CARD)
           do MU = 1, NMU
             ANGLE(MU) = FREEFR(CARD)
           end do
           IFSURF = 2
-        else if (MIAC == 321147) then
-          ! FLUX
+        else if (trim(KEYWORD) == 'FLUX') then
           IFSURF = 1
-        else if (MIAC == 20763) then
-          ! OFF
+        else if (trim(KEYWORD) == 'OFF') then
           IFSURF = 0
         else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
+          write(6, '(A,A)') ' SURFACE: unknown sub-keyword: ', trim(KEYWORD)
           stop 1
         end if
         cycle keyword_loop
 
       !-----------------------------------------------------------------
-      ! PRESSURE (sub-keywords: ON, OFF)
-      !-----------------------------------------------------------------
-      else if (MIAC == 1143518210) then
-        MIAC = IWORDF(CARD)
-        if (MIAC == 569) then
-          IFPRES = 1
-        else if (MIAC == 20763) then
-          IFPRES = 0
-        else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-          stop 1
-        end if
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! CORRECTION (sub-keywords: ON, OFF)
-      !-----------------------------------------------------------------
-      else if (MIAC == 237080870) then
-        MIAC = IWORDF(CARD)
-        if (MIAC == 569) then
-          IFCORR = 1
-        else if (MIAC == 20763) then
-          IFCORR = 0
-          do J = 1, kw
-            FLXERR(J) = 0.0D0
-            FLXDRV(J) = 0.0D0
-          end do
-        else
-          write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-          stop 1
-        end if
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! WAVELENGTH
-      !-----------------------------------------------------------------
-      else if (MIAC == 1597906832) then
-        WBEGIN = FREEFF(CARD)
-        DELTAW = FREEFF(CARD)
-        WEND = FREEFF(CARD)
-        IFWAVE = 1
-        NULO = 1
-        NUHI = INT(ABS(WEND - WBEGIN) / ABS(DELTAW) + 0.5D0) + 1
-        NUMNU = NUHI
-        if (WBEGIN < 1.D7) then
-          cycle keyword_loop
-        else if (WBEGIN > 1.D20) then
-          ! WAVENUMBER STEPS SCALED BY 1.D25
-          WBEGIN = 1.D7 / (WBEGIN / 1.D25)
-          DELTAW = 1.D7 / (DELTAW / 1.D25)
-          WEND = 1.D7 / (WEND / 1.D25)
-        else
-          ! FREQUENCY STEPS
-          WBEGIN = 2.99792458D17 / WBEGIN
-          DELTAW = 2.99792458D17 / DELTAW
-          WEND = 2.99792458D17 / WEND
-        end if
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! SCALE MODEL
-      !-----------------------------------------------------------------
-      else if (MIAC == 35762836) then
-        KKKKK = FREEFF(CARD)
-        if (KKKKK > 1000) then
-          TEFF1 = KKKKK
-          do J = 1, NRHOX
-            T(J) = T(J) * TEFF1 / TEFF
-          end do
-          TEFF = TEFF1
-          FLUX = 5.6697D-5 / 12.5664D0 * TEFF**4
-          cycle keyword_loop
-        end if
-        KRHOX = KKKKK
-        TAU1LG = FREEFF(CARD)
-        STEPLG = FREEFF(CARD)
-        MORE = 1
-        TEFF1 = FREEFF(CARD)
-        GNEW = FREEFF(CARD)
-        if (GNEW < 10.0D0) GNEW = 10.0D0**(GNEW)
-        MORE = 0
-        do J = 1, KRHOX
-          TAUSTD(J) = 10.0D0**(TAU1LG + (J-1)*STEPLG)
-        end do
-        call INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
-        IDUM = MAP1(TAUROS, RHOX, NRHOX, TAUSTD, DUM1, KRHOX)
-        IDUM = MAP1(TAUROS, T, NRHOX, TAUSTD, DUM2, KRHOX)
-        IDUM = MAP1(TAUROS, P, NRHOX, TAUSTD, DUM3, KRHOX)
-        IDUM = MAP1(TAUROS, XNE, NRHOX, TAUSTD, DUM4, KRHOX)
-        IDUM = MAP1(TAUROS, ABROSS, NRHOX, TAUSTD, DUM5, KRHOX)
-        IDUM = MAP1(TAUROS, PRAD, NRHOX, TAUSTD, DUM6, KRHOX)
-        IDUM = MAP1(TAUROS, VTURB, NRHOX, TAUSTD, DUM7, KRHOX)
-        IDUM = MAP1(TAUROS, BMIN, NRHOX, TAUSTD, DUM8, KRHOX)
-        do J = 1, KRHOX
-          RHOX(J) = DUM1(J)
-          T(J) = DUM2(J)
-          P(J) = DUM3(J)
-          XNE(J) = DUM4(J)
-          ABROSS(J) = DUM5(J)
-          PRAD(J) = DUM6(J)
-          PRADK(J) = PRAD(J) + PRADK0
-          VTURB(J) = DUM7(J)
-          BMIN(J) = DUM8(J)
-        end do
-        do I = 1, 6
-          IDUM = MAP1(TAUROS, BHYD(1,I), NRHOX, TAUSTD, DUM1, KRHOX)
-          do J = 1, KRHOX
-            BHYD(J,I) = DUM1(J)
-          end do
-        end do
-        NRHOX = KRHOX
-        if (TEFF1 == 0.0D0) cycle keyword_loop
-        if (TEFF1 == TEFF .and. GNEW == GRAV) cycle keyword_loop
-        if (TEFF1 < TEFF+1.0D0 .and. TEFF1 > TEFF-1.0D0 .and. &
-            GNEW < GRAV*1.001D0 .and. GNEW > GRAV*0.999D0) cycle keyword_loop
-        do J = 1, NRHOX
-          TAUROS(J) = TAUSTD(J)
-          T(J) = T(J) * TEFF1 / TEFF
-          PTURB(J) = 0.0D0
-          PRADK(J) = PRADK(J) * (TEFF1/TEFF)**4
-          PRAD(J) = PRAD(J) * (TEFF1/TEFF)**4
-        end do
-        PRADK0 = PRADK0 * (TEFF1/TEFF)**4
-        PZERO = PCON + PRADK0 + PTURB0
-        TEFF = TEFF1
-        FLUX = 5.6697D-5 / 12.5664D0 * TEFF**4
-        GRAV = GNEW
-        GLOG = LOG10(GRAV)
-        do J = 1, NRHOX
-          PTOTAL(J) = P(J) + PRAD(J) + PTURB(J)
-          RHOX(J) = PTOTAL(J) / GRAV
-          PTOTAL(J) = PTOTAL(J) + PZERO
-        end do
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! VTURB
-      !-----------------------------------------------------------------
-      else if (MIAC == 42274019) then
-        VNEW = FREEFF(CARD)
-        if (VNEW < 0.0D0) then
-          call VTURB_VARYDEPTH(VNEW)
-        else
-          do J = 1, NRHOX
-            VTURB(J) = VNEW
-          end do
-        end if
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! SMOOTH
-      !-----------------------------------------------------------------
-      else if (MIAC == 1342680354) then
-        J1SMOOTH = FREEFF(CARD)
-        J2SMOOTH = FREEFF(CARD)
-        WTJM1 = FREEFF(CARD)
-        WTJ = FREEFF(CARD)
-        WTJP1 = FREEFF(CARD)
-        do J = J1SMOOTH, J2SMOOTH
-          TSMOOTH(J) = WTJM1*T(J-1) + WTJ*T(J) + WTJP1*T(J+1)
-        end do
-        do J = J1SMOOTH, J2SMOOTH
-          T(J) = TSMOOTH(J)
-        end do
-        cycle keyword_loop
-
-      !-----------------------------------------------------------------
-      ! Unrecognized keyword
+      ! Unrecognized keyword — skip to next card
       !-----------------------------------------------------------------
       else
-        write(6, '(A/1X,131A1)') ' I DO NOT UNDERSTAND ', CARD
-        stop 1
+        exit keyword_loop
       end if
 
     end do keyword_loop
   end do card_loop
 
-  ! -------------------------------------------------------------------
-  !  Safety: ensure CHARGESQ is nonzero for every depth point.
-  !  PFSAHA divides by CHARGESQ(J) for the Debye-Hückel ionization-
-  !  potential lowering.  When IFPRES=1, NELECT populates it properly.
-  !  When IFPRES=0 (SYNTHE path: converged XNE from the model, no
-  !  re-solve), NELECT is never called and CHARGESQ is left at zero,
-  !  causing division-by-zero / NaN propagation through all PFSAHA
-  !  calls.  Initialise from XNE here as a catch-all for every code
-  !  path through READIN (initial read, regrid, tau-interpolate).
-  ! -------------------------------------------------------------------
-  do J = 1, NRHOX
-    if (CHARGESQ(J) == 0.0D0 .and. XNE(J) > 0.0D0) then
-      CHARGESQ(J) = XNE(J)
-    end if
+  ! ===================================================================
+  ! FINALIZATION — compute derived quantities
+  ! ===================================================================
+  if (ABUND(1) < 0.0D0) ABUND(1) = 10.0D0**ABUND(1)
+  if (ABUND(2) < 0.0D0) ABUND(2) = 10.0D0**ABUND(2)
+  do IZ = 3, 99
+    if (ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
   end do
+  ! Write abbreviated list of abundances
+  WRITE(6, '(/" TEFF",F7.0,"   LOGG",F8.4/' // &
+       '"   1",A2,F10.6,"     2",A2,F10.6/(5(I4,A2,F7.2,F5.2)))') &
+       TEFF, GLOG, ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
+     (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,32)
+  do J = 1, NRHOX
+    do IZ = 3, 99
+      XABUND(J,IZ) = 10.0D0**(ABUND(IZ) + XRELATIVE(IZ))
+    end do
+    XABUND(J,1) = ABUND(1)
+    XABUND(J,2) = ABUND(2)
+    WTMOLE(J) = 0.0D0
+    do IZ = 1, 99
+      WTMOLE(J) = WTMOLE(J) + XABUND(J,IZ) * ATMASS(IZ)
+    end do
+  end do
+  YABUND(1) = ABUND(1)
+  YABUND(2) = ABUND(2)
+  do IZ = 3, 99
+    YABUND(IZ) = ABUND(IZ) + XRELATIVE(IZ)
+  end do
+  do J = 1, NRHOX
+    TK(J) = 1.38054D-16 * T(J)
+    HKT(J) = 6.6256D-27 / TK(J)
+    HCKT(J) = HKT(J) * 2.99792458D10
+    TKEV(J) = 8.6171D-5 * T(J)
+    TLOG(J) = LOG(T(J))
+    XNATOM(J) = P(J) / TK(J) - XNE(J)
+    RHO(J) = XNATOM(J) * WTMOLE(J) * 1.660D-24
+    if (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
+    CHARGESQ(J) = XNE(J)
+  end do
+  WRITE(6, '(/" H1",I2," H2PLUS",I2," HMINUS",I2," HRAY",I2,' // &
+    '" HE1",I2," HE2",I2," HEMINUS",I2," HERAY",I2," COOL",I2,' // &
+    '" LUKE",I2/" HOT",I2," ELECTRON",I2," H2RAY",I2," HLINES",' // &
+    'I2," LINES",I2," LINESCAT",I2," XLINES",I2," XLSCAT",I2,' // &
+    '" XCONT",I2," XSCAT",I2)') IFOP
+  WRITE(6, '(" IFCORR",I2,"  IFPRES",I2,"  IFSURF",I2,' // &
+    '"  IFSCAT",I2,"  IFCONV",I2,"  MIXLTH",F6.2,"  IFMOL",I2/' // &
+    '" IFTURB",I2,"  TRBFDG",F6.2,"  TRBPOW",F6.2,' // &
+    '"  TRBSND",F6.2,"  TRBCON",F6.2)') &
+    IFCORR, IFPRES, IFSURF, IFSCAT, IFCONV, MIXLTH, IFMOL, &
+    IFTURB, TRBFDG, TRBPOW, TRBSND, TRBCON
+  write(6, *)
+  WRITE(6, '(" NUMITS",I3,"  IFPRNT",*(I2))') NUMITS, IFPRNT(1:NUMITS)
+  WRITE(6, '(10X,"  IFPNCH",*(I2))') IFPNCH(1:NUMITS)
 
-contains
-
-  subroutine init_from_ttau()
-    ! Initialize model structure from T(J) and TAUROS(J)
-    ! Shared by CALCULATE and READ STARTING T-TAU handlers
-    integer :: J_init
-    do J_init = 1, NRHOX
-      XNE(J_init) = 0.0D0
-      PRADK(J_init) = 2.521D-15 * MAX(T(J_init)**4, TEFF**4 / 2.0D0)
-      VTURB(J_init) = 0.0D0
-      PTURB(J_init) = 0.0D0
+  ! Auto-generate title from mixing length
+  block
+    character(74) :: TITLEBUF
+    write(TITLEBUF, '(A,F5.2)') 'ATLAS12 l/H=', MIXLTH
+    do I = 1, 74
+      TITLE(I) = TITLEBUF(I:I)
     end do
-    PRADK0 = PRADK(1)
-    PCON = 0.0D0
-    PTURB0 = 0.0D0
-    PZERO = PRADK0
-    do J_init = 1, NRHOX
-      PRAD(J_init) = PRADK(J_init) - PRADK0
-    end do
-    call TTAUP(T, TAUROS, ABROSS, PTOTAL, P, PRAD, PTURB, VTURB, GRAV, NRHOX)
-    do J_init = 1, NRHOX
-      RHOX(J_init) = PTOTAL(J_init) / GRAV
-      PTOTAL(J_init) = PTOTAL(J_init) + PZERO
-    end do
-  end subroutine init_from_ttau
+  end block
 
 END SUBROUTINE READIN
+
+
+!=======================================================================
+! SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
+!
+! Regrid the current model onto a standard uniform log-tau grid and
+! optionally rescale to a new Teff and/or log g.
+!
+! The tau grid is defined by three parameters (hardcoded below):
+!   NDEPTHS  — number of depth points (80)
+!   TAU1LG   — log10 of smallest Rosseland optical depth (-6.875)
+!   STEPLG   — log10 step between successive depth points (0.125)
+! This gives tau from 10^{-6.875} to 10^{+2.875} in 80 steps.
+!
+! The routine:
+!   1. Builds the new tau grid
+!   2. Integrates ABROSS to get TAUROS from the current model
+!   3. Interpolates all structure variables onto the new grid
+!   4. If Teff/logg differ from current values, rescales T, Prad,
+!      and recomputes hydrostatic equilibrium
+!=======================================================================
+
+SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
+
+  implicit none
+
+  real*8, intent(in) :: TEFF_NEW, LOGG_NEW
+
+  ! --- Tau grid parameters ---
+  ! NDEPTHS: number of depth points in the output model
+  ! TAU1LG and STEPLG are module-level variables (mod_atlas_data),
+  ! also used by TCORR to rebuild the grid during iterations.
+  ! The deepest point is at log10(tau) = TAU1LG + (NDEPTHS-1)*STEPLG
+  integer, parameter :: NDEPTHS = 80
+
+  ! Local work arrays for interpolation
+  real*8  :: DUM1(kw), DUM2(kw), DUM3(kw), DUM4(kw)
+  real*8  :: DUM5(kw), DUM6(kw), DUM7(kw), DUM8(kw)
+  real*8  :: GNEW
+  integer :: I, J, IDUM
+
+  ! Convert logg to linear gravity
+  GNEW = 10.0D0**LOGG_NEW
+
+  ! --- Step 1: Build new uniform log-tau grid ---
+  do J = 1, NDEPTHS
+    TAUSTD(J) = 10.0D0**(TAU1LG + (J-1)*STEPLG)
+  end do
+
+  ! --- Step 2: Integrate ABROSS to get TAUROS from current model ---
+  call INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
+
+  ! --- Step 3: Interpolate all structure variables onto new grid ---
+  IDUM = MAP1(TAUROS, RHOX,   NRHOX, TAUSTD, DUM1, NDEPTHS)
+  IDUM = MAP1(TAUROS, T,      NRHOX, TAUSTD, DUM2, NDEPTHS)
+  IDUM = MAP1(TAUROS, P,      NRHOX, TAUSTD, DUM3, NDEPTHS)
+  IDUM = MAP1(TAUROS, XNE,    NRHOX, TAUSTD, DUM4, NDEPTHS)
+  IDUM = MAP1(TAUROS, ABROSS, NRHOX, TAUSTD, DUM5, NDEPTHS)
+  IDUM = MAP1(TAUROS, PRAD,   NRHOX, TAUSTD, DUM6, NDEPTHS)
+  IDUM = MAP1(TAUROS, VTURB,  NRHOX, TAUSTD, DUM7, NDEPTHS)
+  IDUM = MAP1(TAUROS, BMIN,   NRHOX, TAUSTD, DUM8, NDEPTHS)
+  do J = 1, NDEPTHS
+    RHOX(J)   = DUM1(J)
+    T(J)      = DUM2(J)
+    P(J)      = DUM3(J)
+    XNE(J)    = DUM4(J)
+    ABROSS(J) = DUM5(J)
+    PRAD(J)   = DUM6(J)
+    PRADK(J)  = PRAD(J) + PRADK0
+    VTURB(J)  = DUM7(J)
+    BMIN(J)   = DUM8(J)
+  end do
+  do I = 1, 6
+    IDUM = MAP1(TAUROS, BHYD(1,I), NRHOX, TAUSTD, DUM1, NDEPTHS)
+    do J = 1, NDEPTHS
+      BHYD(J,I) = DUM1(J)
+    end do
+  end do
+  NRHOX = NDEPTHS
+
+  ! --- Step 4: Rescale to new Teff/logg if different ---
+  if (TEFF_NEW == 0.0D0) return
+  if (TEFF_NEW == TEFF .and. GNEW == GRAV) return
+  if (TEFF_NEW < TEFF+1.0D0 .and. TEFF_NEW > TEFF-1.0D0 .and. &
+      GNEW < GRAV*1.001D0 .and. GNEW > GRAV*0.999D0) return
+
+  do J = 1, NRHOX
+    TAUROS(J) = TAUSTD(J)
+    T(J)      = T(J) * TEFF_NEW / TEFF
+    PTURB(J)  = 0.0D0
+    PRADK(J)  = PRADK(J) * (TEFF_NEW/TEFF)**4
+    PRAD(J)   = PRAD(J)  * (TEFF_NEW/TEFF)**4
+  end do
+  PRADK0 = PRADK0 * (TEFF_NEW/TEFF)**4
+  PZERO  = PCON + PRADK0 + PTURB0
+  TEFF   = TEFF_NEW
+  FLUX   = 5.6697D-5 / 12.5664D0 * TEFF**4
+  GRAV   = GNEW
+  GLOG   = LOG10(GRAV)
+  do J = 1, NRHOX
+    PTOTAL(J) = P(J) + PRAD(J) + PTURB(J)
+    RHOX(J)   = PTOTAL(J) / GRAV
+    PTOTAL(J) = PTOTAL(J) + PZERO
+  end do
+
+END SUBROUTINE SCALE_MODEL
 
 !=======================================================================
 ! FREEFR: Free-format real number reader
@@ -4165,52 +3712,41 @@ contains
 END FUNCTION FREEFF
 
 !=========================================================================
-! FUNCTION IWORDF(CARD)
+! FUNCTION NEXTWORD(CARD)
 !
 ! Free-format word reader. Scans CARD starting at module variable LETCOL,
-! finds the next alphanumeric word, and returns it as a base-37 encoded
-! integer. Also stores the word characters in module array WORD(1:6).
+! finds the next alphanumeric word, and returns it as an uppercase
+! character string (up to 20 characters).
 !
 ! Special case: an "E" preceded by a digit or "." and followed by a digit
 ! or blank is treated as scientific notation, not a word start.
 !
 ! Module variables updated:
 !   LETCOL  — advanced past the word (or past LAST on failure)
-!   WORD    — first 6 characters of the found word
 !   IFFAIL  — set to 1 if end-of-card reached without finding a word
 !=========================================================================
 
-FUNCTION IWORDF(CARD)
+FUNCTION NEXTWORD(CARD)
 
   implicit none
 
   character(1), intent(in) :: CARD(*)
-  integer :: IWORDF
-
-  ! Alphanumeric lookup table: A=1..Z=26, 0=27..9=36
-  character(1), parameter :: ALPHA_TABLE(36) = (/ &
-    'A','B','C','D','E','F','G','H','I','J','K','L','M', &
-    'N','O','P','Q','R','S','T','U','V','W','X','Y','Z', &
-    '0','1','2','3','4','5','6','7','8','9' /)
+  character(20) :: NEXTWORD
 
   character(1) :: C
-  integer :: I, II, N, NCOL, MIAC
-  logical :: IN_WORD, SKIP_E
+  integer :: I, NCOL, N
+  logical :: IN_WORD, SKIP_E, IS_ALPHA
 
   ! Initialize
-  WORD(1:6) = ' '
+  NEXTWORD = ' '
   IFFAIL = 0
   N = 0
-  MIAC = 0
   IN_WORD = .false.
 
   if (LETCOL > LAST) then
     IFFAIL = 1
-    if (MORE > 0) then
-      IWORDF = 0
-      return
-    end if
-    write(6, '(A/(1X,131A1))') 'IWORDF HAS READ OFF THE END', &
+    if (MORE > 0) return
+    write(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
       (CARD(I), I = 1, LAST)
     stop 1
   end if
@@ -4226,86 +3762,59 @@ FUNCTION IWORDF(CARD)
       if (C == ' ') cycle scan_loop
 
       ! Check if C is a letter (A-Z)
-      II = 0
-      do I = 1, 26
-        if (C == ALPHA_TABLE(I)) then
-          II = I
-          exit
-        end if
-      end do
-      if (II == 0) then
+      IS_ALPHA = (C >= 'A' .and. C <= 'Z')
+      if (.not. IS_ALPHA) then
         ! Not a letter — reset and continue searching
-        MIAC = 0
         N = 0
         cycle scan_loop
       end if
 
       ! Special case: is this an "E" in scientific notation?
       if (C == 'E' .and. NCOL > 1) then
-        ! Check preceding character: digit or "."
         SKIP_E = .false.
-        do I = 27, 36
-          if (CARD(NCOL-1) == ALPHA_TABLE(I)) then
+        ! Check preceding character: digit or "."
+        if ((CARD(NCOL-1) >= '0' .and. CARD(NCOL-1) <= '9') .or. &
+            CARD(NCOL-1) == '.') then
+          ! Check following character: digit or blank
+          if (CARD(NCOL+1) == ' ' .or. &
+              (CARD(NCOL+1) >= '0' .and. CARD(NCOL+1) <= '9')) then
             SKIP_E = .true.
-            exit
           end if
-        end do
-        if (CARD(NCOL-1) == '.') SKIP_E = .true.
+        end if
         if (SKIP_E) then
-          ! Preceding char was digit or dot; check following char
-          ! If next is digit or blank → scientific notation, skip
-          SKIP_E = .false.
-          if (CARD(NCOL+1) == ' ') SKIP_E = .true.
-          do I = 27, 36
-            if (CARD(NCOL+1) == ALPHA_TABLE(I)) then
-              SKIP_E = .true.
-              exit
-            end if
-          end do
-          if (SKIP_E) then
-            MIAC = 0
-            N = 0
-            cycle scan_loop
-          end if
+          N = 0
+          cycle scan_loop
         end if
       end if
 
       ! Start a new word
       N = 1
-      MIAC = II
-      WORD(1) = ALPHA_TABLE(II)
+      NEXTWORD(1:1) = C
       IN_WORD = .true.
 
     else
       !--- State: inside a word ---
       if (C == ' ' .or. C == '=' .or. C == ',') then
-        ! Word delimiter — return the encoded word
-        IWORDF = MIAC
+        ! Word delimiter — return the word
         LETCOL = NCOL + 1
         return
       end if
 
-      ! Check if C is alphanumeric (letters + digits)
-      II = 0
-      do I = 1, 36
-        if (C == ALPHA_TABLE(I)) then
-          II = I
-          exit
-        end if
-      end do
-      if (II == 0) then
+      ! Check if C is alphanumeric (A-Z or 0-9)
+      IS_ALPHA = (C >= 'A' .and. C <= 'Z') .or. &
+                 (C >= '0' .and. C <= '9')
+      if (.not. IS_ALPHA) then
         ! Not alphanumeric — abandon word, reset to searching
-        MIAC = 0
+        NEXTWORD = ' '
         N = 0
         IN_WORD = .false.
         cycle scan_loop
       end if
 
-      ! Accumulate character into word (max 6 chars encoded)
+      ! Accumulate character into word (max 20 chars)
       N = N + 1
-      if (N <= 6) then
-        MIAC = 37 * MIAC + II
-        WORD(N) = ALPHA_TABLE(II)
+      if (N <= 20) then
+        NEXTWORD(N:N) = C
       end if
     end if
   end do scan_loop
@@ -4315,15 +3824,12 @@ FUNCTION IWORDF(CARD)
   !---------------------------------------------------------------------
   LETCOL = LAST + 1
   IFFAIL = 1
-  if (MORE > 0) then
-    IWORDF = 0
-    return
-  end if
-  write(6, '(A/(1X,131A1))') 'IWORDF HAS READ OFF THE END', &
+  if (MORE > 0) return
+  write(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
     (CARD(I), I = 1, LAST)
   stop 1
 
-END FUNCTION IWORDF
+END FUNCTION NEXTWORD
 
 !=========================================================================
 ! SUBROUTINE READMOL
