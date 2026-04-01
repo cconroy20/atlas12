@@ -182,19 +182,6 @@ elif [ "$element" -gt 0 ]; then
 
 fi
 
-#------------------Now change X so that X+Y+Z=1-------------------#
-
-# Sum 10^(abundance) for metals (elements 3-99, indices 2-98) and adjust H
-# so that n_H + n_He + n_Z = 1.  Single awk process; full IEEE double precision.
-habnd=$(awk -v habnd="$habnd" -v heabnd="$heabnd" '{
-    nz = 0.0
-    for (i = 1; i <= NF; i++) {
-        nz += 10.0 ^ $i
-    }
-    tot = 1.0 - (habnd + heabnd + nz)
-    printf "%.5f\n", habnd + tot
-}' <<< "${ee[*]:2:97}")
-
 #-------------------Extract model parameters-----------------------#
 
 model="${arr[$model_idx]}"
@@ -226,29 +213,24 @@ mkdir "$tmpdir"
 cd "$tmpdir"
 ln -s "${indir}${model}" input_model.dat
 
-#-------------------Generate ABUNDANCE CHANGE cards----------------#
+#-------------------Generate input abundance file------------------#
 
-# Build the ABUNDANCE CHANGE lines programmatically from the ee array.
-# Elements 3-99 in groups of 6, reading values from ee[2]..ee[98].
-abund_cards=$(awk 'BEGIN {
-    for (i = 3; i <= 99; i += 6) {
-        end = (i + 5 < 99) ? i + 5 : 99
-        line = " ABUNDANCE CHANGE"
-        for (j = i; j <= end; j++) {
-            line = line sprintf(" %2d %6s", j, ARGV[j - 2])
-        }
-        print line
-    }
-}' "${ee[@]:2}")
+# Write abundance file for elements 3-99 from the ee array.
+# Format: Z  log10(number_fraction), one element per line.
+abund_file="${outfile}.abund"
+{
+  for ((i = 3; i <= 99; i++)); do
+    printf "%2d  %s\n" "$i" "${ee[$((i - 1))]}"
+  done
+} > "$abund_file"
 
 #-------------------Run ATLAS12------------------------------------#
 
 if [ ! -f "${outdir}/atm/${outfile}.atm" ]; then
 
-${ATLAS12}/bin/atlas12c.exe ${outfile} numit=30 vturb=2.0 mlt=${mlt} teff=${teff} logg=${logg} <<EOF> ${outfile}.out
-ABUNDANCE SCALE   $zabnd ABUNDANCE CHANGE 1 $habnd 2 $heabnd
-${abund_cards}
-EOF
+${ATLAS12}/bin/atlas12c.exe ${outfile} numit=30 vturb=2.0 mlt=2.03 \
+    teff=${teff} logg=${logg} zscale=${zabnd} heabnd=${heabnd} \
+    abund=${abund_file} > ${outfile}.out
 
 date "+%Y-%m-%d %H:%M:%S"
 echo "atlas is finished"

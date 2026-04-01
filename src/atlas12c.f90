@@ -68,28 +68,41 @@ PROGRAM ATLAS12
 
   ! --- Command-line output file base name and options ---
   character(256)     :: OUTBASE, ARGBUF
+  character(256)     :: ABUND_FILE
   integer            :: NARGS, IEQPOS, ISTAT
   real*8             :: VTURB_KMS
   real*8             :: CMD_TEFF, CMD_LOGG
+  real*8             :: CMD_ZSCALE, CMD_HEABND
+  real*8             :: Z_TOTAL
+  integer            :: IZ_ABUND, IOS_ABUND
+  real*8             :: ABUND_VAL
 
   ! =====================================================================
   ! INITIALIZATION PHASE
   ! =====================================================================
 
   ! --- Parse command-line arguments ---
-  !     Usage: atlas12.exe [basename] [numit=N] [vturb=X] [mlt=X] [teff=X] [logg=X]
+  !     Usage: atlas12.exe [basename] [numit=N] [vturb=X] [mlt=X] [teff=X]
+  !            [logg=X] [zscale=X] [heabnd=X] [abund=file]
   !     Output files: <basename>.atm, .flux, .taunu, .iter, .tcorr
-  !     If no basename given, defaults to 'mystar'.
-  !     If numit=N given, sets number of iterations (default 30).
-  !     If vturb=X given, sets microturbulence in km/s (default: from model).
-  !     If mlt=X given, sets mixing length parameter (default 2.0).
-  !     If teff=X given, rescale model to this Teff (default: from model).
-  !     If logg=X given, rescale model to this log g (default: from model).
+  !     basename   : output file base name (default 'mystar')
+  !     numit=N    : number of iterations (default 30)
+  !     vturb=X    : microturbulence in km/s (default: from model)
+  !     mlt=X      : mixing length parameter (default 2.0)
+  !     teff=X     : rescale model to this Teff (default: from model)
+  !     logg=X     : rescale model to this log g (default: from model)
+  !     zscale=X   : metal abundance scale factor (default: no scaling)
+  !     heabnd=X   : He number fraction Y (default: from model);
+  !                  H is computed as X = 1 - Y - Z for consistency
+  !     abund=file : file with individual element overrides (Z  log_abund)
   OUTBASE = 'mystar'
+  ABUND_FILE = ''
   NUMITS = 30
-  VTURB_KMS = -1.0D0   ! sentinel: not set
-  CMD_TEFF  = -1.0D0   ! sentinel: not set
-  CMD_LOGG  = -99.0D0  ! sentinel: not set
+  VTURB_KMS  = -1.0D0   ! sentinel: not set
+  CMD_TEFF   = -1.0D0   ! sentinel: not set
+  CMD_LOGG   = -99.0D0  ! sentinel: not set
+  CMD_ZSCALE = -1.0D0   ! sentinel: not set
+  CMD_HEABND = -1.0D0   ! sentinel: not set
   NARGS = command_argument_count()
   do I = 1, NARGS
     call get_command_argument(I, ARGBUF)
@@ -126,6 +139,20 @@ PROGRAM ATLAS12
           write(6, '(A)') ' ERROR: invalid logg value: '//trim(ARGBUF)
           stop 1
         end if
+      else if (ARGBUF(1:IEQPOS) == 'zscale=') then
+        read(ARGBUF(IEQPOS+1:), *, IOSTAT=ISTAT) CMD_ZSCALE
+        if (ISTAT /= 0) then
+          write(6, '(A)') ' ERROR: invalid zscale value: '//trim(ARGBUF)
+          stop 1
+        end if
+      else if (ARGBUF(1:IEQPOS) == 'heabnd=') then
+        read(ARGBUF(IEQPOS+1:), *, IOSTAT=ISTAT) CMD_HEABND
+        if (ISTAT /= 0) then
+          write(6, '(A)') ' ERROR: invalid heabnd value: '//trim(ARGBUF)
+          stop 1
+        end if
+      else if (ARGBUF(1:IEQPOS) == 'abund=') then
+        ABUND_FILE = ARGBUF(IEQPOS+1:)
       else
         write(6, '(A)') ' WARNING: unknown argument: '//trim(ARGBUF)
       end if
@@ -187,6 +214,101 @@ PROGRAM ATLAS12
 
   call READIN(1)
 
+    ! =================================================================
+    ! ABUNDANCE OVERRIDES (applied after READIN reads model file)
+    !
+    ! Order: (1) zscale shifts metals, (2) abund= file overrides
+    ! individual elements, (3) H is recomputed as X = 1 - Y - Z.
+    ! At this point ABUND(1:2) are number fractions and ABUND(3:99)
+    ! are log10(number fraction), as set by READIN finalization.
+    ! =================================================================
+
+    ! --- Step 1: Apply metallicity scaling (shifts all metals) ---
+    if (CMD_ZSCALE > 0.0D0) then
+      do IZ_ABUND = 3, 99
+        XRELATIVE(IZ_ABUND) = LOG10(CMD_ZSCALE)
+      end do
+    end if
+
+    ! --- Step 2: Read individual element overrides from file ---
+    !     File format: one element per line, two columns:
+    !       Z   log10(number_fraction)
+    !     e.g.:  6  -3.52
+    !           26  -4.54
+    !     Lines starting with '#' or '!' are comments.
+    if (len_trim(ABUND_FILE) > 0) then
+      open(UNIT=4, FILE=trim(ABUND_FILE), STATUS='OLD', ACTION='READ', &
+           IOSTAT=IOS_ABUND)
+      if (IOS_ABUND /= 0) then
+        write(6, '(A,A)') ' ERROR: cannot open abundance file: ', &
+              trim(ABUND_FILE)
+        stop 1
+      end if
+      do
+        read(4, *, IOSTAT=IOS_ABUND) IZ_ABUND, ABUND_VAL
+        if (IOS_ABUND /= 0) exit
+        if (IZ_ABUND < 1 .or. IZ_ABUND > 99) cycle
+        ABUND(IZ_ABUND) = ABUND_VAL
+        if (IZ_ABUND > 2) XRELATIVE(IZ_ABUND) = 0.0D0
+      end do
+      close(UNIT=4)
+    end if
+
+    ! --- Step 3: Apply He override and recompute H = 1 - Y - Z ---
+    if (CMD_ZSCALE > 0.0D0 .or. CMD_HEABND > 0.0D0 .or. &
+        len_trim(ABUND_FILE) > 0) then
+      ! Compute total metal number fraction Z
+      Z_TOTAL = 0.0D0
+      do IZ_ABUND = 3, 99
+        Z_TOTAL = Z_TOTAL + 10.0D0**(ABUND(IZ_ABUND) + XRELATIVE(IZ_ABUND))
+      end do
+      ! Set He: from command line or keep model value
+      if (CMD_HEABND > 0.0D0) ABUND(2) = CMD_HEABND
+      ! Compute H = 1 - Y - Z
+      ABUND(1) = 1.0D0 - ABUND(2) - Z_TOTAL
+      if (ABUND(1) < 0.0D0) then
+        write(6, '(A,F10.6)') ' ERROR: H abundance is negative: ', ABUND(1)
+        write(6, '(A,F10.6,A,F10.6)') '   Y = ', ABUND(2), '  Z = ', Z_TOTAL
+        stop 1
+      end if
+      write(6, '(A,F10.6,A,F10.6,A,F10.6)') &
+        ' Number fractions: X(H)=', ABUND(1), '  Y(He)=', ABUND(2), &
+        '  Z(metals)=', Z_TOTAL
+      ! Convert to mass fractions for display
+      block
+        real*8 :: MU_ABN, X_MASS, Y_MASS, Z_MASS
+        MU_ABN = ABUND(1)*ATMASS(1) + ABUND(2)*ATMASS(2)
+        do IZ_ABUND = 3, 99
+          MU_ABN = MU_ABN + 10.0D0**(ABUND(IZ_ABUND) + XRELATIVE(IZ_ABUND)) &
+                   * ATMASS(IZ_ABUND)
+        end do
+        X_MASS = ABUND(1) * ATMASS(1) / MU_ABN
+        Y_MASS = ABUND(2) * ATMASS(2) / MU_ABN
+        Z_MASS = 1.0D0 - X_MASS - Y_MASS
+        write(6, '(A,F10.6,A,F10.6,A,F10.6)') &
+          ' Mass fractions:   X(H)=', X_MASS, '  Y(He)=', Y_MASS, &
+          '  Z(metals)=', Z_MASS
+      end block
+
+      ! Recompute abundance-dependent arrays
+      do J = 1, NRHOX
+        do IZ_ABUND = 3, 99
+          XABUND(J,IZ_ABUND) = 10.0D0**(ABUND(IZ_ABUND) + XRELATIVE(IZ_ABUND))
+        end do
+        XABUND(J,1) = ABUND(1)
+        XABUND(J,2) = ABUND(2)
+        WTMOLE(J) = 0.0D0
+        do IZ_ABUND = 1, 99
+          WTMOLE(J) = WTMOLE(J) + XABUND(J,IZ_ABUND) * ATMASS(IZ_ABUND)
+        end do
+      end do
+      YABUND(1) = ABUND(1)
+      YABUND(2) = ABUND(2)
+      do IZ_ABUND = 3, 99
+        YABUND(IZ_ABUND) = ABUND(IZ_ABUND) + XRELATIVE(IZ_ABUND)
+      end do
+    end if
+
     ! --- Regrid and rescale model to target Teff/logg if specified ---
     !     If neither teff= nor logg= given, use values from the model file.
     !     If only one is given, the other defaults to the model file value.
@@ -203,10 +325,12 @@ PROGRAM ATLAS12
       end do
     end if
 
-    ! --- Recompute derived quantities after SCALE_MODEL / VTURB changes ---
+    ! --- Recompute derived quantities after any overrides ---
     !     READIN's finalization computed these from the original model;
-    !     if we regridded or changed VTURB, they need updating.
-    if (CMD_TEFF > 0.0D0 .or. CMD_LOGG > -98.0D0 .or. VTURB_KMS >= 0.0D0) then
+    !     if we changed abundances, regridded, or changed VTURB, they need updating.
+    if (CMD_TEFF > 0.0D0 .or. CMD_LOGG > -98.0D0 .or. VTURB_KMS >= 0.0D0 .or. &
+        CMD_ZSCALE > 0.0D0 .or. CMD_HEABND > 0.0D0 .or. &
+        len_trim(ABUND_FILE) > 0) then
       do J = 1, NRHOX
         TK(J) = 1.38054D-16 * T(J)
         HKT(J) = 6.6256D-27 / TK(J)

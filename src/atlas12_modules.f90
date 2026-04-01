@@ -583,8 +583,6 @@ SUBROUTINE PUTOUT(MODE)
   integer, save :: NU = 0
   integer, save :: IFHEAD = 0
 
-  character(3) :: CONV_STR, TURB_STR
-
   ! =================================================================
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING PUTOUT'
@@ -739,20 +737,11 @@ SUBROUTINE PUTOUT(MODE)
     ! --- Write model to punch file (unit 7) ---
     if (IFPNCH(ITER) == 0) return
 
-    ! Convection/turbulence flags as strings for output
-    if (IFCONV == 1) then; CONV_STR = 'ON '; else; CONV_STR = 'OFF'; end if
-    if (IFTURB == 1) then; TURB_STR = 'ON '; else; TURB_STR = 'OFF'; end if
+    ! Model parameters and abundances
+    write(7, '("TEFF ",F7.0,"  GRAVITY",F8.4,1X,A4)') TEFF, GLOG, WLTE
+    write(7, '("TITLE ",74A1)') TITLE
 
-    ! Model parameters and abundance changes
-    write(7, 552) TEFF, GLOG, WLTE, TITLE, IFOP, &
-      CONV_STR, MIXLTH, TURB_STR, TRBFDG, TRBPOW, TRBSND, TRBCON, &
-      XSCALE, (IZ, YABUND(IZ), IZ=1,99)
-552 format('TEFF ', F7.0, '  GRAVITY', F8.4, 1X, A4 / 'TITLE ', 74A1 &
-      / ' OPACITY IFOP', 20I2 / ' CONVECTION ', A3, F6.2, ' TURBULENCE ', A3, &
-      4F6.2 / 'ABUNDANCE SCALE ', F9.5, ' ABUNDANCE CHANGE', 2(I2, F8.5) &
-      / (' ABUNDANCE CHANGE', 6(I3, F7.2)))
-
-    ! Solar abundance table with relative offsets
+    ! Abundance table with relative offsets
     write(7, 553) ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
       (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,99)
 553 format(' ABUNDANCE TABLE' / '    1', A2, F10.6, '       2', A2, F10.6 &
@@ -763,8 +752,9 @@ SUBROUTINE PUTOUT(MODE)
     write(7, 554) NRHOX, (RHOX(J), T(J), P(J), XNE(J), ABROSS(J), ACCRAD(J), &
       VTURB(J), FLXCNV(J), VCONV(J), J=1,NRHOX)
 554 format('READ DECK6', I3, &
-      ' RHOX,T,P,XNE,ABROSS,ACCRAD,VTURB,FLXCNV,VCONV' &
-      / (1PE15.8, 0PF9.1, 1P7E10.3))
+      '     RHOX         T         P       XNE', &
+      '     ABROSS    ACCRAD     VTURB    FLXCNV     VCONV' &
+      / (13X, 1PE12.5, 0PF10.2, 1P7E10.3))
 
     ! Surface radiation pressure constant
     write(7, '("PRADK",1PE11.4)') PRADK0
@@ -3206,15 +3196,10 @@ SUBROUTINE READIN(MODE)
         end if
 
       !-----------------------------------------------------------------
-      ! BEGIN (in model file: switch back to stdin)
+      ! BEGIN — end of model file; exit card loop for finalization
       !-----------------------------------------------------------------
       else if (trim(KEYWORD) == 'BEGIN') then
-        if (INPUTDATA == 3) then
-          CLOSE(UNIT=3)
-          INPUTDATA = 5
-          exit keyword_loop
-        end if
-        ! BEGIN on stdin: just exit card_loop to trigger finalization
+        if (INPUTDATA == 3) CLOSE(UNIT=3)
         exit card_loop
 
       !-----------------------------------------------------------------
