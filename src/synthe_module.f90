@@ -3115,16 +3115,14 @@ CONTAINS
     LAST     = 81
     NUMCOL   = 1
     itemp_a    = 0
-    ! Respect the IFMOL flag set by READIN from the model control cards.
-    ! When IFMOL=1 ("MOLECULES ON"), we need IFPRES=1 so that NMOLEC
-    ! runs inside COMPUTE_ONE_POP and populates the molecular number
-    ! density arrays.  When IFMOL=0, IFPRES=0 is fine: COMPUTE_ONE_POP
-    ! takes the atomic-only path via PFSAHA.
-    IF (IFMOL == 1) THEN
-      IFPRES = 1
-    ELSE
-      IFPRES = 0
-    END IF
+    ! IFPRES=0 during Sections 1-3 and 6-7: prevents COMPUTE_ONE_POP
+    ! from triggering NMOLEC internally.  The explicit NMOLEC(1) call
+    ! below (when IFMOL=1) handles molecular equilibrium, and
+    ! MOLEC_IREAD=1 tells MOLEC to skip its file-read block.
+    ! IFPRES is set to 1 in Section 4 (continuum opacity loop) so that
+    ! KAPP recalculates Boltzmann level populations at each frequency,
+    ! then restored to 0 before the Section 6 COMPUTE_ONE_POP calls.
+    IFPRES = 0
     ITER     = 1
     NUMITS   = 1
 
@@ -3218,12 +3216,16 @@ CONTAINS
         REAL(8) :: xne_save(kw)
         xne_save(1:nrhox_a) = xne_a(1:nrhox_a)
         CALL NMOLEC(1)
+        MOLEC_IREAD = 1
         xne_a(1:nrhox_a) = xne_save(1:nrhox_a)
       END BLOCK
     END IF
 
+    ! Zero out all number densities before populating
+    XNF_a(:,:) = 0.0D0
+    XNFP_a(:,:) = 0.0D0
     CALL COMPUTE_ALL_POPS()
-
+    
     ! Extract specific populations needed by later sections.
     ! NOFF(IZ) = IZ*(IZ+1)/2: H=1, He=3, C=21, Si=105
     ! XNFP_a(j, NOFF(IZ)+ion-1) = mode-11 result for element IZ, stage ion
@@ -3305,7 +3307,16 @@ CONTAINS
     !
     !  For each of the NUMNU_M grid points, compute the continuum opacity
     !  at all depths using KAPP (ATLAS library), then store the result.
+    !
+    !  IFPRES must be 1 here so that KAPP recalculates Boltzmann level
+    !  populations (the B-arrays: BHYD, BHE1, BHE2, ...) via PFSAHA at
+    !  each frequency.  Without this, the bound-free cross-sections use
+    !  stale occupation probabilities, producing ~5-10% continuum errors
+    !  for hot stars where H I and He I b-f dominate.  We restore
+    !  IFPRES=0 afterwards so that the Section 6 COMPUTE_ONE_POP calls
+    !  do not re-trigger NMOLEC.
     ! ------------------------------------------------------------------
+    IFPRES = 1
     DO nu = 1, numnu_m
       FREQ   = freqset_m(nu)
       freq15_x = FREQ / 1.0D15
@@ -3325,6 +3336,10 @@ CONTAINS
         contscat_m (nu,j) = LOG10(SIGMAC(j))
       END DO
     END DO
+
+    ! Restore IFPRES=0 so that COMPUTE_ONE_POP (Section 6) does not
+    ! trigger NMOLEC internally.
+    IFPRES = 0
 
     ! ------------------------------------------------------------------
     !  SECTION 5.  STORE DEPTH STRUCTURE
@@ -3426,6 +3441,8 @@ CONTAINS
     ! ------------------------------------------------------------------
     DO j = 1, nrhox_a
 
+      dopple_lc(:,:) = 0.0D0
+       
       DO nelem = 1, mw
         DO ion = 1, 6
           xnfpel_lc(ion, nelem) = xnfp_lc(j, ion, nelem)

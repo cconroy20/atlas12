@@ -10,6 +10,10 @@
 #
 # Override optimization:
 #   make OPT=-O3
+# for testing:
+#  make OPT="-O0 -g -finit-real=snan -ffpe-trap=invalid -fbacktrace"
+#
+#---------------------------------------------------------------------
 
 FC       = gfortran
 OPT     ?= -O3
@@ -23,7 +27,6 @@ all: clean
 	$(FC) $(FFLAGS) -c synthe_module.f90
 	$(FC) $(FFLAGS) -c synthe.f90
 	$(FC) $(FFLAGS) -o synthe.exe atlas12_modules.o synthe_module.o synthe.o
-	@mkdir -p $(BINDIR)
 	mv atlas12c.exe synthe.exe $(BINDIR)/
 	rm -f *.o *.mod
 
@@ -31,7 +34,6 @@ atlas: clean
 	$(FC) $(FFLAGS) -c atlas12_modules.f90
 	$(FC) $(FFLAGS) -c atlas12c.f90
 	$(FC) $(FFLAGS) -o atlas12c.exe atlas12_modules.o atlas12c.o
-	@mkdir -p $(BINDIR)
 	mv atlas12c.exe $(BINDIR)/
 	rm -f *.o *.mod
 
@@ -40,7 +42,6 @@ synthe: clean
 	$(FC) $(FFLAGS) -c synthe_module.f90
 	$(FC) $(FFLAGS) -c synthe.f90
 	$(FC) $(FFLAGS) -o synthe.exe atlas12_modules.o synthe_module.o synthe.o
-	@mkdir -p $(BINDIR)
 	mv synthe.exe $(BINDIR)/
 	rm -f *.o *.mod
 

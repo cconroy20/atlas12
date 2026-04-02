@@ -11,7 +11,7 @@
 
 cd workdir
 
-../scripts/atlas12.sh 5 5 1 0.00 new test >& out
+../scripts/atlas12.sh 5 1 0.00 new test >& out
 
 
 

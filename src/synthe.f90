@@ -1,5 +1,5 @@
 ! ============================================================================
-!  PROGRAM SYNTHE_SPECTRV
+!  PROGRAM SYNTHE
 !
 !  Integrates the three formerly separate programs XNFPELSYN, SYNTHE, and
 !  SPECTRV into a single executable, eliminating all intermediate file I/O:
@@ -49,13 +49,17 @@
 !   29   -- was: opacity spectrum diagnostic           (removed)
 !   (syntoascanga post-processing step eliminated; ASCII output now inline)
 ! ============================================================================
-PROGRAM synthe_spectrv
+
+PROGRAM SYNTHE
+  
   USE synthe_module
   USE mod_atlas_data, only: &
     ! Procedures
     JOSH, READIN, KAPP, &
     ! Data directory path
     DATADIR, &
+    ! flag to broadcast if synthe is running
+    IFSYNTHE, & 
     ! Renamed imports (collide with synthe_module or local names)
     bhyd_a => BHYD, hckt_a => HCKT, hkt_a => HKT, itemp_a => ITEMP, &
     nrhox_a => NRHOX, rhox_a => RHOX, vturb_a => VTURB, &
@@ -67,7 +71,6 @@ PROGRAM synthe_spectrv
     PRDDOP, PRDPOW, SCONT, SIGMAC, SIGMAL, SIGPRD, SLINE, STIM, &
     SURFI, SXLINE, TAUNU
   IMPLICIT NONE
-
 
   ! ATLAS variables are now accessed via USE mod_atlas_data above.
   ! (Formerly declared via COMMON blocks; removed in F90 modernisation.)
@@ -204,8 +207,8 @@ PROGRAM synthe_spectrv
   ! ASCII plot array
   CHARACTER(LEN=1) :: aplot(101)
 
-  ! Command-line model filename and derived .spec output name
-  CHARACTER(LEN=512) :: model_file, spec_file, linform_file
+  ! Command-line model filename and derived outputs
+  CHARACTER(LEN=512) :: model_file, spec_file, linform_file, mol_file
 
   ! SPECTRV run parameters
   REAL(8)   :: rhoxj, r1, r101, ph1, pc1, psi1
@@ -224,6 +227,10 @@ PROGRAM synthe_spectrv
   ! Flags
   INTEGER   :: ifvac_sv   ! local copy of ifvac for SPECTRV /TRASH/ and title
 
+  ! ==========================================================================
+
+  IFSYNTHE = 1
+  
   ! ==========================================================================
   !  INITIALISE DATA DIRECTORY
   !
@@ -265,13 +272,16 @@ PROGRAM synthe_spectrv
     dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
     IF (dotpos > 1) THEN
       spec_file    = model_file(1:dotpos-1) // '.spec'
+      mol_file     = model_file(1:dotpos-1) // '.mol'
       linform_file = model_file(1:dotpos-1) // '.linform'
     ELSE
       spec_file    = TRIM(model_file) // '.spec'
+      mol_file     = TRIM(model_file) // '.mol'
       linform_file = TRIM(model_file) // '.linform'
     END IF
     WRITE(6, '(A,A)') ' Spectrum output  = ', TRIM(spec_file)
     WRITE(6, '(A,A)') ' Linform output   = ', TRIM(linform_file)
+    WRITE(6, '(A,A)') ' Mol nden output  = ', TRIM(mol_file)
   END BLOCK
   ! ==========================================================================
   OPEN(UNIT=93, FORM='UNFORMATTED')
@@ -294,6 +304,8 @@ PROGRAM synthe_spectrv
   OPEN(UNIT=14, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
   OPEN(UNIT=19, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
   OPEN(UNIT=20, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
+
+  OPEN(UNIT=35, FILE=TRIM(mol_file), STATUS='REPLACE', ACTION='WRITE')
 
   ! ==========================================================================
   !  SECTION 3.  MERGE LINE ARCHIVES INTO MEMORY
@@ -544,7 +556,7 @@ PROGRAM synthe_spectrv
     DO nbuff_i = 1, length
       continuum(nbuff_i) = 10.0**continuum(nbuff_i)
     END DO
-
+    
     ! Read ion populations and Doppler widths from module array instead of fort.10.
     ! xnfpel_m / dopple_m are (6, mw, kw) -- unpack into flat mw6 arrays.
     DO nelem_i = 1, mw
@@ -553,7 +565,7 @@ PROGRAM synthe_spectrv
         qdopple((nelem_i-1)*6 + i) = dopple_m (i, nelem_i, j)
       END DO
     END DO
-
+    
     xnfph(j,1)   = REAL(qxnfpel(1))
     xnfph(j,2)   = REAL(qxnfpel(2))
     xnfphe(j,1)  = REAL(qxnfpel(7))
@@ -564,12 +576,16 @@ PROGRAM synthe_spectrv
       xnfpel(i) = 0.0D0
       IF (qxnfpel(i) < 1.0D25) xnfpel(i) = qxnfpel(i)
     END DO
-
+    
     DO i = 1, mw6_p
       qdopple(i)  = SQRT(qdopple(i)**2 + (DBLE(turbv)/CLIGHT_KMS)**2)
       dopple(i)   = qdopple(i)
       xnfpel(i)   = xnfpel(i) / rho(j)
-      xnfdop(i)   = qxnfpel(i) / xf_rho(j) / qdopple(i)
+      if (qdopple(i) > 0.0D0) then
+        xnfdop(i) = qxnfpel(i) / xf_rho(j) / qdopple(i)
+      else
+        xnfdop(i) = 0.0D0
+      end if
     END DO
     
     txnxn(j) = (xnfh(j) + 0.42*xnfhe(j,1) + 0.85*xnfh2(j)) * &
@@ -577,107 +593,110 @@ PROGRAM synthe_spectrv
 
     nvshift = INT(resolu * DBLE(velshift_arr(j)) / CLIGHT_KMS + 0.5D0)
 
+
     mlines = 0
+    !n19 is the number of NLTE lines
     IF (n19 > 0) CALL compute_line_opacity(j, n19, cutoff, velshift_arr(j), ifvac, linout)
-
+    
     IF (n12 > 0) THEN
-    n191    = n19 + 1
-    alpha_s = 0.0
+       
+       n191    = n19 + 1
+       alpha_s = 0.0
+       
+       DO iline = n191, nlines
+          
+          READ(12) nbuff_s, congf_s, congf_nel, elo_s, gamrf, gamsf, gamwf
+          
+          kappa0_s = congf_s * REAL(xnfdop(congf_nel))
+          kapmin_s = continuum(MIN(MAX(nbuff_s,1),length)) * cutoff
+          
+          IF (kappa0_s < kapmin_s) CYCLE
+          
+          kappa0_s = kappa0_s * REAL(EXP(-elo_s * hckt(j)))
+          IF (kappa0_s < kapmin_s) CYCLE
+          
+          IF (alpha_s /= 0.0) THEN
+             nelem_i = INT(congf_nel/6) + 1
+             v2_s    = (1.0 - alpha_s) / 2.0
+             hfac(j)  = (t(j)/10000.0)**v2_s
+             hefac(j) = 0.628*(2.0991E-4*t(j)*(0.25 + 1.008/atmass(nelem_i)))**v2_s
+             h2fac(j) = 1.08 *(2.0991E-4*t(j)*(0.50 + 1.008/atmass(nelem_i)))**v2_s
+             txnxn(j) = xnfh(j)*hfac(j) + xnfhe(j,1)*hefac(j) + xnfh2(j)*h2fac(j)
+          END IF
+          
+          adamp_s = REAL((gamrf + gamsf*xne(j) + gamwf*txnxn(j)) / dopple(congf_nel))
+          nbuff_s = nbuff_s + nvshift
+          
+          n10dop     = INT(10.0D0 * dopple(congf_nel) * DBLE(resolu))
+          dopple_nel = REAL(dopple(congf_nel))
+          
+          centre_on_grid: IF (nbuff_s >= 1 .AND. nbuff_s <= length) THEN
+             mlines = mlines + 1
+             IF (adamp_s < VOIGT_APPROX_LIMIT) THEN
+                kapcen_s = kappa0_s * (1.0 - 1.128*adamp_s)
+             ELSE
+                kapcen_s = kappa0_s * voigt_profile(0.0, adamp_s)
+             END IF
+             IF (linout >= 0) CALL journal_append(iline, kapcen_s)
+             buffer(nbuff_s) = buffer(nbuff_s) + kapcen_s
+          END IF centre_on_grid
+          
+          IF (adamp_s < VOIGT_APPROX_LIMIT) THEN
+             tabstep = vsteps / (dopple_nel * REAL(resolu))
+             tabi    = 1.5
+             DO nstep = 1, n10dop
+                tabi = tabi + tabstep
+                profile(nstep) = kappa0_s * (h0tab(INT(tabi)) + adamp_s*h1tab(INT(tabi)))
+                IF (profile(nstep) < kapmin_s) EXIT
+             END DO
+          ELSE
+             dvoigt = 1.0 / dopple_nel / REAL(resolu)
+             DO nstep = 1, n10dop
+                profile(nstep) = kappa0_s * voigt_profile(REAL(nstep)*dvoigt, adamp_s)
+                IF (profile(nstep) < kapmin_s) EXIT
+             END DO
+          END IF
+          
+          IF (nstep > n10dop) THEN
+             x_wing  = profile(n10dop) * REAL(n10dop)**2
+             maxstep = INT(SQRT(x_wing/kapmin_s)) + 1
+             maxstep = MIN(maxstep, maxprof)
+             n1 = n10dop + 1
+             DO nstep = n1, maxstep
+                profile(nstep) = x_wing / REAL(nstep)**2
+             END DO
+             nstep = maxstep
+          END IF
+          
+          IF (nbuff_s+nstep < 1 .OR. nbuff_s-nstep > length) CYCLE
+          
+          IF (nbuff_s < length) THEN
+             maxred    = MIN(length - nbuff_s, nstep)
+             minblue_i = MAX(1, 1 - nbuff_s)
+             DO istep = minblue_i, maxred
+                buffer(nbuff_s + istep) = buffer(nbuff_s + istep) + profile(istep)
+             END DO
+             IF (nbuff_s <= 1) CYCLE
+          END IF
 
-    DO iline = n191, nlines
-      READ(12) nbuff_s, congf_s, congf_nel, elo_s, gamrf, gamsf, gamwf
-
-      kappa0_s = congf_s * REAL(xnfdop(congf_nel))
-      kapmin_s = continuum(MIN(MAX(nbuff_s,1),length)) * cutoff
-
-      IF (kappa0_s < kapmin_s) CYCLE
-
-      kappa0_s = kappa0_s * REAL(EXP(-elo_s * hckt(j)))
-      IF (kappa0_s < kapmin_s) CYCLE
-
-      IF (alpha_s /= 0.0) THEN
-        nelem_i = INT(congf_nel/6) + 1
-        v2_s    = (1.0 - alpha_s) / 2.0
-        hfac(j)  = (t(j)/10000.0)**v2_s
-        hefac(j) = 0.628*(2.0991E-4*t(j)*(0.25 + 1.008/atmass(nelem_i)))**v2_s
-        h2fac(j) = 1.08 *(2.0991E-4*t(j)*(0.50 + 1.008/atmass(nelem_i)))**v2_s
-        txnxn(j) = xnfh(j)*hfac(j) + xnfhe(j,1)*hefac(j) + xnfh2(j)*h2fac(j)
-      END IF
-
-      adamp_s = REAL((gamrf + gamsf*xne(j) + gamwf*txnxn(j)) / dopple(congf_nel))
-      nbuff_s = nbuff_s + nvshift
-
-      n10dop     = INT(10.0D0 * dopple(congf_nel) * DBLE(resolu))
-      dopple_nel = REAL(dopple(congf_nel))
-
-      centre_on_grid: IF (nbuff_s >= 1 .AND. nbuff_s <= length) THEN
-        mlines = mlines + 1
-        IF (adamp_s < VOIGT_APPROX_LIMIT) THEN
-          kapcen_s = kappa0_s * (1.0 - 1.128*adamp_s)
-        ELSE
-          kapcen_s = kappa0_s * voigt_profile(0.0, adamp_s)
-        END IF
-        IF (linout >= 0) CALL journal_append(iline, kapcen_s)
-        buffer(nbuff_s) = buffer(nbuff_s) + kapcen_s
-      END IF centre_on_grid
-
-      IF (adamp_s < VOIGT_APPROX_LIMIT) THEN
-        tabstep = vsteps / (dopple_nel * REAL(resolu))
-        tabi    = 1.5
-        DO nstep = 1, n10dop
-          tabi = tabi + tabstep
-          profile(nstep) = kappa0_s * (h0tab(INT(tabi)) + adamp_s*h1tab(INT(tabi)))
-          IF (profile(nstep) < kapmin_s) EXIT
-        END DO
-      ELSE
-        dvoigt = 1.0 / dopple_nel / REAL(resolu)
-        DO nstep = 1, n10dop
-          profile(nstep) = kappa0_s * voigt_profile(REAL(nstep)*dvoigt, adamp_s)
-          IF (profile(nstep) < kapmin_s) EXIT
-        END DO
-      END IF
-
-      IF (nstep > n10dop) THEN
-        x_wing  = profile(n10dop) * REAL(n10dop)**2
-        maxstep = INT(SQRT(x_wing/kapmin_s)) + 1
-        maxstep = MIN(maxstep, maxprof)
-        n1 = n10dop + 1
-        DO nstep = n1, maxstep
-          profile(nstep) = x_wing / REAL(nstep)**2
-        END DO
-        nstep = maxstep
-      END IF
-
-      IF (nbuff_s+nstep < 1 .OR. nbuff_s-nstep > length) CYCLE
-
-      IF (nbuff_s < length) THEN
-        maxred    = MIN(length - nbuff_s, nstep)
-        minblue_i = MAX(1, 1 - nbuff_s)
-        DO istep = minblue_i, maxred
-          buffer(nbuff_s + istep) = buffer(nbuff_s + istep) + profile(istep)
-        END DO
-        IF (nbuff_s <= 1) CYCLE
-      END IF
-
-      maxblue   = MIN(nbuff_s - 1, nstep)
-      minblue_i = MAX(1, nbuff_s - length)
-      DO istep = minblue_i, maxblue
-        buffer(nbuff_s - istep) = buffer(nbuff_s - istep) + profile(istep)
-      END DO
-
-    END DO   ! iline loop
-
+          maxblue   = MIN(nbuff_s - 1, nstep)
+          minblue_i = MAX(1, nbuff_s - length)
+          DO istep = minblue_i, maxblue
+             buffer(nbuff_s - istep) = buffer(nbuff_s - istep) + profile(istep)
+          END DO
+          
+       END DO   ! iline loop
+       
     END IF   ! n12 > 0
 
     ! Store opacity buffer into in-memory matrix (replaces unit 14 write)
     opacity_matrix(1:length, j) = buffer(1:length)
-
-    !sWRITE(6,'(30X,2I10,A)') j, mlines, ' LINES USED'
+    
     mlinej(j) = mlines
     ilines    = ilines + mlines
-
+    
   END DO depth_loop
-
+  
   CLOSE(UNIT=19, STATUS='DELETE')
 
   ! ==========================================================================
@@ -868,6 +887,7 @@ PROGRAM synthe_spectrv
 
   CLOSE(UNIT=11)
   CLOSE(UNIT=33)
+  CLOSE(UNIT=35)
 
   STOP
 
@@ -1102,4 +1122,4 @@ CONTAINS
   END SUBROUTINE unpack_lindat
 
 
-END PROGRAM synthe_spectrv
+END PROGRAM SYNTHE

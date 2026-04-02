@@ -244,7 +244,6 @@ module mod_atlas_data
   'Bi','Po','At','Rn','Fr','Ra','Ac','Th','Pa','U ', &
   'NP','Pu','Am','Cm','Bk','Cf','Es'/)
 
-
   ! --- Radiative flux and flux derivatives ---
   ! COMMON /FLUX/
   real*8  :: FLUX = 0.0d0, FLXERR(kw) = 0.0d0, FLXDRV(kw) = 0.0d0, FLXRAD(kw)
@@ -313,6 +312,9 @@ module mod_atlas_data
   character(4) :: WLTE = 'LTE '
   character(256) :: DATADIR    ! Path to data files (from $ATLAS12)
   integer :: INPUTDATA
+
+  ! --- Flag set if SYNTHE is running ---
+  integer :: IFSYNTHE = 0
 
   ! --- Radiative transfer J-coefficient matrix ---
   ! COMMON /MATXJ/
@@ -456,6 +458,10 @@ module mod_atlas_data
   ! --- Molecular number densities ---
   ! COMMON /XNMOL/
   real*8  :: XNMOL(kw, maxmol), XNFPMOL(kw, maxmol)
+
+  ! Flag: set to 1 after MOLEC has read molecular data from INPUTDATA
+  ! (or when NMOLEC has populated the arrays directly, skipping the read).
+  integer :: MOLEC_IREAD = 0
 
   ! --- Saved number densities for equilibrium ---
   ! COMMON /XNSAVE/
@@ -5041,7 +5047,6 @@ SUBROUTINE MOLEC(CODOUT, MODE, NUMBER)
   real*8,  intent(inout) :: NUMBER(kw, 1)
 
   ! Local variables
-  integer, save :: IREAD = 0
   integer :: JMOL, J, NN, ION, ID, I, II
   real*8  :: C
   logical :: found
@@ -5051,7 +5056,7 @@ SUBROUTINE MOLEC(CODOUT, MODE, NUMBER)
   !=====================================================================
   ! Read molecular input data (first call only)
   !=====================================================================
-  if (IFPOP /= 2 .and. IREAD /= 1 .and. IFPRES /= 1) then
+  if (IFPOP /= 2 .and. MOLEC_IREAD /= 1 .and. IFPRES /= 1) then
     read(INPUTDATA, '(I5)') NUMMOL
 
     do JMOL = 1, NUMMOL
@@ -5068,7 +5073,7 @@ SUBROUTINE MOLEC(CODOUT, MODE, NUMBER)
     read(INPUTDATA, '(1P8E10.3)') (XNE(J), J=1,NRHOX)
     if (IDEBUG == 1) write(6, '(1P8E10.3)') (XNE(J), J=1,NRHOX)
 
-    IREAD = 1
+    MOLEC_IREAD = 1
   endif
 
   !=====================================================================
@@ -5231,13 +5236,14 @@ SUBROUTINE NMOLEC(MODE)
   ! --- External functions ---
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING NMOLEC'
-
+  
   NEQUA1 = NEQUA + 1
   NEQNEQ = NEQUA**2
 
   !=====================================================================
   ! Initialize abundances (constant with depth in this version)
   !=====================================================================
+  XAB(:) = 0.0D0
   J = 1
   do K = 2, NEQUA
     ID = IDEQUA(K)
@@ -5477,9 +5483,11 @@ SUBROUTINE NMOLEC(MODE)
     return
   end if
 
+  
   !=====================================================================
   ! Save solution for next call / EDENS restart
   !=====================================================================
+
   do K = 1, NEQUA
     do J = 1, NRHOX
       XNSAVE(J, K) = XNZ(J, K)
@@ -5494,13 +5502,14 @@ SUBROUTINE NMOLEC(MODE)
     end do
   end if
 
-  if (ITER == NUMITS .and. IDEBUG == 1) then
-    NN = ((NUMMOL / 10) + 1) * 10
-    do JMOL1 = 1, NN, 10
-      JMOL10 = JMOL1 + 9
-      write(6, '(49X,"MOLECULAR NUMBER DENSITIES"/5X,10F12.2/(I5,1P10E12.3))') &
-        (XNMOLCODE(JMOL), JMOL = JMOL1, JMOL10), &
-        (J, (XNMOL(J, JMOL), JMOL = JMOL1, JMOL10), J = 1, NRHOX)
+  if (ITER == NUMITS .and. IFSYNTHE == 1) then
+    do JMOL1 = 1, NUMMOL, 10
+      JMOL10 = min(JMOL1 + 9, NUMMOL)
+      write(35, '(49X,"MOLECULAR NUMBER DENSITIES"/5X,10F12.2)') &
+        (XNMOLCODE(JMOL), JMOL = JMOL1, JMOL10)
+      do J = 1, NRHOX
+        write(35, '(I5,1P10E12.3)') J, (XNMOL(J, JMOL), JMOL = JMOL1, JMOL10)
+      end do
     end do
   end if
 

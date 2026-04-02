@@ -241,7 +241,6 @@ exit
 # I have not updated/modernized the code below yet....
 
 
-
 # Check if the atm file was successfully created
 if [ -f fort.7 ]; then
     echo "testing output for convergence..."

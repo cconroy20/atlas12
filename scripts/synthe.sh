@@ -61,9 +61,8 @@ $bindir/synthe.exe $2
 #mol="${asc/spec/mol}"
 #/bin/mv fort.35 ${moldir}/${mol}
 
-#save the line formation depths (not currently)
-#lin="${asc/spec/linform}"
-#/bin/mv fort.33 ${moldir}/${lin}
+#save the line formation depths
+#/bin/mv *linform ${moldir}/
 
 echo " "
 echo " ...done!"
