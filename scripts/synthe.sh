@@ -44,7 +44,7 @@ linedir="Lines_RV31new"
 echo " Input line dir:" $linedir
 
 #generate synthe-ready input file
-$bindir/at12tosyn.exe $indir$2 $2
+/bin/cp $indir$2 $2
 
 #link the input files generated from synthe.setup
 ln -s ${ATLAS12}/${linedir}/tfort.12 fort.12
@@ -55,7 +55,7 @@ ln -s ${ATLAS12}/${linedir}/tfort.93 fort.93
 
 #run synthe, the main program
 echo " Running synthe...."
-$bindir/synthe_spectrv.exe $2
+$bindir/synthe.exe $2
 
 #save the molecular number density profiles
 #mol="${asc/spec/mol}"

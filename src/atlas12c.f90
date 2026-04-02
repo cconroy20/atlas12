@@ -53,10 +53,9 @@ PROGRAM ATLAS12
   real*8, parameter  :: PLANCK_PREFAC  = 1.47439D-2     ! 2*h/c^2 in CGS-frequency units
 
   ! --- Local variables ---
-  real*8             :: VSTEPS, RCOSUM, RCOWT
-  real*8             :: EXCESS, XMAX, FREQ15, DOPPLE8
+  real*8             :: VSTEPS, RCOWT
+  real*8             :: EXCESS, XMAX, FREQ15
   real*8             :: RX
-  real*4             :: stim4(kw)
   integer            :: I, J, NU, ITERAT
   integer            :: NUCI, NULYMAN, NUHEI, NUHEII, NUSTART
   logical            :: found_negative
@@ -69,6 +68,7 @@ PROGRAM ATLAS12
   ! --- Command-line output file base name and options ---
   character(256)     :: OUTBASE, ARGBUF
   character(256)     :: ABUND_FILE
+  character(256)     :: ABUND_LINE
   integer            :: NARGS, IEQPOS, ISTAT
   real*8             :: VTURB_KMS
   real*8             :: CMD_TEFF, CMD_LOGG
@@ -245,8 +245,13 @@ PROGRAM ATLAS12
         stop 1
       end if
       do
-        read(4, *, IOSTAT=IOS_ABUND) IZ_ABUND, ABUND_VAL
+        read(4, '(A)', IOSTAT=IOS_ABUND) ABUND_LINE
         if (IOS_ABUND /= 0) exit
+        ABUND_LINE = adjustl(ABUND_LINE)
+        if (len_trim(ABUND_LINE) == 0) cycle
+        if (ABUND_LINE(1:1) == '#' .or. ABUND_LINE(1:1) == '!') cycle
+        read(ABUND_LINE, *, IOSTAT=IOS_ABUND) IZ_ABUND, ABUND_VAL
+        if (IOS_ABUND /= 0) cycle
         if (IZ_ABUND < 1 .or. IZ_ABUND > 99) cycle
         ABUND(IZ_ABUND) = ABUND_VAL
         if (IZ_ABUND > 2) XRELATIVE(IZ_ABUND) = 0.0D0
@@ -340,7 +345,10 @@ PROGRAM ATLAS12
         XNATOM(J) = P(J) / TK(J) - XNE(J)
         RHO(J) = XNATOM(J) * WTMOLE(J) * 1.660D-24
         if (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
-        CHARGESQ(J) = XNE(J)
+        ! Approximate CHARGESQ = sum(n_i * Z_i^2) + n_e for Debye shielding.
+        ! Assuming mostly singly ionized gas, the ion sum ~ n_e, so
+        ! CHARGESQ ~ 2*n_e.  NELECT recomputes this self-consistently.
+        CHARGESQ(J) = XNE(J) * 2.0D0
       end do
     end if
 
@@ -401,8 +409,8 @@ PROGRAM ATLAS12
     if (TEFF < 4500.0D0)  NUSTART = NUCI
 
     ! Build the wavelength array
+    NUMNU = NUHI
     do NU = NULO, NUHI, NUSTEP
-      NUMNU = NU
       WAVESET(NU) = 10.0D0 ** (1.0D0 + 0.0001D0 * (NU + NUSTART - 1))
     end do
 
@@ -416,19 +424,16 @@ PROGRAM ATLAS12
     ! Blue edge: assume flux = 0 at WAVESET(0)
     RCOSET(1) = (CLIGHT_ANGFREQ / WAVESET(1) &
                - CLIGHT_ANGFREQ / WAVESET(1 + NUSTEP)) * 1.5D0
-    RCOSUM = RCOSET(1)
 
     ! Interior points: centered differences
     do NU = NULO + NUSTEP, NUMNU - NUSTEP, NUSTEP
       RCOSET(NU) = (CLIGHT_ANGFREQ / WAVESET(NU - NUSTEP) &
                   -  CLIGHT_ANGFREQ / WAVESET(NU + NUSTEP)) * 0.5D0
-      RCOSUM = RCOSUM + RCOSET(NU)
     end do
 
     ! Red edge: assume flux = 0 at infinite wavelength (freq = 0)
     RCOSET(NUMNU) = (CLIGHT_ANGFREQ / WAVESET(NUMNU - NUSTEP) &
                    + CLIGHT_ANGFREQ / WAVESET(NUMNU)) * 0.25D0
-    RCOSUM = RCOSUM + RCOSET(NUMNU)
 
 
     ! =================================================================
@@ -490,10 +495,10 @@ PROGRAM ATLAS12
 
       do J = 1, NRHOX
         do NELION = 1, MION - 1
+          if (AMASSISO(1, NELION) <= 0.0D0) cycle
           DOPPLE(J, NELION) = sqrt(2.0D0 * TK(J) / AMASSISO(1, NELION) / AMU_GRAMS &
                                    + VTURB(J)**2) / CLIGHT_CGS
-          DOPPLE8 = DOPPLE(J, NELION)
-          XNFDOP(J, NELION) = XNFP(J, NELION) / DOPPLE8 / RHO(J)
+          XNFDOP(J, NELION) = XNFP(J, NELION) / DOPPLE(J, NELION) / RHO(J)
         end do
       end do
 
@@ -547,10 +552,12 @@ PROGRAM ATLAS12
         ! Compute continuous opacity at this frequency
         call KAPP
 
-        ! Add pre-computed line opacity (corrected for stimulated emission)
+        ! Add pre-computed OS line opacity (corrected for stimulated emission).
+        ! Note: this overwrites the module-level ALINES (set by KAPP from
+        ! LINOP1) with the SELECTLINES contribution, and accumulates it
+        ! onto ALINE.  KAPP re-zeroes both on the next frequency step.
         do J = 1, NRHOX
-          stim4(J) = stim(J)
-          ALINES(J) = XLINES(J, NU) * stim4(J)
+          ALINES(J) = XLINES(J, NU) * STIM(J)
           ALINE(J)  = ALINE(J) + ALINES(J)
         end do
 

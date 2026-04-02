@@ -873,7 +873,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
 
   ! --- Scalar temps ---
   integer :: J, I, K, IDUM, IFUDGE, JCONV
-  real*8  :: D_safe, ABROSS_safe
+  real*8  :: ABROSS_safe
 
   ! --- External functions ---
 
@@ -1493,7 +1493,7 @@ SUBROUTINE STATEQ(MODE, RCOWT)
   real*8  :: DENOM               ! denominator for BMIN (with guard)
 
   ! --- Loop indices ---
-  integer :: I, J, K, L, N, I1
+  integer :: I, J, K, L, N
 
   ! --- Oscillator strengths for bound-bound transitions ---
   ! F(I,K) = oscillator strength for transition I → K
@@ -3031,10 +3031,18 @@ SUBROUTINE READIN(MODE)
     call READMOL
   else
     !-------------------------------------------------------------------
-    ! SYNTHE path: caller has already opened the model file on unit 5
+    ! SYNTHE path: caller has already opened the model file on unit 5.
+    ! Force surface flux mode with a single iteration and full output.
+    !   SURFACE FLUX
+    !   ITERATIONS 1 PRINT 2 PUNCH 2
     !-------------------------------------------------------------------
     INPUTDATA = 5
     IFPRES = 0
+    IFSURF = 1
+    NUMITS = 1
+    IFPRNT(1) = 2
+    IFPNCH(1) = 2
+    call READMOL
   end if
 
   LAST=133
@@ -3904,7 +3912,7 @@ SUBROUTINE READMOL
   KLOC    = 1
   LOCJ(1) = 1
 
-  do JMOL = 1, MAX1
+  do JMOL = 1, maxmol
 
     if (KLOC > MAXLOC) then
       write(6, '(A)') ' READMOL ERROR: TOO MANY COMPONENTS'
@@ -3971,6 +3979,11 @@ SUBROUTINE READMOL
   end do
 
   NUMMOL = JMOL - 1
+  if (NUMMOL >= maxmol .and. C /= 0.0D0) then
+    write(6, '(A,I5)') ' READMOL ERROR: molecule count exceeds maxmol =', maxmol
+    close(UNIT=2)
+    stop 1
+  end if
   NLOC   = KLOC - 1
 
   ! --- Assign equation numbers to each element ---
@@ -4170,7 +4183,6 @@ SUBROUTINE ENERGY_DENSITY
   real*8, parameter :: DELTA_P     = 1.001D0     ! T+ multiplier
   real*8, parameter :: DELTA_M     = 0.999D0     ! T- multiplier
   real*8, parameter :: RATIO_PM    = 0.999D0 / 1.001D0  ! T- / T+ (to go from T+ to T-)
-  real*8, parameter :: RATIO_MP    = 1.001D0 / 0.999D0  ! to go from T- to T+  (unused, for restore)
   real*8, parameter :: DLNUDT_SCALE = 1000.0D0   ! 2 / (ln(1.001) - ln(0.999))
 
   ! --- Number of ionization stages per element (for PFSAHA calls) ---
@@ -4188,7 +4200,7 @@ SUBROUTINE ENERGY_DENSITY
   ! --- Local variables ---
   real*8  :: XNTOT           ! total particle density (atoms + electrons)
   real*8  :: UPF, DLNU       ! partition function sum and log-derivative
-  integer :: J, IZ, IION, NOFF
+  integer :: J, IION, NOFF
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING ENERGY_DENSITY'
   if (IFEDNS == 0) return
@@ -4329,7 +4341,7 @@ SUBROUTINE NELECT
   real*8  :: CHARGESQUARE    ! sum of n_ion * q^2
   real*8  :: ERROR           ! relative change in XNE
   real*8  :: DEBYE           ! Debye shielding length
-  integer :: J, IZ, ION, M, IION, NOFF, ITER_XNE
+  integer :: J, IZ, ION, IION, NOFF, ITER_XNE
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING NELECT'
 
@@ -5209,9 +5221,8 @@ SUBROUTINE NMOLEC(MODE)
   real*8  :: RATIO          ! pressure ratio for depth extrapolation
   real*8  :: TERM, D        ! molecule contribution to Jacobian
   real*8  :: X, XNEQ, XN100, SCALE
-  real*8  :: TPLUS, TMINUS  ! perturbed temperatures
   real*8  :: AMASS          ! molecular mass accumulator
-  integer :: J, K, M, KL, KK, K1, MK
+  integer :: J, K, M, KK, K1, MK
   integer :: JMOL, NCOMP, ION, ID
   integer :: LOCK, LOCJ1, LOCJ2, LOCM, NEQUAK
   integer :: IFERR
@@ -5556,7 +5567,7 @@ SUBROUTINE NMOLEC(MODE)
       ! Atom/ion: use PFSAHA to get n/U
       ID = int(XNMOLCODE(JMOL))
       if (ID /= IDZ(IZ)) then
-        NION_MOL(IZ) = LOCJ(JMOL - 1) - LOCJ(JMOL - 2)
+        if (JMOL >= 3) NION_MOL(IZ) = LOCJ(JMOL - 1) - LOCJ(JMOL - 2)
         IZ = IZ + 1
         IDZ(IZ) = ID
       end if
@@ -5981,7 +5992,7 @@ SUBROUTINE CONVEC
   integer :: M             ! MAP1 return value
 
   ! --- Other locals ---
-  integer :: J, K, L
+  integer :: J
   integer :: JTOP, JBOT, JA, JB  ! gap-filling indices
   real*8  :: WGHT                 ! interpolation weight
 
@@ -6850,7 +6861,7 @@ FUNCTION XKARZAS(FREQ, ZEFF2, N, L)
   real*4  :: X                  ! interpolated log10(sigma)
   real*4  :: FREQN15(NPTS)     ! frequency grid for n>15 (constructed)
   real*8, parameter :: LN10 = 2.30258509299405D0
-  integer :: I, IOS
+  integer :: I
 
   ! --- First-call initialization: read tables from data files ---
   if (.not. INITIALIZED) then
@@ -9743,22 +9754,13 @@ SUBROUTINE C2OP
     1.D0,1.D0,1.D0,1.D0, &
     3.D0,3.D0,3.D0 /)
 
-  ! Block assignment: which ionization limit each level uses
-  !   1 = ELIM1, 2 = ELIM2, 4 = ELIM4, 0 = inactive
-  integer, parameter :: BLOCK(NLEV) = (/ &
-    1,1,1,1,1, 1,1,1,1, 1,1,1, 0, &  ! Block 1 (13 inactive)
-    2,2,2,2,2,2, 2,2,2,2,2,2, 2,2, &  ! Block 2
-    0,0,0,0, &                         ! 28-31 inactive
-    4,4,4 /)                            ! Block 4
-
   ! Ionization limits (cm-1)
   real*8, parameter :: ELIM1 = 196664.70D0                 ! C III 2s2 1S0
   real*8, parameter :: ELIM2 = 196664.70D0 + 52367.06D0   ! C III 2s2p 3P0
   real*8, parameter :: ELIM4 = 196664.70D0 + 137425.70D0  ! C III 2p2 3P0
 
   real*8, parameter :: RYD = 109732.298D0
-  real*8, parameter :: Z = 2.0D0
-  real*8, parameter :: Z4 = 16.0D0    ! Z**4
+  real*8, parameter :: Z4 = 16.0D0    ! Z**4 (Z=2 for C II)
   real*8, parameter :: Z2 = 4.0D0     ! Z**2
 
   ! --- Persistent state ---
@@ -9977,8 +9979,7 @@ SUBROUTINE MG2OP
   ! Ionization limit (cm-1): Mg III 2p6 1S0
   real*8, parameter :: ELIM = 121267.61D0
   real*8, parameter :: RYD  = 109732.298D0
-  real*8, parameter :: Z    = 2.0D0
-  real*8, parameter :: Z2   = 4.0D0     ! Z**2
+  real*8, parameter :: Z2   = 4.0D0     ! Z**2 (Z=2 for Mg II)
   real*8, parameter :: Z4   = 16.0D0    ! Z**4
 
   ! --- Persistent state ---
@@ -10083,7 +10084,7 @@ SUBROUTINE SI2OP
 
   implicit none
 
-  integer, parameter :: NLEV = 46, NWGRID = 200, NTGRID = 51
+  integer, parameter :: NWGRID = 200, NTGRID = 51
   real*8, parameter :: RYD = 109732.298D0, Z = 2.0D0
 
   ! Ionization limits (cm⁻¹) for each level
@@ -10152,17 +10153,6 @@ SUBROUTINE SI2OP
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, &
     3, 3, 3, 4, 4, 3, 3, 3, 3, 3, 3, &
     3, 3, 3, 6, 5 /)
-
-  ! Degeneracy multipliers by level group
-  ! Levels 1-37: ×1, levels 38-41: ×2, levels 42-44: ×3
-  real*8, parameter :: DEGEN(46) = (/ &
-    1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, &
-    1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, &
-    1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, &
-    1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, 1.D0, &
-    2.D0, 2.D0, 2.D0, 2.D0, &
-    3.D0, 3.D0, 3.D0, &
-    1.D0, 1.D0 /)
 
   ! Pretabulated opacity grid and supporting arrays
   real*8,  save :: XTAB(NWGRID, NTGRID) = 0.0D0
@@ -10858,17 +10848,17 @@ SUBROUTINE LINOP1
   implicit none
 
   ! Named constants
-  real*4, parameter :: CEN_PREFAC4 = 0.026538 / 1.77245 / 2.99792458E17
-  real*4, parameter :: FOURPI_C_INV = 1.0 / (12.5664 * 2.99792458E17)
-  real*4, parameter :: LORENTZ_PREFAC = 0.5642  ! 1/sqrt(pi)
-  real*4, parameter :: ADAMP_THRESH = 0.20
+  real*8, parameter :: CEN_PREFAC4 = 0.026538D0 / 1.77245D0 / 2.99792458D17
+  real*8, parameter :: FOURPI_C_INV = 1.0D0 / (12.5664D0 * 2.99792458D17)
+  real*8, parameter :: LORENTZ_PREFAC = 0.5642D0  ! 1/sqrt(pi)
+  real*8, parameter :: ADAMP_THRESH = 0.20D0
   integer, parameter :: MAX_WING = 100
 
-  ! Local variables (real*4 for line data)
-  real*4  :: ELO, CGF, GAMMAR, GAMMAS, GAMMAW
-  real*4  :: ADAMP, CENTER, CV, DOPWAVE, VVOIGT, WLVAC4
-  real*4  :: TXNXN(kw), XNE4(kw), HCKT4(kw)
-  real*8  :: LINEPARAM(4), RATIOLG, START, STOP
+  ! Local variables
+  real*8  :: ELO, CGF, GAMMAR, GAMMAS, GAMMAW
+  real*8  :: ADAMP, CENTER, CV, DOPWAVE, VVOIGT, WLVAC4
+  real*8  :: TXNXN(kw)
+  real*8  :: RATIOLG, START, STOP
   integer*4 :: LINEREC(4)
   integer*4 :: IFJ(kw+1)
   integer :: LINE, J, K, NU, IW, I, IV, NUCONT, IWLOLD, IFLINE, LINEUSED
@@ -10885,12 +10875,10 @@ SUBROUTINE LINOP1
     end do
   end do
 
-  ! Precompute real*4 copies and van der Waals broadening proxy
+  ! Precompute van der Waals broadening proxy
   do J = 1, NRHOX
-    XNE4(J)  = real(XNE(J), 4)
-    HCKT4(J) = real(HCKT(J), 4)
-    TXNXN(J) = (XNF(J,1) + 0.42*XNF(J,3) + 0.85*XNF(J,841)) &
-               * (T(J) / 10000.)**0.3
+    TXNXN(J) = (XNF(J,1) + 0.42D0*XNF(J,3) + 0.85D0*XNF(J,841)) &
+               * (T(J) / 10000.D0)**0.3D0
   end do
 
   NUCONT = 1
@@ -10941,7 +10929,7 @@ SUBROUTINE LINOP1
 
     ! Convert wavelength
     WLVAC = exp(IWL * RATIOLG)
-    WLVAC4 = real(WLVAC, 4)
+    WLVAC4 = WLVAC
     if (WLVAC < START .or. WLVAC > STOP) then
       IWLOLD = IWL
       cycle
@@ -10958,9 +10946,9 @@ SUBROUTINE LINOP1
     end do
 
     ! Convert line parameters
-    CGF = CEN_PREFAC4 * WLVAC4 * real(TABLOG(IGFLOG), 4)
-    ELO = real(TABLOG(IELO), 4)
-    ADAMP = 0.0
+    CGF = CEN_PREFAC4 * WLVAC4 * TABLOG(IGFLOG)
+    ELO = TABLOG(IELO)
+    ADAMP = 0.0D0
     IFLINE = 0
 
     !-------------------------------------------------------------------
@@ -10970,26 +10958,26 @@ SUBROUTINE LINOP1
       IFJ(J+1) = 0
       CENTER = CGF * XNFDOP(J, NELION)
       if (CENTER < TABCONT(J, NUCONT)) cycle
-      CENTER = CENTER * exp(-ELO * HCKT4(J))
+      CENTER = CENTER * exp(-ELO * HCKT(J))
       if (CENTER < TABCONT(J, NUCONT)) cycle
       IFJ(J+1) = 1
       IFLINE = 1
 
       ! Compute damping (once per line)
-      if (ADAMP == 0.0) then
-        GAMMAR = real(TABLOG(IGR), 4) * WLVAC4 * FOURPI_C_INV
-        GAMMAS = real(TABLOG(IGS), 4) * WLVAC4 * FOURPI_C_INV
-        GAMMAW = real(TABLOG(IGW), 4) * WLVAC4 * FOURPI_C_INV
+      if (ADAMP == 0.0D0) then
+        GAMMAR = TABLOG(IGR) * WLVAC4 * FOURPI_C_INV
+        GAMMAS = TABLOG(IGS) * WLVAC4 * FOURPI_C_INV
+        GAMMAW = TABLOG(IGW) * WLVAC4 * FOURPI_C_INV
       end if
 
-      ADAMP = (GAMMAR + GAMMAS*XNE4(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
+      ADAMP = (GAMMAR + GAMMAS*XNE(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
       DOPWAVE = DOPPLE(J, NELION) * WLVAC4
 
       if (ADAMP > ADAMP_THRESH) then
         ! --- Full Voigt regime ---
         ! Red wing
         do IW = NU, min(NU + MAX_WING, NUMNU)
-          CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / dble(DOPWAVE), dble(ADAMP))
+          CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / DOPWAVE, ADAMP)
           XLINES(J, IW) = XLINES(J, IW) + CV
           if (CV < TABCONT(J, NUCONT)) exit
         end do
@@ -10997,7 +10985,7 @@ SUBROUTINE LINOP1
         do I = 1, MAX_WING
           IW = NU - I
           if (IW <= 0) exit
-          CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / dble(DOPWAVE), dble(ADAMP))
+          CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / DOPWAVE, ADAMP)
           XLINES(J, IW) = XLINES(J, IW) + CV
           if (CV < TABCONT(J, NUCONT)) exit
         end do
@@ -11006,10 +10994,10 @@ SUBROUTINE LINOP1
         ! Red wing
         do IW = NU, min(NU + MAX_WING, NUMNU)
           VVOIGT = (WAVESET(IW) - WLVAC) / DOPWAVE
-          if (VVOIGT > 10.0) then
+          if (VVOIGT > 10.0D0) then
             CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
           else
-            IV = int(VVOIGT * 200.0 + 1.5)
+            IV = int(VVOIGT * 200.0D0 + 1.5D0)
             CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
           end if
           XLINES(J, IW) = XLINES(J, IW) + CV
@@ -11020,10 +11008,10 @@ SUBROUTINE LINOP1
           IW = NU - I
           if (IW <= 0) exit
           VVOIGT = (WLVAC - WAVESET(IW)) / DOPWAVE
-          if (VVOIGT > 10.0) then
+          if (VVOIGT > 10.0D0) then
             CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
           else
-            IV = int(VVOIGT * 200.0 + 1.5)
+            IV = int(VVOIGT * 200.0D0 + 1.5D0)
             CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
           end if
           XLINES(J, IW) = XLINES(J, IW) + CV
@@ -11040,17 +11028,17 @@ SUBROUTINE LINOP1
       do J = K-7, K-1
         CENTER = CGF * XNFDOP(J, NELION)
         if (CENTER < TABCONT(J, NUCONT)) cycle
-        CENTER = CENTER * exp(-ELO * HCKT4(J))
+        CENTER = CENTER * exp(-ELO * HCKT(J))
         if (CENTER < TABCONT(J, NUCONT)) cycle
 
-        ADAMP = (GAMMAR + GAMMAS*XNE4(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
+        ADAMP = (GAMMAR + GAMMAS*XNE(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
         DOPWAVE = DOPPLE(J, NELION) * WLVAC4
 
         if (ADAMP > ADAMP_THRESH) then
           ! --- Full Voigt regime ---
           ! Red wing
           do IW = NU, min(NU + MAX_WING, NUMNU)
-            CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / dble(DOPWAVE), dble(ADAMP))
+            CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / DOPWAVE, ADAMP)
             XLINES(J, IW) = XLINES(J, IW) + CV
             if (CV < TABCONT(J, NUCONT)) exit
           end do
@@ -11058,7 +11046,7 @@ SUBROUTINE LINOP1
           do I = 1, MAX_WING
             IW = NU - I
             if (IW <= 0) exit
-            CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / dble(DOPWAVE), dble(ADAMP))
+            CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / DOPWAVE, ADAMP)
             XLINES(J, IW) = XLINES(J, IW) + CV
             if (CV < TABCONT(J, NUCONT)) exit
           end do
@@ -11067,10 +11055,10 @@ SUBROUTINE LINOP1
           ! Red wing
           do IW = NU, min(NU + MAX_WING, NUMNU)
             VVOIGT = (WAVESET(IW) - WLVAC) / DOPWAVE
-            if (VVOIGT > 10.0) then
+            if (VVOIGT > 10.0D0) then
               CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
             else
-              IV = int(VVOIGT * 200.0 + 1.5)
+              IV = int(VVOIGT * 200.0D0 + 1.5D0)
               CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
             end if
             XLINES(J, IW) = XLINES(J, IW) + CV
@@ -11081,10 +11069,10 @@ SUBROUTINE LINOP1
             IW = NU - I
             if (IW <= 0) exit
             VVOIGT = (WLVAC - WAVESET(IW)) / DOPWAVE
-            if (VVOIGT > 10.0) then
+            if (VVOIGT > 10.0D0) then
               CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
             else
-              IV = int(VVOIGT * 200.0 + 1.5)
+              IV = int(VVOIGT * 200.0D0 + 1.5D0)
               CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
             end if
             XLINES(J, IW) = XLINES(J, IW) + CV
@@ -11205,7 +11193,7 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
 
   ! Local variables
   real*8 :: XS(NXTAU), XSBAR(NXTAU), XALPHA(NXTAU), DIAG(NXTAU)
-  real*8 :: XH(NXTAU), XJS(NXTAU), XBETA(NXTAU)
+  real*8 :: XH(NXTAU), XJS(NXTAU)
   real*8 :: XSBAR8(NXTAU), XALPHA8(NXTAU), XS8(NXTAU)
   real*8 :: XH8(NXTAU), XJS8(NXTAU)
   real*8 :: A(kw), B(kw), C(kw), SNUBAR(kw), CTWO(kw), B2CT(kw), B2CT1(kw)
@@ -11963,9 +11951,8 @@ SUBROUTINE SELECTLINES
   ! --- Local variables ---
   real*8  :: XNFDOPMAX(mion, 344)
   real*8  :: CENRATIO, RATIOLG, GR, tablog8
-  real*4  :: freq4
   integer*4 :: LINEREC(4)
-  integer :: NU, J, K, LINE, N
+  integer :: NU, J, K, LINE
   integer :: N12, N122, N22, N32, N42, N52, N62, N18
   integer :: MOLCODE, MOLCODEOLD, KGFLOG, ISO, IMOL
   integer :: LINEDATA_CAP, IOS
@@ -12016,7 +12003,7 @@ SUBROUTINE SELECTLINES
     ! Advance wavelength bin to match line position
     do while (IWL >= IWAVETAB(NU))
       FREQ = 2.99792458D17 / WAVETAB(NU)
-      freq4 = real(FREQ, 4)
+      ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
 
@@ -12028,7 +12015,7 @@ SUBROUTINE SELECTLINES
       cycle
     end if
     if (XNFDOPMAX(NELION, NU) <= 1.0D-37) cycle
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / freq4
+    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
     if (CENRATIO < 1.0D0) cycle
     tablog8 = TABLOG(IELO)
     if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
@@ -12062,13 +12049,13 @@ SUBROUTINE SELECTLINES
 
     do while (IWL >= IWAVETAB(NU))
       FREQ = 2.99792458D17 / WAVETAB(NU)
-      freq4 = real(FREQ, 4)
+      ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
 
     NELION = abs(IELION / 10)
     if (XNFDOPMAX(NELION, NU) <= 1.0D-37) cycle
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / freq4
+    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
     if (CENRATIO < 1.0D0) cycle
     tablog8 = TABLOG(IELO)
     if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
@@ -12104,13 +12091,13 @@ SUBROUTINE SELECTLINES
 
     do while (IWL >= IWAVETAB(NU))
       FREQ = 2.99792458D17 / WAVETAB(NU)
-      freq4 = real(FREQ, 4)
+      ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
 
     NELION = abs(IELION / 10)
     if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / freq4
+    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
     if (CENRATIO < 1.0D0) cycle
     tablog8 = TABLOG(IELO)
     if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
@@ -12146,7 +12133,7 @@ SUBROUTINE SELECTLINES
 
     do while (IWL >= IWAVETAB(NU))
       FREQ = 2.99792458D17 / WAVETAB(NU)
-      freq4 = real(FREQ, 4)
+      ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
 
@@ -12175,7 +12162,7 @@ SUBROUTINE SELECTLINES
 
     NELION = abs(IELION / 10)
     if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / freq4
+    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
     if (CENRATIO < 1.0D0) cycle
     tablog8 = TABLOG(IELO)
     if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
@@ -12211,7 +12198,7 @@ SUBROUTINE SELECTLINES
 
     do while (IWL >= IWAVETAB(NU))
       FREQ = 2.99792458D17 / WAVETAB(NU)
-      freq4 = real(FREQ, 4)
+      ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
 
@@ -12225,7 +12212,7 @@ SUBROUTINE SELECTLINES
 
     NELION = 895
     if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / freq4
+    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
     if (CENRATIO < 1.0D0) cycle
     tablog8 = TABLOG(IELO)
     if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
@@ -12262,9 +12249,9 @@ SUBROUTINE SELECTLINES
 
     do while (IWL >= IWAVETAB(NU))
       FREQ = 2.99792458D17 / WAVETAB(NU)
-      freq4 = real(FREQ, 4)
+      ! (FREQ removed — using FREQ directly)
       ! Radiation damping from frequency
-      GAMMAR = 2.474D-22 * freq4**2 * 0.001
+      GAMMAR = 2.474D-22 * FREQ**2 * 0.001
       GR = log10(dble(GAMMAR))
       IGR = int(GR * 1000.0D0 + 16384.5D0)
       NU = NU + 1
@@ -12288,7 +12275,7 @@ SUBROUTINE SELECTLINES
 
     NELION = 940
     if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / freq4
+    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
     if (CENRATIO < 1.0D0) cycle
     if (CENRATIO * exp(-ELO * HCKT(NRHOX)) < 1.0D0) cycle
 
@@ -12326,7 +12313,7 @@ SUBROUTINE SELECTLINES
 
     do while (IWL >= IWAVETAB(NU))
       FREQ = 2.99792458D17 / WAVETAB(NU)
-      freq4 = real(FREQ, 4)
+      ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
 
@@ -12335,7 +12322,7 @@ SUBROUTINE SELECTLINES
 
     NELION = 895
     if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / freq4
+    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
     if (CENRATIO < 1.0D0) cycle
     tablog8 = TABLOG(IELO)
     if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
@@ -12605,8 +12592,8 @@ SUBROUTINE XLINOP
   implicit none
 
   ! Named constants
-  real*4, parameter :: LORENTZ_PREFAC = 0.5642  ! 1/sqrt(pi)
-  real*4, parameter :: ADAMP_THRESH = 0.20
+  real*8, parameter :: LORENTZ_PREFAC = 0.5642D0  ! 1/sqrt(pi)
+  real*8, parameter :: ADAMP_THRESH = 0.20D0
   integer, parameter :: MAX_WING = 2000
 
   ! Ionization edges (cm^-1): CONTX(edge_index, species)
@@ -12663,15 +12650,16 @@ SUBROUTINE XLINOP
     0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, &
     0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0 /), (/ 25, 16 /) )
 
-  ! Local variables (real*4 for line data)
-  real*4  :: ELO, CGF, GAMMAR, GAMMAS, GAMMAW
-  real*4  :: ADAMP, CENTER, CV, DOPWAVE, VVOIGT, WLVAC4, GF, G
-  real*4  :: XSECTG, CON, FRELIN, EPSIL, ASHORE, BSHORE
-  real*4  :: TXNXN(kw), XNE4(kw), HCKT4(kw), RHO4(kw)
-  real*4  :: XNFP4(kw, mion)
-  real*4  :: BOLTH(kw, 100), EH(100)
+  ! Local variables
+  real*8  :: ELO, CGF, GAMMAR, GAMMAS, GAMMAW
+  real*8  :: ADAMP, CENTER, CV, DOPWAVE, VVOIGT, WLVAC4, GF, G
+  real*8  :: XSECTG, CON, FRELIN, EPSIL, ASHORE, BSHORE
+  real*8  :: TXNXN(kw)
+  real*8  :: BOLTH(kw, 100), EH(100)
   real*8  :: WCON, WMERGE, WSHIFT, EMERGE(kw), Z, WMAX
-  real*8  :: NSTARK, NDOPP, NMERGE, RATIOLG
+  real*8  :: NSTARK, NMERGE, RATIOLG
+  ! Temporaries matching the binary record layout of nltelines_obs.bin
+  real*4  :: ELO4, GF4, GAMMAR4, GAMMAS4, GAMMAW4
   integer*4 :: IFJ(kw+1)
   integer :: TYPE, NLAST
   integer :: LINE, J, K, N, NU, IW, I, IV, NUCONT
@@ -12695,35 +12683,31 @@ SUBROUTINE XLINOP
   ! Precompute depth-dependent quantities
   !---------------------------------------------------------------------
   do J = 1, NRHOX
-    TXNXN(J) = (XNF(J,1) + 0.42*XNF(J,3) + 0.85*XNF(J,841)) &
-               * (T(J) / 10000.)**0.3
+    TXNXN(J) = (XNF(J,1) + 0.42D0*XNF(J,3) + 0.85D0*XNF(J,841)) &
+               * (T(J) / 10000.D0)**0.3D0
 
     ! Stark dissolution quantum number (empirical)
     NSTARK = 1600.0D0 / XNE(J)**(2.0D0/15.0D0)
     NMERGE = NSTARK
 
-    XNE4(J)  = real(XNE(J), 4)
-    HCKT4(J) = real(HCKT(J), 4)
-    RHO4(J)  = real(RHO(J), 4)
-
     ! Hydrogen energy levels (cm^-1)
-    EH(1) = 0.0
-    EH(2) = 82259.105
-    EH(3) = 97492.302
-    EH(4) = 102823.893
-    EH(5) = 105291.651
-    EH(6) = 106632.160
-    EH(7) = 107440.444
-    EH(8) = 107965.051
-    EH(9) = 108324.720
-    EH(10) = 108581.988
+    EH(1) = 0.0D0
+    EH(2) = 82259.105D0
+    EH(3) = 97492.302D0
+    EH(4) = 102823.893D0
+    EH(5) = 105291.651D0
+    EH(6) = 106632.160D0
+    EH(7) = 107440.444D0
+    EH(8) = 107965.051D0
+    EH(9) = 108324.720D0
+    EH(10) = 108581.988D0
     do N = 11, 100
       EH(N) = 109678.764D0 - 109677.576D0 / dble(N)**2
     end do
 
     ! Hydrogen Boltzmann factors × number density
     do NBLO = 1, 100
-      BOLTH(J, NBLO) = exp(-EH(NBLO) * HCKT4(J)) * XNFDOP(J, 1)
+      BOLTH(J, NBLO) = exp(-EH(NBLO) * HCKT(J)) * XNFDOP(J, 1)
     end do
 
     ! Merge energy: dissolved levels above this are continuum
@@ -12739,8 +12723,13 @@ SUBROUTINE XLINOP
   IFJ(1) = 0    ! NOTE: was uninitialized in original code
 
   do LINE = 1, 500000
-    read(19, end=901) WLVAC, ELO, GF, NBLO, NBUP, NELION, TYPE, &
-                      NCON, NELIONX, GAMMAR, GAMMAS, GAMMAW, IWL, LIM
+    read(19, end=901) WLVAC, ELO4, GF4, NBLO, NBUP, NELION, TYPE, &
+                      NCON, NELIONX, GAMMAR4, GAMMAS4, GAMMAW4, IWL, LIM
+    ELO = dble(ELO4)
+    GF  = dble(GF4)
+    GAMMAR = dble(GAMMAR4)
+    GAMMAS = dble(GAMMAS4)
+    GAMMAW = dble(GAMMAW4)
     CGF = GF
     G = GF
     NLAST = TYPE
@@ -12748,7 +12737,7 @@ SUBROUTINE XLINOP
     BSHORE = GAMMAW
 
     if (WLVAC > WAVESET(NUHI)) go to 901
-    WLVAC4 = real(WLVAC, 4)
+    WLVAC4 = WLVAC
 
     ! Advance continuous opacity bin
     do while (IWL >= IWAVETAB(NUCONT))
@@ -12786,11 +12775,11 @@ SUBROUTINE XLINOP
         IFJ(J+1) = 0
         CENTER = CGF * XNFDOP(J, NELION)
         if (CENTER < TABCONT(J, NUCONT)) cycle
-        CENTER = CENTER * exp(-ELO * HCKT4(J))
+        CENTER = CENTER * exp(-ELO * HCKT(J))
         if (CENTER < TABCONT(J, NUCONT)) cycle
         IFJ(J+1) = 1
 
-        ADAMP = (GAMMAR + GAMMAS*XNE4(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
+        ADAMP = (GAMMAR + GAMMAS*XNE(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
         DOPWAVE = DOPPLE(J, NELION) * WLVAC4
 
         ! Blue-wing cutoff at continuum edge
@@ -12802,7 +12791,7 @@ SUBROUTINE XLINOP
         if (ADAMP > ADAMP_THRESH) then
           ! Red wing — full Voigt
           do IW = NU, min(NU + MAX_WING, NUMNU)
-            CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / dble(DOPWAVE), dble(ADAMP))
+            CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / DOPWAVE, ADAMP)
             XLINES(J, IW) = XLINES(J, IW) + CV
             if (CV < TABCONT(J, NUCONT)) exit
           end do
@@ -12811,7 +12800,7 @@ SUBROUTINE XLINOP
             IW = NU - I
             if (IW <= 0) exit
             if (WAVESET(IW) < WCON) exit
-            CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / dble(DOPWAVE), dble(ADAMP))
+            CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / DOPWAVE, ADAMP)
             XLINES(J, IW) = XLINES(J, IW) + CV
             if (CV < TABCONT(J, NUCONT)) exit
           end do
@@ -12819,10 +12808,10 @@ SUBROUTINE XLINOP
           ! Red wing — pretabulated
           do IW = NU, min(NU + MAX_WING, NUMNU)
             VVOIGT = (WAVESET(IW) - WLVAC) / DOPWAVE
-            if (VVOIGT > 10.0) then
+            if (VVOIGT > 10.0D0) then
               CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
             else
-              IV = int(VVOIGT * 200.0 + 1.5)
+              IV = int(VVOIGT * 200.0D0 + 1.5D0)
               CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
             end if
             XLINES(J, IW) = XLINES(J, IW) + CV
@@ -12834,10 +12823,10 @@ SUBROUTINE XLINOP
             if (IW <= 0) exit
             if (WAVESET(IW) < WCON) exit
             VVOIGT = (WLVAC - WAVESET(IW)) / DOPWAVE
-            if (VVOIGT > 10.0) then
+            if (VVOIGT > 10.0D0) then
               CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
             else
-              IV = int(VVOIGT * 200.0 + 1.5)
+              IV = int(VVOIGT * 200.0D0 + 1.5D0)
               CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
             end if
             XLINES(J, IW) = XLINES(J, IW) + CV
@@ -12852,10 +12841,10 @@ SUBROUTINE XLINOP
         do J = K-7, K-1
           CENTER = CGF * XNFDOP(J, NELION)
           if (CENTER < TABCONT(J, NUCONT)) cycle
-          CENTER = CENTER * exp(-ELO * HCKT4(J))
+          CENTER = CENTER * exp(-ELO * HCKT(J))
           if (CENTER < TABCONT(J, NUCONT)) cycle
 
-          ADAMP = (GAMMAR + GAMMAS*XNE4(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
+          ADAMP = (GAMMAR + GAMMAS*XNE(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
           DOPWAVE = DOPPLE(J, NELION) * WLVAC4
 
           WCON = 0.0D0
@@ -12866,7 +12855,7 @@ SUBROUTINE XLINOP
           if (ADAMP > ADAMP_THRESH) then
             ! Red wing — full Voigt
             do IW = NU, min(NU + MAX_WING, NUMNU)
-              CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / dble(DOPWAVE), dble(ADAMP))
+              CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / DOPWAVE, ADAMP)
               XLINES(J, IW) = XLINES(J, IW) + CV
               if (CV < TABCONT(J, NUCONT)) exit
             end do
@@ -12875,7 +12864,7 @@ SUBROUTINE XLINOP
               IW = NU - I
               if (IW <= 0) exit
               if (WAVESET(IW) < WCON) exit
-              CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / dble(DOPWAVE), dble(ADAMP))
+              CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / DOPWAVE, ADAMP)
               XLINES(J, IW) = XLINES(J, IW) + CV
               if (CV < TABCONT(J, NUCONT)) exit
             end do
@@ -12883,10 +12872,10 @@ SUBROUTINE XLINOP
             ! Red wing — pretabulated
             do IW = NU, min(NU + MAX_WING, NUMNU)
               VVOIGT = (WAVESET(IW) - WLVAC) / DOPWAVE
-              if (VVOIGT > 10.0) then
+              if (VVOIGT > 10.0D0) then
                 CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
               else
-                IV = int(VVOIGT * 200.0 + 1.5)
+                IV = int(VVOIGT * 200.0D0 + 1.5D0)
                 CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
               end if
               XLINES(J, IW) = XLINES(J, IW) + CV
@@ -12898,10 +12887,10 @@ SUBROUTINE XLINOP
               if (IW <= 0) exit
               if (WAVESET(IW) < WCON) exit
               VVOIGT = (WLVAC - WAVESET(IW)) / DOPWAVE
-              if (VVOIGT > 10.0) then
+              if (VVOIGT > 10.0D0) then
                 CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
               else
-                IV = int(VVOIGT * 200.0 + 1.5)
+                IV = int(VVOIGT * 200.0D0 + 1.5D0)
                 CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
               end if
               XLINES(J, IW) = XLINES(J, IW) + CV
@@ -12937,17 +12926,16 @@ SUBROUTINE XLINOP
 
     case (1)
       ! AUTOIONIZING LINE — Fano profile, all depths
-      FRELIN = 2.99792458E17 / WLVAC
+      FRELIN = 2.99792458D17 / WLVAC
       do J = 1, NRHOX
-        XNFP4(J, NELION) = real(XNFP(J, NELION), 4)
-        CENTER = BSHORE * G * XNFP4(J, NELION) / RHO4(J)
+        CENTER = BSHORE * G * XNFP(J, NELION) / RHO(J)
         if (CENTER < TABCONT(J, NUCONT)) cycle
-        CENTER = CENTER * exp(-ELO * HCKT4(J))
+        CENTER = CENTER * exp(-ELO * HCKT(J))
         if (CENTER < TABCONT(J, NUCONT)) cycle
         ! Red wing
         do IW = NU, min(NU + MAX_WING, NUMNU)
-          EPSIL = 2.0 * (2.99792458E17 / WAVESET(IW) - FRELIN) / GAMMAR
-          CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0) / BSHORE
+          EPSIL = 2.0D0 * (2.99792458D17 / WAVESET(IW) - FRELIN) / GAMMAR
+          CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0D0) / BSHORE
           XLINES(J, IW) = XLINES(J, IW) + CV
           if (CV < TABCONT(J, NUCONT)) exit
         end do
@@ -12955,8 +12943,8 @@ SUBROUTINE XLINOP
         do I = 1, MAX_WING
           IW = NU - I
           if (IW <= 0) exit
-          EPSIL = 2.0 * (2.99792458E17 / WAVESET(IW) - FRELIN) / GAMMAR
-          CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0) / BSHORE
+          EPSIL = 2.0D0 * (2.99792458D17 / WAVESET(IW) - FRELIN) / GAMMAR
+          CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0D0) / BSHORE
           XLINES(J, IW) = XLINES(J, IW) + CV
           if (CV < TABCONT(J, NUCONT)) exit
         end do
@@ -12974,8 +12962,7 @@ SUBROUTINE XLINOP
       do J = 1, NRHOX
         WMERGE = 1.0D7 / (1.0D7 / WLVAC - EMERGE(J) * Z**2)
         WMAX = max(WMERGE, WSHIFT)
-        XNFP4(J, NELION) = real(XNFP(J, NELION), 4)
-        CON = XSECTG * XNFP4(J, NELION) * exp(-ELO * HCKT4(J)) / RHO4(J)
+        CON = XSECTG * XNFP(J, NELION) * exp(-ELO * HCKT(J)) / RHO(J)
         do IW = NU, NU + 1000
           if (WMAX < WAVESET(IW)) exit
           XLINES(J, IW) = XLINES(J, IW) + CON
@@ -13353,7 +13340,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
 
   ! --- Lyman alpha quasi-molecular satellite cutoffs (Allard 1997) ---
   ! H₂⁺ cutoff: Δν = -15000+100*(i-1) cm⁻¹, i=1..111 (to -4000)
-  real*4, parameter :: CUTOFFH2PLUS(111) = (/ &
+  real*8, parameter :: CUTOFFH2PLUS(111) = (/ &
     -15.14, -15.06, -14.97, -14.88, -14.80, -14.71, -14.62, -14.53, &
     -14.44, -14.36, -14.27, -14.18, -14.09, -14.01, -13.92, -13.83, &
     -13.74, -13.65, -13.57, -13.48, -13.39, -13.30, -13.21, -13.13, &
@@ -13370,7 +13357,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     -11.13, -11.12, -11.11, -11.10, -11.09, -11.08, -11.07 /)
 
   ! H₂ cutoff: Δν = -22000+200*(i-1) cm⁻¹, i=1..91 (to -4000)
-  real*4, parameter :: CUTOFFH2(91) = (/ &
+  real*8, parameter :: CUTOFFH2(91) = (/ &
     -13.43, -13.32, -13.21, -13.10, -12.98, -12.86, -12.79, -12.72, &
     -12.65, -12.58, -12.51, -12.47, -12.45, -12.45, -12.48, -12.51, &
     -12.53, -12.56, -12.59, -12.62, -12.65, -12.69, -12.73, -12.77, &
@@ -13385,7 +13372,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     -12.59, -12.56, -12.53 /)
 
   ! Radiative damping: summed A-values (switched from analytic, Aug 2009)
-  real*4, parameter :: ASUMLYMAN(100) = (/ &
+  real*8, parameter :: ASUMLYMAN(100) = (/ &
     0.000E+00, 6.265E+08, 1.897E+08, 8.126E+07, 4.203E+07, &
     2.450E+07, 1.236E+07, 8.249E+06, 5.782E+06, 4.208E+06, &
     3.158E+06, 2.430E+06, 1.910E+06, 1.567E+06, 1.274E+06, &
@@ -13407,7 +13394,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     5.706E+03, 5.522E+03, 5.346E+03, 5.177E+03, 5.015E+03, &
     4.860E+03, 4.711E+03, 4.569E+03, 4.432E+03, 4.300E+03 /)
 
-  real*4, parameter :: ASUM(100) = (/ &
+  real*8, parameter :: ASUM(100) = (/ &
     0.000E+00, 4.696E+08, 9.980E+07, 3.017E+07, 1.155E+07, &
     5.189E+06, 2.616E+06, 1.437E+06, 8.444E+05, 5.234E+05, &
     3.389E+05, 2.275E+05, 1.575E+05, 1.120E+05, 8.142E+04, &
@@ -13430,7 +13417,6 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     1.642E+01, 1.566E+01, 1.495E+01, 1.427E+01, 1.363E+01 /)
 
   ! Local variables
-  real*4  :: LORWING
   real*8  :: DELstark, WL, FREQ4, DEL, DOP, HFWID
   real*8  :: HWSTK, HWVDW, HWRAD, HWRES, HWLOR, HHW
   real*8  :: HPROFLOR, HPROFRES, HPROFRAD, HPROFVDW
@@ -13438,7 +13424,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
   real*8  :: PRQS, F, P1, FNS
   real*8  :: CUTOFF, SPACING, CUTFREQ, FREQ15000, FREQ22000
   real*8  :: BETA4000, PRQSP4000, CUTOFF4000
-  real*8  :: XNE16, TT4, T4, T43, XR
+  real*8  :: XNE16, TT4, T4, T43
   integer :: I, K, NWID, IFCORE, IPOS, ICUT
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HPROF4'
