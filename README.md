@@ -1,6 +1,6 @@
 # ATLAS12
 
-Opacity-sampling stellar atmosphere code, originally written by Robert L. Kurucz at the Harvard-Smithsonian Center for Astrophysics. This version has been modernized from Fortran 77 to Fortran 90 by Charlie Conroy.
+Opacity-sampling stellar atmosphere code, originally written by Robert L. Kurucz at the Harvard-Smithsonian Center for Astrophysics. This version has been modernized from Fortran 77 to Fortran 90 by Charlie Conroy and Claude.ai.
 
 ATLAS12 iteratively solves for the structure of a plane-parallel, LTE stellar atmosphere in radiative and hydrostatic equilibrium, using opacity sampling over ~30,000 wavelength points.
 
