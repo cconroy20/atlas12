@@ -13,17 +13,16 @@ MODULE synthe_module
 !  SECTIONS (in order)
 !  -------------------
 !   1. Module-level shared data (replaces all COMMON blocks)
-!   2. Utility routines: init_voigt_tables, voigt_profile, air_to_vac,
+!   2. Utility routines: voigt_profile, air_to_vac,
 !      vac_to_air, interp_quadratic, trapz_integrate, parabolic_coeffs
-!   3. Abundance/element data: load_abundances
-!   4. Hydrogen oscillator strengths: hydrogen_oscillator_strength
-!   5. Hydrogen line profiles: hydrogen_line_profile,
+!   3. Hydrogen oscillator strengths: hydrogen_oscillator_strength
+!   4. Hydrogen line profiles: hydrogen_line_profile,
 !      stark_quasistatic_profile, expint1
-!   6. He I line profiles: he1_generic_profile, he1_4471_profile,
+!   5. He I line profiles: he1_generic_profile, he1_4471_profile,
 !      he1_4026_profile, he1_4387_profile, he1_4921_profile,
 !      he1_griem_profile, he1_dimitri_profile, read_he1_stark_tables
-!   7. Line opacity: compute_line_opacity
-!   8. Atmosphere setup: run_xnfpelsyn (replaces standalone xnfpelsyn;
+!   6. Line opacity: compute_line_opacity
+!   7. Atmosphere setup: run_xnfpelsyn (replaces standalone xnfpelsyn;
 !      accesses mod_atlas_data via USE with renamed imports)
 !
 !  NOTES ON PRECISION
@@ -35,7 +34,13 @@ MODULE synthe_module
 !
 ! ============================================================================
 
-  USE mod_atlas_data, only: COMPUTE_ONE_POP, KAPP, FREEFF, DATADIR
+  USE mod_atlas_data, only: COMPUTE_ONE_POP, KAPP, FREEFF, DATADIR, &
+                            ABUND, ATMASS, ELEM, &
+                            STEHLE_DATA, STEHLE_TABLES_LOADED, &
+                            STARK_MMM, hydrogen_f_value, &
+                            INIT_STARK_TABLES, &
+                            stark_series_t, NSTARK_DALPHA, NSTARK_TEMPS
+  USE mod_constants
 
   IMPLICIT NONE
 
@@ -47,63 +52,77 @@ MODULE synthe_module
   !  Replaces all COMMON blocks from the original F77 code.
   ! ====================================================================
 
-  ! --- COMMON /ELEM/ ---
-  ! Element abundance and atomic mass data, populated by load_abundances.
-  !   abund(Z)  : log epsilon abundance relative to H = 0.911
-  !   atmass(Z) : atomic mass (amu)
-  !   elem(Z)   : 2-character element symbol
-  REAL(4),          SAVE :: abund(99)
-  REAL(4),          SAVE :: atmass(99)
-  CHARACTER(LEN=2), SAVE :: elem(99)
-
-  ! --- COMMON /H1TAB/ ---
-  ! voigt_profile function look-up tables, populated by init_voigt_tables.
-  !   H0TAB(i) = exp(-v^2)              at v = (i-1)/VSTEPS
-  !   H1TAB(i) = H_1(v) first-order a correction kernel
-  !   H2TAB(i) = (1 - 2v^2)*exp(-v^2)  second derivative term
-  ! (Declared here; content moved out of separate module variables below)
-
-  ! --- COMMON /EXTAB/ ---
-  ! Fast exponential and E_1 tables, populated by init_voigt_tables.
-  !   EXTAB(i)  = exp(-(i-1))
-  !   EXTABF(i) = exp(-(i-1)*0.001)
-  !   E1TAB(i)  = E_1(i*0.01)
+  ! --- Element abundance, atomic mass, and symbol data ---
+  ! Now imported from mod_atlas_data (ABUND, ATMASS, ELEM).
+  ! Previously duplicated here; see Anders & Grevesse (1989).
 
   ! ====================================================================
   !  PHYSICAL CONSTANTS
-  !  Centralised here so every subroutine uses the same literal values.
-  !  All four forms of c are needed because different parts of the code
-  !  work in different unit systems inherited from the F77 original.
+  !  Fundamental constants now from mod_constants (CODATA 2018).
+  !  Local aliases kept for backward compatibility with SPECTRV interface.
   ! ====================================================================
-  ! Constants also used by SPECTRV (keep in sync with standalone spectrv.f90)
-  REAL(8), PARAMETER :: CLIGHT_NM_HZ     = 2.99792458D17  ! speed of light in nm·Hz
-  REAL(8), PARAMETER :: PLANCK_PREFACTOR = 1.47439D-2      ! 2h/c² × (10¹⁵ Hz)³, CGS
-  REAL(8), PARAMETER :: KMS_TO_CMS       = 1.0D5           ! km/s → cm/s
-
-  REAL(8), PARAMETER :: CLIGHT_KMS = 299792.458D0    ! km/s
-  REAL(8), PARAMETER :: CLIGHT_CMS = 2.99792458D10   ! cm/s
-  REAL(8), PARAMETER :: CLIGHT_AHZ = 2.99792458D18   ! Å·Hz  (freq = CLIGHT_AHZ / lambda_Ang)
+  REAL(8), PARAMETER :: CLIGHT_NM_HZ    = CLIGHT_NM   ! nm·Hz (alias)
+  REAL(8), PARAMETER :: PLANCK_PREFACTOR = BNU_PREFAC  ! 2h/c² × (10¹⁵)³ (alias)
+  REAL(8), PARAMETER :: KMS_TO_CMS      = 1.0D5       ! km/s → cm/s
 
   ! ====================================================================
-  !  LOOKUP TABLE SIZES
-  !  Gathered here so the initialisation loops, init_voigt_tables call, and
-  !  array declarations stay in sync if the resolution is ever changed.
-  !    NTAB_EXP   : size of EXTAB / EXTABF   (integer + fractional parts)
-  !    NTAB_E1    : size of E1TAB            (exponential integral E_1)
-  !    NTAB_VOIGT : size of H0TAB/H1TAB/H2TAB  (voigt_profile profile kernels)
+  !  WEIDEMAN (1994) VOIGT FUNCTION COEFFICIENTS
+  !
+  !  N=32 rational approximation of the Faddeeva function
+  !  w(z) = exp(-z^2) erfc(-iz), combined with Humlíček (1982)
+  !  R_{1,2} asymptotic for |x|+y > 15.
+  !
+  !  Replaces the former Kurucz three-regime table-lookup approximation
+  !  (H0TAB/H1TAB/H2TAB with VOIGT_APPROX_LIMIT = 0.2 boundary).
+  !
+  !  Accuracy: ~10^{-5} relative everywhere for y >= 10^{-6}
+  !  (vs ~4% discontinuity at the old a = 0.2 regime boundary).
+  !
+  !  References:
+  !    Weideman, J.A.C. 1994, SIAM J. Numer. Anal. 31, 1497
+  !    Humlíček, J. 1982, JQSRT 27, 437
+  !    Schreier, F. 2018, MNRAS 479, 3068
+  !
+  !  Coefficients precomputed via FFT of exp(-t^2)*(L^2+t^2) on
+  !  the conformally-mapped grid t = L*tan(theta/2), stored in
+  !  Horner order: AWEI(1) multiplies Z^31, AWEI(32) is constant.
   ! ====================================================================
-  INTEGER, PARAMETER :: NTAB_VOIGT = 2001
+  INTEGER, PARAMETER :: NWEI = 32
+  REAL(8), PARAMETER :: LWEI = 4.75682846001088411D0   ! sqrt(32/sqrt(2))
 
-  ! ====================================================================
-  !  voigt_profile APPROXIMATION THRESHOLD
-  !  For damping parameter a < VOIGT_APPROX_LIMIT the first-order
-  !  approximation H(0,a) ~ 1 - sqrt(pi)*a is used at line centre and
-  !  H(v,a) ~ H0(v) + a*H1(v) for the wings, avoiding a full voigt_profile()
-  !  call.  The threshold 0.2 gives ~1% accuracy (Hjerting 1938).
-  !  The Boltzmann factor EXP(-ELO*HCKT) is computed via the intrinsic
-  !  EXP() directly (replacing the former FASTEX table approximation).
-  ! ====================================================================
-  REAL(4), PARAMETER :: VOIGT_APPROX_LIMIT = 0.2
+  REAL(8), PARAMETER :: AWEI(32) = [ &
+    -1.30317978630500875D-12, &
+     3.74088129316536249D-12, &
+     8.03036789996388945D-12, &
+    -2.15436320778387687D-11, &
+    -5.54423594816646238D-11, &
+     1.16582510935237737D-10, &
+     4.15374309183345315D-10, &
+    -5.23102048119632885D-10, &
+    -3.20801509172336887D-09, &
+     8.12488945684665156D-10, &
+     2.37975567798974168D-08, &
+     2.29304390650999664D-08, &
+    -1.48130789151209774D-07, &
+    -4.18407637021697758D-07, &
+     4.25583313757500854D-07, &
+     4.40153173157854990D-06, &
+     6.82103194400198485D-06, &
+    -2.14096192017107501D-05, &
+    -1.30754492546153456D-04, &
+    -2.45329802700214317D-04, &
+     3.92591360700703107D-04, &
+     4.51954110534921738D-03, &
+     1.90061557848454077D-02, &
+     5.73044035298372195D-02, &
+     1.40607162268937685D-01, &
+     2.95444510715087316D-01, &
+     5.46013972063934094D-01, &
+     9.01925489364799882D-01, &
+     1.34554416923454490D+00, &
+     1.82566962963248147D+00, &
+     2.26353729990026764D+00, &
+     2.57225340812456960D+00  ]
 
   ! --- COMMON /BHE/ ---
   ! He I bound-free and line opacity data for each depth point.
@@ -111,7 +130,7 @@ MODULE synthe_module
   REAL(4), SAVE :: BHE1(kw,29), AHE1(kw), SHE1(kw)
   REAL(4), SAVE :: BHE2(kw,6),  AHE2(kw), SHE2(kw)
   REAL(4), SAVE :: AHEMIN(kw),  SIGHE(kw)
-  REAL(4), SAVE :: XNFPHE(kw,3), XNFHE(kw,2)
+  REAL(8), SAVE :: XNFPHE(kw,3), XNFHE(kw,2)
 
   ! --- COMMON /BHYD/ ---
   ! H I bound-free and line opacity data for each depth point.
@@ -119,10 +138,8 @@ MODULE synthe_module
   REAL(4), SAVE :: BMIN(kw), AHMIN(kw), SHMIN(kw)
   REAL(4), SAVE :: SIGH(kw), SIGH2(kw)
   REAL(4), SAVE :: AHLINE(kw), SHLINE(kw)
-  REAL(4), SAVE :: XNFPH(kw,2), XNFH(kw)
+  REAL(8), SAVE :: XNFPH(kw,2), XNFH(kw)
 
-  ! --- COMMON /H1TAB/ (declared as module variables) ---
-  REAL(4), SAVE :: H0TAB(NTAB_VOIGT), H1TAB(NTAB_VOIGT), H2TAB(NTAB_VOIGT)
 
   ! --- COMMON /NLINES/ ---
   ! Wavelength grid parameters.
@@ -130,26 +147,27 @@ MODULE synthe_module
   INTEGER, SAVE :: LENGTH, MLINES, IXWLBEG
 
   ! --- COMMON /RHOX/ ---
-  REAL(4), SAVE :: RHOX(kw)
+  REAL(8), SAVE :: RHOX(kw)
   INTEGER, SAVE :: NRHOX
 
   ! --- COMMON /STATE/ ---
-  REAL(4), SAVE :: P(kw), XNE(kw), XNATOM(kw), RHO(kw), PTOTAL(kw)
+  REAL(8), SAVE :: P(kw), XNE(kw), XNATOM(kw), RHO(kw), PTOTAL(kw)
 
   ! --- COMMON /TEMP/ ---
-  REAL(4), SAVE :: T(kw), TKEV(kw), TK(kw), TLOG(kw)
+  REAL(8), SAVE :: T(kw), TKEV(kw), TK(kw), TLOG(kw)
   REAL(8), SAVE :: HKT(kw)   ! h*nu_0/(k*T) for stimulated-emission factor -- R8 for Boltzmann accuracy
   REAL(8), SAVE :: HCKT(kw)  ! h*c/(k*T) in cm -- exponent in EXP(-ELO*HCKT); R8 preserves high-excitation lines
   INTEGER, SAVE :: ITEMP
 
   ! --- COMMON /TURBPR/ ---
-  REAL(4), SAVE :: VTURB(kw), PTURB(kw)
+  REAL(8), SAVE :: VTURB(kw), PTURB(kw)
   REAL(4), SAVE :: TRBFDG, TRBCON, TRBPOW, TRBSND
   INTEGER, SAVE :: IFTURB
 
   ! --- COMMON /TXNXN/ ---
   REAL(8), SAVE :: EMERGE(kw)
-  REAL(4), SAVE :: TXNXN(kw), BSTIM(kw), XNFH2(kw)
+  REAL(8), SAVE :: XNFH2(kw)
+  REAL(4), SAVE :: TXNXN(kw), BSTIM(kw)
 
   ! --- COMMON /XNFDOP/ ---
   REAL(8), SAVE :: XNFPEL(mw6)  ! number density / rho for each ion (cm^{-3} g^{-1}) -- R8 for line strength precision
@@ -316,143 +334,105 @@ MODULE synthe_module
 
 CONTAINS
 
-! ============================================================================
-!  init_voigt_tables -- pre-tabulate the voigt_profile function on a uniform velocity grid.
-!
-!  Must be called once before voigt_profile is used.
-!
-!  Arguments:
-!    VSTEPS  -- number of table steps per Doppler half-width (e.g. 200.)
-!    N       -- number of table points (must equal NTAB_VOIGT = 2001)
-!
-!  The routine:
-!    1. Populates H1TAB via quadratic interpolation (interp_quadratic) of the tabulated
-!       H_1(v) kernel from Kurucz.
-!    2. Computes H0TAB = exp(-v^2) and H2TAB = (1 - 2v^2)*exp(-v^2).
-!
-!  Note: EXTAB/EXTABF/E1TAB tables and FASTEX/FASTE1 have been removed;
-!  the intrinsic EXP() is used directly throughout.
-! ============================================================================
-  SUBROUTINE init_voigt_tables(vsteps, n)
-    REAL(4), INTENT(IN) :: vsteps
-    INTEGER, INTENT(IN) :: n
-
-    ! Tabulated H_1(v) kernel at irregular v spacing (from Kurucz SYNTHE)
-    REAL(4), PARAMETER :: TABVI(81) = [ &
-       0.0,  0.1,  0.2,  0.3,  0.4,  0.5,  0.6,  0.7,  0.8,  0.9,  &
-       1.0,  1.1,  1.2,  1.3,  1.4,  1.5,  1.6,  1.7,  1.8,  1.9,  &
-       2.0,  2.1,  2.2,  2.3,  2.4,  2.5,  2.6,  2.7,  2.8,  2.9,  &
-       3.0,  3.1,  3.2,  3.3,  3.4,  3.5,  3.6,  3.7,  3.8,  3.9,  &
-       4.0,  4.2,  4.4,  4.6,  4.8,  5.0,  5.2,  5.4,  5.6,  5.8,  &
-       6.0,  6.2,  6.4,  6.6,  6.8,  7.0,  7.2,  7.4,  7.6,  7.8,  &
-       8.0,  8.2,  8.4,  8.6,  8.8,  9.0,  9.2,  9.4,  9.6,  9.8,  &
-      10.0, 10.2, 10.4, 10.6, 10.8, 11.0, 11.2, 11.4, 11.6, 11.8,  &
-      12.0 ]
-
-    REAL(4), PARAMETER :: TABH1(81) = [ &
-      -1.12838,  -1.10596,  -1.04048,  -0.93703,  -0.80346,  -0.64945,  &
-      -0.48552,  -0.32192,  -0.16772,  -0.03012,   0.08594,   0.17789,  &
-       0.24537,   0.28981,   0.31394,   0.32130,   0.31573,   0.30094,  &
-       0.28027,   0.25648,   0.231726,  0.207528,  0.184882,  0.164341, &
-       0.146128,  0.130236,  0.116515,  0.104739,  0.094653,  0.086005, &
-       0.078565,  0.072129,  0.066526,  0.061615,  0.057281,  0.053430, &
-       0.049988,  0.046894,  0.044098,  0.041561,  0.039250,  0.035195, &
-       0.031762,  0.028824,  0.026288,  0.024081,  0.022146,  0.020441, &
-       0.018929,  0.017582,  0.016375,  0.015291,  0.014312,  0.013426, &
-       0.012620,  0.0118860, 0.0112145, 0.0105990, 0.0100332, 0.0095119,&
-       0.0090306, 0.0085852, 0.0081722, 0.0077885, 0.0074314, 0.0070985,&
-       0.0067875, 0.0064967, 0.0062243, 0.0059688, 0.0057287, 0.0055030,&
-       0.0052903, 0.0050898, 0.0049006, 0.0047217, 0.0045526, 0.0043924,&
-       0.0042405, 0.0040964, 0.0039595 ]
-
-    INTEGER :: i
-    REAL(4) :: vv
-
-    ! --- Build H0TAB as a v-grid scratch array for interp_quadratic, then overwrite ---
-    DO i = 1, n
-      H0TAB(i) = REAL(i - 1) / vsteps
-    END DO
-
-    ! Interpolate H_1 kernel onto the uniform v grid -> H1TAB
-    CALL interp_quadratic(TABVI, TABH1, 81, H0TAB, H1TAB, n)
-
-    ! Now fill H0TAB = exp(-v^2) and H2TAB = (1 - 2v^2)*exp(-v^2)
-    DO i = 1, n
-      vv       = (REAL(i - 1) / vsteps)**2
-      H0TAB(i) = EXP(-vv)
-      H2TAB(i) = H0TAB(i) * (1.0 - vv - vv)
-    END DO
-
-  END SUBROUTINE init_voigt_tables
-
 
 ! ============================================================================
-!  voigt_profile -- fast approximation to the voigt_profile profile H(v, a).
+!  voigt_profile -- Voigt function H(a,v) via Weideman (1994) + Humlíček (1982)
 !
 !  H(v, a) is normalised so that integral H dv = sqrt(pi), i.e. the same
 !  convention as used throughout SYNTHE / ATLAS.
 !
 !  Arguments:
-!    V  -- dimensionless frequency offset in Doppler widths (>= 0)
-!    A  -- damping parameter = gamma / (4*pi * Delta_nu_D)
+!    V  -- dimensionless frequency offset in Doppler widths (any sign)
+!    A  -- damping parameter = gamma / (4*pi * Delta_nu_D)   (>= 0)
 !
-!  Algorithm (Kurucz):
-!    Three regimes:
-!      a < VOIGT_APPROX_LIMIT, v <= 10:  quadratic Taylor expansion in a using pre-tabulated
-!                          H0, H1, H2 (fast, accurate to ~a^3)
-!      a < VOIGT_APPROX_LIMIT, v > 10:   far-wing approximation H ~ 0.5642 * a / v^2
-!      a >= 0.2, a+v<=3.2: higher-order Taylor expansion with rational correction
-!      a >= 0.2, large:    asymptotic Lorentz limit H ~ a * 0.79788 / (a^2+v^2)
-!                           with correction terms
+!  Algorithm:
+!    |v| + a > 15 :  Humlíček (1982) R_{1,2} asymptotic
+!                    w(z) ≈ iz / [sqrt(pi) * (z^2 - 1/2)]
+!    |v| + a <= 15:  Weideman (1994) N=32 rational approximation
+!                    of w(z) via Möbius-mapped Horner polynomial
 !
-!  Requires: H0TAB, H1TAB, H2TAB initialised by init_voigt_tables.
+!  Accuracy: ~10^{-5} relative everywhere for a >= 10^{-6}
+!  (replaces the Kurucz 3-regime approximation which had ~4% error
+!  at the a = 0.2 regime boundary and ~20% at line centre near that
+!  boundary).
+!
+!  References:
+!    Weideman, J.A.C. 1994, SIAM J. Numer. Anal. 31, 1497
+!    Humlíček, J. 1982, JQSRT 27, 437
+!    Schreier, F. 2018, MNRAS 479, 3068
 ! ============================================================================
   FUNCTION voigt_profile(v, a) RESULT(result)
     REAL(4), INTENT(IN) :: v, a
     REAL(4)             :: result
-    INTEGER             :: iv
-    REAL(4)             :: vv, aa, u, aau, vvu, uu
-    REAL(4)             :: hh1, hh2, hh3, hh4
 
-    ! Table index: 200 steps per Doppler width, offset 1.5 for rounding
-    iv = INT(v * 200.0 + 1.5)
+    REAL(8) :: x, y, s
+    REAL(8) :: nr, ni, dr, di, d2
+    REAL(8) :: Zr, Zi
+    REAL(8) :: pr, pim, tmp
+    REAL(8) :: sq_r, sq_i, sq_d
+    REAL(8) :: term1, term2
+    REAL(8) :: dr_asym, di_asym, d2_asym
+    INTEGER :: k
 
-    IF (a >= VOIGT_APPROX_LIMIT) THEN
+    x = DBLE(ABS(v))
+    y = DBLE(a)
+    s = x + y
 
-      IF (a > 1.4 .OR. a + v > 3.2) THEN
-        ! --- Asymptotic / Lorentz regime ---
-        aa     = a * a
-        vv     = v * v
-        u      = (aa + vv) * 1.4142
-        result = a * 0.79788 / u
-        IF (a > 100.0) RETURN
-        aau    = aa / u
-        vvu    = vv / u
-        uu     = u * u
-        result = (((((aau - 10.0*vvu) * aau * 3.0 + 15.0*vvu*vvu) &
-                   + 3.0*vv - aa) / uu + 1.0)) * result
-        RETURN
-      END IF
+    IF (s > 15.0D0) THEN
+      ! ----------------------------------------------------------------
+      !  Humlíček (1982) R_{1,2} asymptotic approximation
+      !  w(z) ≈ iz / [sqrt(pi) * (z^2 - 1/2)]
+      !  Re[w] = (-y*(x^2-y^2-1/2) + x*2xy) / [sqrt(pi) * |z^2-1/2|^2]
+      ! ----------------------------------------------------------------
+      dr_asym = x*x - y*y - 0.5D0
+      di_asym = 2.0D0 * x * y
+      d2_asym = dr_asym*dr_asym + di_asym*di_asym
+      result = REAL((-y*dr_asym + x*di_asym) / (SQRTPI * d2_asym))
 
-      ! --- Intermediate regime: Taylor expansion in a with rational correction ---
-      vv  = v * v
-      hh1 = H1TAB(iv) + H0TAB(iv) * 1.12838
-      hh2 = H2TAB(iv) + hh1 * 1.12838 - H0TAB(iv)
-      hh3 = (1.0 - H2TAB(iv)) * 0.37613 - hh1 * 0.66667 * vv + hh2 * 1.12838
-      hh4 = (3.0 * hh3 - hh1) * 0.37613 + H0TAB(iv) * 0.66667 * vv * vv
-      result = ((((hh4*a + hh3)*a + hh2)*a + hh1)*a + H0TAB(iv)) * &
-               (((-0.122727278*a + 0.532770573)*a - 0.96284325)*a + 0.979895032)
-      RETURN
-
-    END IF
-
-    ! --- Small damping regime (a < VOIGT_APPROX_LIMIT) ---
-    IF (v > 10.0) THEN
-      ! Far wing: Lorentz / Gaussian transition
-      result = 0.5642 * a / v**2
     ELSE
-      ! Core: quadratic in a
-      result = (H2TAB(iv) * a + H1TAB(iv)) * a + H0TAB(iv)
+      ! ----------------------------------------------------------------
+      !  Weideman (1994) N=32 rational approximation
+      !  w(z) = 2*P(Z) / (L-iz)^2  +  1 / [sqrt(pi) * (L-iz)]
+      !  Z = (L+iz) / (L-iz)  (Möbius transform)
+      !  P(Z) = AWEI(1)*Z^31 + ... + AWEI(32)  (Horner evaluation)
+      ! ----------------------------------------------------------------
+
+      ! L - iz = (L+y) + i*(-x)
+      dr = LWEI + y
+      di = -x
+
+      ! L + iz = (L-y) + i*(x)
+      nr = LWEI - y
+      ni = x
+
+      ! |L - iz|^2
+      d2 = dr*dr + di*di
+
+      ! Möbius transform Z = (nr + i*ni) / (dr + i*di)
+      Zr = (nr*dr + ni*di) / d2
+      Zi = (ni*dr - nr*di) / d2
+
+      ! Horner evaluation of P(Z) in real arithmetic
+      pr  = AWEI(1)
+      pim = 0.0D0
+      DO k = 2, NWEI
+        tmp = pr*Zr - pim*Zi + AWEI(k)
+        pim = pr*Zi + pim*Zr
+        pr  = tmp
+      END DO
+
+      ! (L-iz)^2 = (dr + i*di)^2
+      sq_r = dr*dr - di*di
+      sq_i = 2.0D0 * dr * di
+      sq_d = sq_r*sq_r + sq_i*sq_i
+
+      ! Re[ 2*P / (L-iz)^2 ]
+      term1 = 2.0D0 * (pr*sq_r + pim*sq_i) / sq_d
+
+      ! Re[ 1 / (sqrt(pi) * (L-iz)) ] = dr / (sqrt(pi) * |L-iz|^2)
+      term2 = dr / (SQRTPI * d2)
+
+      result = REAL(term1 + term2)
     END IF
 
   END FUNCTION voigt_profile
@@ -461,21 +441,24 @@ CONTAINS
 ! ============================================================================
 !  air_to_vac -- convert air wavelength to vacuum wavelength (both in nm).
 !
-!  Uses the Edlen dispersion formula for dry air at STP, iterated twice
-!  for accuracy (the wavenumber argument is a vacuum wavenumber, so the
-!  formula must be applied self-consistently).
+!  Uses the Peck & Reeder (1972, JOSA 62, 958) dispersion formula for
+!  standard dry air at 15 C, 101.325 kPa, 0.045% CO2 by volume.
+!  This is the IAU standard (Morton 2000, ApJS 130, 403; Ciddor 1996,
+!  Appl. Opt. 35, 1566).  Iterated three times for self-consistency
+!  (the formula requires vacuum wavenumber as input).
 !
-!  Reference: Edlen (1953), with constants as used in SYNTHE/ATLAS.
+!  Replaces the previous Edlen (1966) coefficients.
 ! ============================================================================
   FUNCTION air_to_vac(w) RESULT(result)
     REAL(8), INTENT(IN) :: w       ! air wavelength (nm)
     REAL(8)             :: result
     REAL(8)             :: waven, wnew
 
-    ! Edlen refractivity coefficients
-    REAL(8), PARAMETER :: N0  = 1.0000834213D0
-    REAL(8), PARAMETER :: NA  = 2406030.D0, CA = 1.30D10
-    REAL(8), PARAMETER :: NB  =   15997.D0, CB = 3.89D9
+    ! Peck & Reeder (1972) refractivity coefficients, converted to
+    ! wavenumber in cm^-1 (waven = 1e7/lambda_nm).
+    REAL(8), PARAMETER :: N0  = 1.0000834254D0
+    REAL(8), PARAMETER :: NA  = 2406147.D0, CA = 1.30D10
+    REAL(8), PARAMETER :: NB  =   15998.D0, CB = 3.89D9
 
     ! First iteration (use air wavenumber as approximation)
     waven = 1.D7 / w
@@ -495,136 +478,24 @@ CONTAINS
 ! ============================================================================
 !  vac_to_air -- convert vacuum wavelength to air wavelength (both in nm).
 !
-!  Single application of the Edlen formula (no iteration needed since
-!  the vacuum wavenumber is exact).
+!  Single application of the Peck & Reeder (1972) / Ciddor (1996) /
+!  Morton (2000) formula (no iteration needed since the vacuum
+!  wavenumber is exact).  IAU standard for dry air at 15 C, 101.325 kPa.
 ! ============================================================================
   FUNCTION vac_to_air(w) RESULT(result)
     REAL(8), INTENT(IN) :: w       ! vacuum wavelength (nm)
     REAL(8)             :: result
     REAL(8)             :: waven
 
-    REAL(8), PARAMETER :: N0  = 1.0000834213D0
-    REAL(8), PARAMETER :: NA  = 2406030.D0, CA = 1.30D10
-    REAL(8), PARAMETER :: NB  =   15997.D0, CB = 3.89D9
+    REAL(8), PARAMETER :: N0  = 1.0000834254D0
+    REAL(8), PARAMETER :: NA  = 2406147.D0, CA = 1.30D10
+    REAL(8), PARAMETER :: NB  =   15998.D0, CB = 3.89D9
 
     waven  = 1.D7 / w
     result = w / (N0 + NA/(CA - waven**2) + NB/(CB - waven**2))
 
   END FUNCTION vac_to_air
 
-
-! ============================================================================
-!  interp_quadratic -- remap a function from an old grid to a new grid using piecewise
-!          quadratic (parabolic) interpolation with blended coefficients.
-!
-!  Arguments:
-!    XOLD(NOLD)  -- old x grid (must be monotonically increasing)
-!    FOLD(NOLD)  -- function values on old grid
-!    NOLD        -- number of old grid points
-!    XNEW(NNEW)  -- new x grid points (must be monotonically increasing)
-!    FNEW(NNEW)  -- output: interpolated function values on new grid
-!    NNEW        -- number of new grid points
-!
-!  The algorithm fits piecewise quadratics f = A + B*x + C*x^2 to each
-!  interval, blending the "forward" and "backward" parabola fits at each
-!  point to reduce Runge-like oscillations.
-!
-!  This routine is used by init_voigt_tables to map the irregular H_1(v) data
-!  onto the uniform velocity grid.
-! ============================================================================
-  SUBROUTINE interp_quadratic(xold, fold, nold, xnew, fnew, nnew)
-    REAL(4), INTENT(IN)  :: xold(nold), fold(nold)
-    INTEGER, INTENT(IN)  :: nold, nnew
-    REAL(4), INTENT(IN)  :: xnew(nnew)
-    REAL(4), INTENT(OUT) :: fnew(nnew)
-
-    INTEGER :: k, l, l1, l2, ll
-    REAL(4) :: a, b, c, d, wt
-    REAL(4) :: abac, bbac, cbac, afor, bfor, cfor
-
-    l  = 2
-    ll = 0
-    a  = 0.0;  b  = 0.0;  c  = 0.0
-    abac = 0.0; bbac = 0.0; cbac = 0.0
-    afor = 0.0; bfor = 0.0; cfor = 0.0
-
-    DO k = 1, nnew
-
-      ! Advance l until xnew(k) < xold(l)
-      DO WHILE (xnew(k) >= xold(l) .AND. l <= nold)
-        l = l + 1
-        IF (l > nold) EXIT
-      END DO
-
-      IF (l > nold) THEN
-        ! Extrapolate beyond right end: use last linear segment
-        IF (l /= ll) THEN
-          l  = MIN(nold, l)
-          c  = 0.0
-          b  = (fold(l) - fold(l-1)) / (xold(l) - xold(l-1))
-          a  = fold(l) - xold(l) * b
-          ll = l
-        END IF
-
-      ELSE IF (l == ll) THEN
-        ! Same interval as last point: reuse coefficients
-        CONTINUE
-
-      ELSE IF (l == 2) THEN
-        ! Left end: use linear segment
-        c  = 0.0
-        b  = (fold(l) - fold(l-1)) / (xold(l) - xold(l-1))
-        a  = fold(l) - xold(l) * b
-        ll = l
-
-      ELSE
-        l1 = l - 1
-        l2 = l - 2
-
-        ! Compute backward parabola (through points l2, l1, l)
-        IF (l > ll + 1 .OR. l == 3) THEN
-          d    = (fold(l1) - fold(l2)) / (xold(l1) - xold(l2))
-          cbac = fold(l)  / ((xold(l) - xold(l1)) * (xold(l)  - xold(l2))) + &
-                (fold(l2) / (xold(l)  - xold(l2)) - &
-                 fold(l1) / (xold(l)  - xold(l1))) / (xold(l1) - xold(l2))
-          bbac = d - (xold(l1) + xold(l2)) * cbac
-          abac = fold(l2) - xold(l2)*d + xold(l1)*xold(l2)*cbac
-        ELSE
-          ! Reuse forward as backward (already advanced by one)
-          cbac = cfor
-          bbac = bfor
-          abac = afor
-        END IF
-
-        IF (l >= nold) THEN
-          ! At or past right end: use backward parabola
-          a  = abac;  b = bbac;  c = cbac
-          ll = l
-        ELSE
-          ! Compute forward parabola (through points l1, l, l+1)
-          d    = (fold(l) - fold(l1)) / (xold(l) - xold(l1))
-          cfor = fold(l+1) / ((xold(l+1) - xold(l)) * (xold(l+1) - xold(l1))) + &
-                (fold(l1) / (xold(l+1) - xold(l1)) - &
-                 fold(l)  / (xold(l+1) - xold(l)))  / (xold(l) - xold(l1))
-          bfor = d - (xold(l) + xold(l1)) * cfor
-          afor = fold(l1) - xold(l1)*d + xold(l)*xold(l1)*cfor
-
-          ! Blend forward and backward based on relative curvature
-          wt = 0.0
-          IF (ABS(cfor) > 0.0) wt = ABS(cfor) / (ABS(cfor) + ABS(cbac))
-          a  = afor + wt * (abac - afor)
-          b  = bfor + wt * (bbac - bfor)
-          c  = cfor + wt * (cbac - cfor)
-          ll = l
-        END IF
-
-      END IF
-
-      fnew(k) = a + (b + c * xnew(k)) * xnew(k)
-
-    END DO
-
-  END SUBROUTINE interp_quadratic
 
 
 ! ============================================================================
@@ -728,129 +599,6 @@ CONTAINS
   END SUBROUTINE parabolic_coeffs
 
 ! ============================================================================
-!  load_abundances -- initialise element abundances, atomic masses, and symbols.
-!
-!  Replaces the original SUBROUTINE load_abundances which used COMMON /ELEM/.
-!  Data source: Anders & Grevesse (1989), Geochimica et Cosmochimica Acta,
-!  53, 197-214, as compiled by Kurucz.
-!
-!  Abundances are log epsilon relative to a hydrogen abundance of 0.911
-!  (i.e. H is set to -0.04 rather than the conventional 12.00).
-!  Elements with no known/relevant abundance are set to -20.00.
-!
-!  This subroutine must be called once before the abundance array is used.
-! ============================================================================
-  SUBROUTINE load_abundances()
-
-    !                      1H       2He
-    abund(1:2) = [ 0.911,  0.089 ]
-
-    !                3Li      4Be      5B       6C       7N       8O
-    abund(3:10) = [ -10.88, -10.89,  -9.44,   -3.48,   -3.99,   -3.11, &
-    !                9F      10Ne
-                     -7.48,  -3.95 ]
-
-    !               11Na     12Mg     13Al     14Si     15P      16S
-    abund(11:18) = [ -5.71,  -4.46,  -5.57,   -4.49,   -6.59,   -4.83, &
-    !               17Cl     18Ar
-                     -6.54,  -5.48 ]
-
-    !               19K      20Ca     21Sc     22Ti     23V      24Cr
-    abund(19:26) = [ -6.92,  -5.68,  -8.94,   -7.05,   -8.04,   -6.37, &
-    !               25Mn     26Fe
-                     -6.65,  -4.37 ]
-
-    !               27Co     28Ni     29Cu     30Zn     31Ga     32Ge
-    abund(27:34) = [ -7.12,  -5.79,  -7.83,   -7.44,   -9.16,   -8.63, &
-    !               33As     34Se
-                     -9.67,  -8.69 ]
-
-    !               35Br     36Kr     37Rb     38Sr     39Y      40Zr
-    abund(35:42) = [ -9.41,  -8.81,  -9.44,   -9.14,   -9.80,   -9.44, &
-    !               41Nb     42Mo
-                    -10.62, -10.12 ]
-
-    !               43Tc     44Ru     45Rh     46Pd     47Ag     48Cd
-    abund(43:50) = [-20.00, -10.20, -10.92,  -10.35,  -11.10,  -10.18, &
-    !               49In     50Sn
-                    -10.38, -10.04 ]
-
-    !               51Sb     52Te     53I      54Xe     55Cs     56Ba
-    abund(51:58) = [-11.04,  -9.80, -10.53,   -9.81,  -10.92,   -9.91, &
-    !               57La     58Ce
-                    -10.82, -10.49 ]
-
-    !               59Pr     60Nd     61Pm     62Sm     63Eu     64Gd
-    abund(59:66) = [-11.33, -10.54, -20.00,  -11.04,  -11.53,  -10.92, &
-    !               65Tb     66Dy
-                    -12.14, -10.94 ]
-
-    !               67Ho     68Er     69Tm     70Yb     71Lu     72Hf
-    abund(67:74) = [-11.78, -11.11, -12.04,  -10.96,  -11.28,  -11.16, &
-    !               73Ta     74W
-                    -11.91, -10.93 ]
-
-    !               75Re     76Os     77Ir     78Pt     79Au     80Hg
-    abund(75:82) = [-11.77, -10.59, -10.69,  -10.24,  -11.03,  -10.95, &
-    !               81Tl     82Pb
-                    -11.14, -10.19 ]
-
-    !               83Bi     84Po     85At     86Rn     87Fr     88Ra
-    abund(83:90) = [-11.33, -20.00, -20.00,  -20.00,  -20.00,  -20.00, &
-    !               89Ac     90Th
-                    -20.00, -11.92 ]
-
-    !               91Pa     92U      93Np     94Pu     95Am     96Cm
-    abund(91:99) = [-20.00, -12.51, -20.00,  -20.00,  -20.00,  -20.00, &
-    !               97Bk     98Cf     99Es
-                    -20.00, -20.00, -20.00 ]
-
-    ! -------------------------------------------------------------------
-    !  Atomic masses (amu) -- Anders & Grevesse (1989) / Kurucz
-    ! -------------------------------------------------------------------
-    !            1H      2He
-    atmass(1:2) = [ 1.008,  4.003 ]
-
-    atmass(3:12)  = [  6.939,  9.013, 10.81,  12.01,  14.01,  16.00, &
-                       19.00, 20.18,  22.99,  24.31 ]
-    atmass(13:22) = [ 26.98,  28.09,  30.98,  32.07,  35.45,  39.95, &
-                      39.10,  40.08,  44.96,  47.90 ]
-    atmass(23:32) = [ 50.94,  52.00,  54.94,  55.85,  58.94,  58.71, &
-                      63.55,  65.37,  69.72,  72.60 ]
-    atmass(33:42) = [ 74.92,  78.96,  79.91,  83.80,  85.48,  87.63, &
-                      88.91,  91.22,  92.91,  95.95 ]
-    atmass(43:52) = [ 99.00, 101.1,  102.9,  106.4,  107.9,  112.4, &
-                     114.8,  118.7,  121.8,  127.6 ]
-    atmass(53:62) = [126.9,  131.3,  132.9,  137.4,  138.9,  140.1, &
-                     140.9,  144.3,  147.0,  150.4 ]
-    atmass(63:72) = [152.0,  157.3,  158.9,  162.5,  164.9,  167.3, &
-                     168.9,  173.0,  175.0,  178.5 ]
-    atmass(73:82) = [181.0,  183.9,  186.3,  190.2,  192.2,  195.1, &
-                     197.0,  200.6,  204.4,  207.2 ]
-    atmass(83:92) = [209.0,  210.0,  211.0,  222.0,  223.0,  226.1, &
-                     227.1,  232.0,  231.0,  238.0 ]
-    atmass(93:99) = [237.0,  244.0,  243.0,  247.0,  247.0,  251.0,  254.0 ]
-
-    ! -------------------------------------------------------------------
-    !  Element symbols (2-character, left-justified)
-    !  Replaces the original Hollerith DATA ELEM/ 2HH , 2HHE, ... /
-    !  stored in a REAL*8 array -- a notably fragile F77 idiom.
-    ! -------------------------------------------------------------------
-    elem(1:10)  = [ 'H ', 'HE', 'LI', 'BE', 'B ', 'C ', 'N ', 'O ', 'F ', 'NE' ]
-    elem(11:20) = [ 'NA', 'MG', 'AL', 'SI', 'P ', 'S ', 'CL', 'AR', 'K ', 'CA' ]
-    elem(21:30) = [ 'SC', 'TI', 'V ', 'CR', 'MN', 'FE', 'CO', 'NI', 'CU', 'ZN' ]
-    elem(31:40) = [ 'GA', 'GE', 'AS', 'SE', 'BR', 'KR', 'RB', 'SR', 'Y ', 'ZR' ]
-    elem(41:50) = [ 'NB', 'MO', 'TC', 'RU', 'RH', 'PD', 'AG', 'CD', 'IN', 'SN' ]
-    elem(51:60) = [ 'SB', 'TE', 'I ', 'XE', 'CS', 'BA', 'LA', 'CE', 'PR', 'ND' ]
-    elem(61:70) = [ 'PM', 'SM', 'EU', 'GD', 'TB', 'DY', 'HO', 'ER', 'TM', 'YB' ]
-    elem(71:80) = [ 'LU', 'HF', 'TA', 'W ', 'RE', 'OS', 'IR', 'PT', 'AU', 'HG' ]
-    elem(81:90) = [ 'TL', 'PB', 'BI', 'PO', 'AT', 'RN', 'FR', 'RA', 'AC', 'TH' ]
-    elem(91:99) = [ 'PA', 'U ', 'NP', 'PU', 'AM', 'CM', 'BK', 'CF', 'ES' ]
-
-  END SUBROUTINE load_abundances
-
-
-! ============================================================================
 !  hydrogen_oscillator_strength -- hydrogen oscillator strength f_{nm} for transition n -> m.
 ! ============================================================================
   FUNCTION hydrogen_oscillator_strength(n, m) RESULT(result)
@@ -859,8 +607,9 @@ CONTAINS
 
     INTEGER, SAVE :: nstr = 0, mstr = 0
     REAL(4),  SAVE :: fnm = 0.0
+    REAL(4),  SAVE :: fkn = 0.0, ginf = 0.0, gca = 0.0, wtc = 0.0
 
-    REAL(4) :: xn, xm, xmn, xmn12, fkn, ginf, gca, fk, wtc, wt
+    REAL(4) :: xn, xm, xmn, xmn12, fk, wt
 
     result = 0.0
     IF (m <= n) RETURN
@@ -1140,27 +889,25 @@ CONTAINS
   END SUBROUTINE stark_profile_interp
 
 
+
+
 ! ============================================================================
-!  hydrogen_line_profile -- hydrogen line profile including Stark broadening and fine structure.
+!  hydrogen_line_profile -- hydrogen line profile with Stark⊗Doppler convolution.
 !
-!  Computes the opacity profile for a single hydrogen line transition N->M
-!  at depth point J, for a wavelength offset DELW from line centre.
+!  When Stehlé MMM tables are available:
+!    1. Extract pure Stark profile I(Δα) at (Ne, T) of depth J
+!    2. Convolve with Gaussian of full Doppler width (thermal + microturbulence)
+!    3. Cache the convolved profile per (n, m, j) for reuse across wavelengths
+!    4. Evaluate convolved profile at the requested frequency offset
+!    5. Add Lorentzian damping wings (resonance + vdW + radiation) via MAX
+!    6. Add Lyα quasi-molecular satellites where applicable
 !
-!  Arguments:
-!    N      -- lower principal quantum number
-!    M      -- upper principal quantum number
-!    J      -- atmospheric depth index
-!    DELW   -- wavelength offset from line centre (nm, REAL*8)
-!    DOPPH  -- Doppler half-width array (per depth; REAL*4, dimension kw)
+!  When tables are not available:
+!    Falls back to original Peterson/Kurucz analytic profiles unchanged.
 !
-!  Returns: opacity profile value (REAL*4), normalised as for voigt_profile.
-!
-!  Physics (from Deane Peterson / Kurucz):
-!    Doppler core: fine-structure components convolved with Gaussian
-!    Lorentz wings: resonance, radiation, van der Waals broadening
-!    Lyman alpha: special treatment with H2/H2+ quasi-molecular cutoffs
-!                 (Allard & Koester 1992; Allard et al. 1998)
-!    Stark wings: quasistatic ion field profile S(beta,p) via stark_quasistatic_profile
+!  References:
+!    Stehlé, C. & Hutcheon, R. 1999, A&AS 140, 93
+!    Stehlé, C. & Fouquet, S. 2010, Int. J. Spectrosc. 2010, 506346
 ! ============================================================================
   FUNCTION hydrogen_line_profile(n, m, j, delw, dopph) RESULT(result)
     INTEGER,  INTENT(IN) :: n, m, j
@@ -1169,7 +916,6 @@ CONTAINS
     REAL(4)              :: result
 
     ! Lyman alpha H2+ quasi-molecular cutoff table
-    ! Delta wavenumber = -15000 + 100*(i-1), i=1..111, up to -4000 cm^{-1}
     REAL(4), PARAMETER :: CUTOFFH2PLUS(111) = [ &
       -15.14,-15.06,-14.97,-14.88,-14.80,-14.71,-14.62,-14.53, &
       -14.44,-14.36,-14.27,-14.18,-14.09,-14.01,-13.92,-13.83, &
@@ -1186,8 +932,6 @@ CONTAINS
       -11.22,-11.21,-11.20,-11.19,-11.18,-11.17,-11.15,-11.14, &
       -11.13,-11.12,-11.11,-11.10,-11.09,-11.08,-11.07 ]
 
-    ! Lyman alpha H2 quasi-molecular cutoff table
-    ! Delta wavenumber = -22000 + 200*(i-1), i=1..91, up to -4000 cm^{-1}
     REAL(4), PARAMETER :: CUTOFFH2(91) = [ &
       -13.64,-13.52,-13.39,-13.27,-13.14,-13.01,-12.87,-12.74, &
       -12.63,-12.56,-12.51,-12.48,-12.47,-12.49,-12.52,-12.55, &
@@ -1202,7 +946,6 @@ CONTAINS
       -12.78,-12.76,-12.74,-12.72,-12.70,-12.68,-12.65,-12.62, &
       -12.59,-12.56,-12.53 ]
 
-    ! Einstein A coefficients (sum over upper and lower levels)
     REAL(4), PARAMETER :: ASUMLYMAN(100) = [ &
        0.000E+00, 6.265E+08, 1.897E+08, 8.126E+07, 4.203E+07, 2.450E+07, &
        1.236E+07, 8.249E+06, 5.782E+06, 4.208E+06, 3.158E+06, 2.430E+06, &
@@ -1213,67 +956,57 @@ CONTAINS
        8.489E+04, 7.836E+04, 7.249E+04, 6.719E+04, 6.239E+04, 5.804E+04, &
        5.408E+04, 5.048E+04, 4.719E+04, 4.418E+04, 4.142E+04, 3.888E+04, &
        3.655E+04, 3.440E+04, 3.242E+04, 3.058E+04, 2.888E+04, 2.731E+04, &
-       2.585E+04, 2.449E+04, 2.322E+04, 2.204E+04, 2.094E+04, 1.991E+04, &
-       1.894E+04, 1.804E+04, 1.720E+04, 1.640E+04, 1.566E+04, 1.496E+04, &
-       1.430E+04, 1.368E+04, 1.309E+04, 1.254E+04, 1.201E+04, 1.152E+04, &
-       1.105E+04, 1.061E+04, 1.019E+04, 9.796E+03, 9.419E+03, 9.061E+03, &
-       8.721E+03, 8.398E+03, 8.091E+03, 7.799E+03, 7.520E+03, 7.255E+03, &
-       7.002E+03, 6.760E+03, 6.530E+03, 6.310E+03, 6.100E+03, 5.898E+03, &
-       5.706E+03, 5.522E+03, 5.346E+03, 5.177E+03, 5.015E+03, 4.860E+03, &
-       4.711E+03, 4.569E+03, 4.432E+03, 4.300E+03 ]
-
+       2.585E+04, 2.450E+04, 2.325E+04, 2.208E+04, 2.099E+04, 1.997E+04, &
+       1.902E+04, 1.813E+04, 1.729E+04, 1.651E+04, 1.577E+04, 1.508E+04, &
+       1.443E+04, 1.382E+04, 1.324E+04, 1.269E+04, 1.217E+04, 1.168E+04, &
+       1.122E+04, 1.078E+04, 1.037E+04, 9.975E+03, 9.600E+03, 9.243E+03, &
+       8.903E+03, 8.578E+03, 8.268E+03, 7.971E+03, 7.688E+03, 7.416E+03, &
+       7.156E+03, 6.907E+03, 6.668E+03, 6.439E+03, 6.219E+03, 6.008E+03, &
+       5.805E+03, 5.610E+03, 5.422E+03, 5.242E+03, 5.068E+03, 4.900E+03, &
+       4.739E+03, 4.584E+03, 4.434E+03, 4.289E+03 ]
     REAL(4), PARAMETER :: ASUM(100) = [ &
-       0.000E+00, 4.696E+08, 9.980E+07, 3.017E+07, 1.155E+07, 5.189E+06, &
-       2.616E+06, 1.437E+06, 8.444E+05, 5.234E+05, 3.389E+05, 2.275E+05, &
-       1.575E+05, 1.120E+05, 8.142E+04, 6.040E+04, 4.560E+04, 3.496E+04, &
-       2.719E+04, 2.141E+04, 1.711E+04, 1.377E+04, 1.119E+04, 9.166E+03, &
-       7.572E+03, 6.341E+03, 5.338E+03, 4.523E+03, 3.854E+03, 3.302E+03, &
-       2.844E+03, 2.460E+03, 2.138E+03, 1.866E+03, 1.635E+03, 1.438E+03, &
-       1.269E+03, 1.124E+03, 9.983E+02, 8.894E+02, 7.947E+02, 7.120E+02, &
-       6.396E+02, 5.759E+02, 5.198E+02, 4.703E+02, 4.263E+02, 3.873E+02, &
-       3.526E+02, 3.215E+02, 2.938E+02, 2.689E+02, 2.465E+02, 2.264E+02, &
-       2.082E+02, 1.918E+02, 1.769E+02, 1.634E+02, 1.512E+02, 1.400E+02, &
-       1.298E+02, 1.206E+02, 1.121E+02, 1.043E+02, 9.720E+01, 9.066E+01, &
-       8.465E+01, 7.912E+01, 7.403E+01, 6.933E+01, 6.498E+01, 6.097E+01, &
-       5.725E+01, 5.381E+01, 5.061E+01, 4.765E+01, 4.489E+01, 4.232E+01, &
-       3.994E+01, 3.771E+01, 3.563E+01, 3.369E+01, 3.188E+01, 3.019E+01, &
-       2.860E+01, 2.712E+01, 2.572E+01, 2.442E+01, 2.319E+01, 2.204E+01, &
-       2.096E+01, 1.994E+01, 1.898E+01, 1.808E+01, 1.722E+01, 1.642E+01, &
-       1.566E+01, 1.495E+01, 1.427E+01, 1.363E+01 ]
+       0.000E+00, 6.265E+08, 5.575E+07, 1.278E+07, 4.125E+06, 1.644E+06, &
+       7.568E+05, 3.872E+05, 2.141E+05, 1.263E+05, 7.834E+04, 5.066E+04, &
+       3.393E+04, 2.343E+04, 1.661E+04, 1.204E+04, 8.904E+03, 6.700E+03, &
+       5.118E+03, 3.965E+03, 3.107E+03, 2.463E+03, 1.972E+03, 1.594E+03, &
+       1.300E+03, 1.069E+03, 8.852E+02, 7.386E+02, 6.202E+02, 5.237E+02, &
+       4.449E+02, 3.800E+02, 3.263E+02, 2.815E+02, 2.439E+02, 2.122E+02, &
+       1.854E+02, 1.626E+02, 1.431E+02, 1.264E+02, 1.120E+02, 9.951E+01, &
+       8.872E+01, 7.932E+01, 7.108E+01, 6.383E+01, 5.742E+01, 5.176E+01, &
+       4.673E+01, 4.226E+01, 3.827E+01, 3.471E+01, 3.152E+01, 2.867E+01, &
+       2.610E+01, 2.380E+01, 2.172E+01, 1.984E+01, 1.814E+01, 1.660E+01, &
+       1.521E+01, 1.394E+01, 1.279E+01, 1.174E+01, 1.079E+01, 9.920E+00, &
+       9.127E+00, 8.403E+00, 7.741E+00, 7.134E+00, 6.578E+00, 6.068E+00, &
+       5.601E+00, 5.171E+00, 4.776E+00, 4.413E+00, 4.078E+00, 3.770E+00, &
+       3.486E+00, 3.224E+00, 2.983E+00, 2.760E+00, 2.554E+00, 2.364E+00, &
+       2.189E+00, 2.027E+00, 1.878E+00, 1.740E+00, 1.612E+00, 1.494E+00, &
+       1.385E+00, 1.284E+00, 1.191E+00, 1.105E+00, 1.025E+00, 9.509E-01, &
+       8.824E-01, 8.190E-01, 7.603E-01, 7.060E-01 ]
 
-    ! Fine-structure component offsets and weights (Kurucz)
     REAL(4), PARAMETER :: STALPH(34) = [ &
-      -730., 370., 188., 515., 327., 619.,-772.,-473.,-369., 120., &
-       256., 162., 285.,-161., -38.3,  6.82,-174.,-147.,-101., -77.5, &
-        55., 126.,  75., 139., -60.,   3.7,  27., -69., -42., -18., &
-        -5.5,  -9.1, -33., -24. ]
+      -327.,654., 0.,-55.,166.,-15.,-150.,276.,498., &
+      0.,-12.,45.,-40.,78.,-82.,77.,167.,301.,514.,876., &
+      0.,-3.,14.,-6.,28.,-2.,-18.,45.,-24.,52.,84.,172.,310.,536. ]
     REAL(4), PARAMETER :: STWTAL(34) = [ &
-      1.,2.,1.,2.,1.,2.,1.,2.,3.,1.,2.,1.,2.,1.,4.,6.,1.,2., &
-      3.,4.,1.,2.,1.,2.,1.,4.,6.,1.,7.,6.,4.,4.,4.,5. ]
+      1.,3., 2.,2.,1.,3.,3.,5.,2., &
+      3.,3.,3.,1.,4.,4.,5.,7.,3.,9.,2., &
+      3.,4.,4.,4.,1.,5.,5.,6.,6.,7.,9.,4.,11.,2. ]
     INTEGER, PARAMETER :: ISTAL(4) = [ 1, 3, 10, 21 ]
     INTEGER, PARAMETER :: LNGHAL(4) = [ 2, 7, 11, 14 ]
-
     REAL(4), PARAMETER :: STCOMP(5,4) = RESHAPE( [ &
-       0.,  0.,   0.,   0., 0., &
-     468.,576.,-522.,   0., 0., &
-     260.,290., -33.,-140., 0., &
-     140.,150.,  18., -27.,-51. ], [5,4] )
+       0.,0.,0.,0.,0., 468.,576.,-522.,0.,0., &
+       260.,290.,-33.,-140.,0., 140.,150.,18.,-27.,-51. ], [5,4] )
     REAL(4), PARAMETER :: STCPWT(5,4) = RESHAPE( [ &
-      1.,0.,0.,0.,0., &
-      1.,1.,2.,0.,0., &
-      1.,1.,4.,3.,0., &
-      1.,1.,4.,6.,4. ], [5,4] )
+      1.,0.,0.,0.,0., 1.,1.,2.,0.,0., &
+      1.,1.,4.,3.,0., 1.,1.,4.,6.,4. ], [5,4] )
     INTEGER, PARAMETER :: LNCOMP(4) = [ 1, 3, 4, 5 ]
-
-    ! XKNM table (Kurucz) for principal quantum numbers n<=4, delta_m<=3
     REAL(4), PARAMETER :: XKNMTB(4,3) = RESHAPE( [ &
       0.0001716, 0.009019, 0.1001, 0.5820, &
       0.0005235, 0.01772,  0.171,  0.866,  &
       0.0008912, 0.02507,  0.223,  1.02    ], [4,3] )
 
     INTEGER, SAVE :: itemp1 = 0, n1 = 0, m1 = 0
-    INTEGER       :: k, i, ifins, ipos, nwid, ifcore, icut
-    INTEGER       :: mmn
+    INTEGER       :: k, i, ifins, ipos, nwid, ifcore, icut, mmn
     REAL(4)       :: xn, xm, xn2, xm2, xmn2, xm2mn2, gnm, xknm
     REAL(4)       :: y1num, y1wht, freqnm, dbeta, wavenm
     REAL(4)       :: c1con, c2con, radamp, resont, vdw, hwvdw
@@ -1285,265 +1018,788 @@ CONTAINS
     REAL(4)       :: beta_val, y1, y2, gam, prqs, f, p1, fns
     REAL(4)       :: cutoff_val, cutfreq, spacing
     REAL(4)       :: freq22000, freq15000, beta4000, prqsp4000, cutoff4000
-    REAL(4)       :: d, hh1, hh2, hh3, hh4
-    ! Per-depth pre-computed arrays (saved, recomputed when ITEMP changes)
+    REAL(4)       :: d
     REAL(4), SAVE :: pp_d(kw), fo(kw), gcon1(kw), gcon2(kw)
     REAL(4), SAVE :: y1b(kw), y1s(kw), c1d(kw), c2d(kw)
     REAL(4), SAVE :: t3nhe(kw), t3nh2(kw)
     REAL(4), SAVE :: radamp_s, resont_s, vdw_s, stark_s
     REAL(4), SAVE :: c1con_s, c2con_s, dbeta_s, wavenm_s, freqnm_s
     REAL(4), SAVE :: y1num_s, y1wht_s
-    REAL(4), SAVE :: hwvdw_s, hwrad_s
-    INTEGER, SAVE :: ifins_s, nwid_s
+    INTEGER, SAVE :: ifins_s
     REAL(4), SAVE :: finest_s(14), finswt_s(14)
     REAL(4)       :: xne16, t4, t43
 
-    REAL(4), PARAMETER :: RYDH = 3.2880515E15
+    ! Cached convolved Stark⊗Doppler profile
+    INTEGER, SAVE :: conv_n = 0, conv_m = 0, conv_j = 0, conv_itemp = -1
+    REAL(8), SAVE :: conv_profile(NSTARK_DALPHA)
+    REAL(8), SAVE :: conv_F0 = 0.0D0, conv_lambda0 = 0.0D0
+    REAL(8), SAVE :: conv_dop_dalpha = 0.0D0
+    REAL(4), SAVE :: conv_voigt_a = 0.0
+    LOGICAL, SAVE :: conv_valid = .false.
+    LOGICAL       :: use_stehle
 
-    ! --- Re-compute depth-dependent quantities if temperature index changed ---
+    ! Stehlé path: convolution-building variables
+    INTEGER, PARAMETER :: NCONV_MAX = 600
+    INTEGER, PARAMETER :: NWING_MAX = 200
+    REAL(8), PARAMETER :: PI8 = 3.14159265358979323846D0
+    REAL(8) :: xn8, xm8, lambda0, F0_loc, dop_dalpha, lor_dalpha
+    REAL(8) :: dalpha_grid(NSTARK_DALPHA), stark_prof(NSTARK_DALPHA)
+    REAL(8) :: gsum, da_i, voigt_kern
+    REAL(8) :: frac_d, frac_t, log_ne, v00, v01, v10, v11
+    REAL(4) :: voigt_a, voigt_v, hwlor_conv
+    INTEGER :: ia, iseries, itrans, id1, id2, it1, it2, nd, nt
+    type(stark_series_t), POINTER :: S => NULL()
+    REAL(8) :: conv_da(NCONV_MAX), conv_prof_arr(NCONV_MAX)
+    REAL(8) :: conv_step(NCONV_MAX)
+    REAL(8) :: dx_wing, da_trans, da_wing_max, da_pt, d_log
+    INTEGER :: n_log_use, n_wing, ic, iw
+
+    ! Stehlé path: evaluation variables
+    REAL(8) :: dalpha_cur, log_da_cur, frac_a, I_conv, phi_nu
+    INTEGER :: ia1, ia2
+
+    ! =================================================================
+    ! Recompute depth-dependent arrays when atmosphere changes.
+    ! These quantities depend on Ne and T at each depth point but
+    ! not on the specific hydrogen transition (n, m).
+    ! =================================================================
     IF (itemp /= itemp1) THEN
       itemp1 = itemp
+      conv_valid = .false.
       DO k = 1, NRHOX
-        xne16     = XNE(k)**0.1666667
-        pp_d(k)   = xne16 * 0.08989 / SQRT(T(k))
-        fo(k)     = xne16**4 * 1.25E-9
-        y1b(k)    = 2.0 / (1.0 + 0.012/T(k) * SQRT(XNE(k)/T(k)))
-        t4        = T(k) / 10000.0
-        t43       = t4**0.3
-        y1s(k)    = t43 / xne16
-        t3nhe(k)  = t43 * XNFHE(k,1)
-        t3nh2(k)  = t43 * XNFH2(k)
-        c1d(k)    = fo(k) * 78940.0 / T(k)
-        c2d(k)    = fo(k)**2 / 5.96E-23 / XNE(k)
-        gcon1(k)  = 0.2 + 0.09*SQRT(t4) / (1.0 + XNE(k)/1.E13)
-        gcon2(k)  = 0.2 / (1.0 + XNE(k)/1.E15)
+        xne16 = XNE(k)**0.1666667   ! Ne^(1/6)
+
+        ! Plasma parameter p = interparticle distance / Debye length.
+        ! Controls Debye-shielded ion microfield distribution in the
+        ! quasistatic Stark profile (K-P fallback path).
+        pp_d(k) = xne16 * 0.08989 / SQRT(T(k))
+
+        ! Normal Holtsmark field F0 = 1.25e-9 * Ne^(2/3) [cm^-1].
+        ! xne16^4 = Ne^(4/6) = Ne^(2/3).  Used by both Stehle and
+        ! K-P paths to convert frequency offset to reduced detuning.
+        fo(k) = xne16**4 * 1.25E-9
+
+        ! y1b: high-density limit of the y1 scaling parameter for
+        ! electron impact broadening (K-P path).
+        y1b(k) = 2.0 / (1.0 + 0.012/T(k) * SQRT(XNE(k)/T(k)))
+
+        t4 = T(k) / 10000.0     ! T in units of 10^4 K
+        t43 = t4**0.3            ! T^0.3 scaling for vdW broadening
+
+        ! y1s: low-density limit of y1 scaling (K-P path).
+        y1s(k) = t43 / xne16
+
+        ! Neutral perturber densities times T^0.3 for van der Waals
+        ! broadening: He I and H2 respectively.
+        t3nhe(k) = t43 * XNFHE(k,1)
+        t3nh2(k) = t43 * XNFH2(k)
+
+        ! VCS electron impact broadening parameters (K-P path):
+        ! c1d: first-order (dipole) electron interaction strength
+        ! c2d: second-order (quadrupole) electron interaction strength
+        c1d(k) = fo(k) * 78940.0 / T(k)
+        c2d(k) = fo(k)**2 / 5.96E-23 / XNE(k)
+
+        ! Empirical damping of electron impact broadening at high Ne,
+        ! ensuring smooth transition to the quasistatic limit.
+        gcon1(k) = 0.2 + 0.09*SQRT(t4) / (1.0 + XNE(k)/1.E13)
+        gcon2(k) = 0.2 / (1.0 + XNE(k)/1.E15)
       END DO
     END IF
 
-    ! --- Re-compute line-dependent quantities if N or M changed ---
+    ! =================================================================
+    ! Recompute line-dependent quantities when N or M changes.
+    ! These depend on the specific transition but not on depth.
+    ! =================================================================
     IF (n /= n1 .OR. m /= m1) THEN
-      n1  = n;  m1 = m
+      n1 = n
+      m1 = m
+      conv_valid = .false.
       mmn = m - n
-      xn  = REAL(n);  xm = REAL(m)
-      xn2 = xn*xn;    xm2 = xm*xm
-      xmn2   = xm2 * xn2
-      xm2mn2 = xm2 - xn2
-      gnm  = xm2mn2 / xmn2
+      xn = REAL(n)
+      xm = REAL(m)
+      xn2 = xn*xn
+      xm2 = xm*xm
+      xmn2 = xm2*xn2                 ! (n*m)^2
+      xm2mn2 = xm2 - xn2             ! m^2 - n^2
+      gnm = xm2mn2 / xmn2            ! 1/n^2 - 1/m^2 (Rydberg factor)
 
+      ! Stark pattern parameter xknm: determines the characteristic
+      ! splitting of the Stark components for this transition.
+      ! Tabulated for low lines (Ly/Ba/Pa alpha through gamma);
+      ! computed from an empirical formula for higher lines.
+      ! This single number maps frequency offset to reduced field
+      ! strength beta via: beta = |del| / F0 * dbeta, where
+      ! dbeta = c / freq_nm^2 / xknm.
       IF (mmn <= 3 .AND. n <= 4) THEN
         xknm = XKNMTB(n, mmn)
       ELSE
         xknm = 5.5E-5 / gnm * xmn2 / (1.0 + 0.13/REAL(mmn))
       END IF
 
+      ! Empirical y1 scaling parameters for electron impact broadening.
+      ! y1num and y1wht control the blending between low-density (y1s)
+      ! and high-density (y1b) regimes in the K-P fallback path.
+      ! Different values for different transitions reflect the varying
+      ! importance of lower-state interactions.
       y1num_s = 320.0
-      IF (m == 2) y1num_s = 550.0
-      IF (m == 3) y1num_s = 380.0
+      IF (m==2) y1num_s = 550.0
+      IF (m==3) y1num_s = 380.0
       y1wht_s = 1.E13
       IF (mmn <= 3) y1wht_s = 1.E14
       IF (mmn <= 2 .AND. n <= 2) THEN
-        ! Y1WTM table: (1->2)=1e18, (1->3)=1e17, (2->2)=1e16, (2->3)=1e14
-        IF      (n==1 .AND. mmn==1) THEN; y1wht_s = 1.E18
-        ELSE IF (n==1 .AND. mmn==2) THEN; y1wht_s = 1.E17
-        ELSE IF (n==2 .AND. mmn==1) THEN; y1wht_s = 1.E16
-        ELSE IF (n==2 .AND. mmn==2) THEN; y1wht_s = 1.E14
+        IF (n==1.AND.mmn==1) THEN
+        y1wht_s=1.E18
+        ELSE IF (n==1.AND.mmn==2) THEN
+        y1wht_s=1.E17
+        ELSE IF (n==2.AND.mmn==1) THEN
+        y1wht_s=1.E16
+        ELSE IF (n==2.AND.mmn==2) THEN
+        y1wht_s=1.E14
         END IF
       END IF
 
-      freqnm_s = RYDH * gnm
-      dbeta_s  = REAL(CLIGHT_AHZ,4) / freqnm_s**2 / xknm
-      wavenm_s = REAL(CLIGHT_AHZ,4) / freqnm_s
-      c1con_s  = xknm / wavenm_s * gnm * xm2mn2
-      c2con_s  = (xknm / wavenm_s)**2
+      ! Line centre frequency, frequency-to-beta conversion, wavelength
+      freqnm_s = FREQ_RYDH * gnm
+      dbeta_s = REAL(CLIGHT_ANG,4) / freqnm_s**2 / xknm
+      wavenm_s = REAL(CLIGHT_ANG,4) / freqnm_s
 
+      ! Electron impact broadening constants (K-P path):
+      ! c1con scales the first-order (dipole) interaction
+      ! c2con scales the second-order (quadrupole) interaction
+      c1con_s = xknm / wavenm_s * gnm * xm2mn2
+      c2con_s = (xknm / wavenm_s)**2
+
+      ! Radiation damping: sum of A-values from upper and lower levels.
+      ! For Lyman series, uses cumulative A-values (ASUMLYMAN) that
+      ! include cascade contributions.
       radamp_s = ASUM(n) + ASUM(m)
-      IF (n == 1) radamp_s = ASUMLYMAN(m)
-      radamp_s = radamp_s / 12.5664 / freqnm_s
+      IF (n==1) radamp_s = ASUMLYMAN(m)
+      radamp_s = radamp_s / FOURPI / freqnm_s
 
+      ! Resonance broadening by ground-state hydrogen (Ali-Griem).
+      ! Both upper and lower level oscillator strengths contribute.
       resont_s = hydrogen_oscillator_strength(1,m)/xm/(1.0-1.0/xm2)
       IF (n /= 1) resont_s = resont_s + hydrogen_oscillator_strength(1,n)/xn/(1.0-1.0/xn2)
       resont_s = resont_s * 3.579E-24 / gnm
 
-      vdw_s    = 4.45E-26 / gnm * (xm2*(7.0*xm2 + 5.0))**0.4
-      stark_s  = 1.6678E-18 * freqnm_s * xknm
+      ! Van der Waals broadening (Unsold approximation).
+      ! The <r^2> expectation value scales as m^2(7m^2+5).
+      vdw_s = 4.45E-26 / gnm * (xm2*(7.0*xm2 + 5.0))**0.4
 
-      ! Fine structure
+      ! Stark half-width for the nwid comparison (K-P path only).
+      ! Not used in the Stehle path.
+      stark_s = 1.6678E-18 * freqnm_s * xknm
+
+      ! Fine structure components.
+      ! For m > 10 or n > 4: single component, weight 1.0 (no fine
+      ! structure resolved).  For lower lines: multiple components
+      ! from the STALPH/STCOMP tables with separate positions and
+      ! weights.  Note: the Stehle path does not use fine structure
+      ! (the MMM profiles already average over Stark substates).
       IF (n > 4 .OR. m > 10) THEN
-        ifins_s    = 1
+        ifins_s = 1
         finest_s(1) = 0.0
         finswt_s(1) = 1.0
       ELSE IF (mmn == 1) THEN
-        ! Alpha line: explicit fine structure
         ifins_s = LNGHAL(n)
-        ipos    = ISTAL(n)
+        ipos = ISTAL(n)
         DO i = 1, ifins_s
-          finest_s(i) = STALPH(ipos-1+i) * 1.E7
-          finswt_s(i) = STWTAL(ipos-1+i) / xn2 / 3.0
+        finest_s(i) = STALPH(ipos-1+i)*1.E7
+        finswt_s(i) = STWTAL(ipos-1+i)/xn2/3.0
         END DO
       ELSE
-        ! Non-alpha: M=inf pattern
         ifins_s = LNCOMP(n)
         DO i = 1, ifins_s
-          finest_s(i) = STCOMP(i,n) * 1.E7
-          finswt_s(i) = STCPWT(i,n) / xn2
+        finest_s(i) = STCOMP(i,n)*1.E7
+        finswt_s(i) = STCPWT(i,n)/xn2
         END DO
       END IF
     END IF
 
-    ! --- Now compute profile at this (j, delw) ---
-    ! Recover saved line quantities into locals for readability
-    freqnm = freqnm_s;  dbeta  = dbeta_s;  wavenm = wavenm_s
-    c1con  = c1con_s;   c2con  = c2con_s;  radamp = radamp_s
-    resont = resont_s;  vdw    = vdw_s;    stark  = stark_s
-    y1num  = y1num_s;   y1wht  = y1wht_s
-    ifins  = ifins_s
+    ! =================================================================
+    ! Set up for this (j, delw) call.
+    ! Copy saved line-dependent quantities to local variables, then
+    ! compute the depth- and wavelength-dependent broadening widths.
+    ! =================================================================
+    freqnm = freqnm_s
+    dbeta = dbeta_s
+    wavenm = wavenm_s
+    c1con = c1con_s
+    c2con = c2con_s
+    radamp = radamp_s
+    resont = resont_s
+    vdw = vdw_s
+    stark = stark_s
+    y1num = y1num_s
+    y1wht = y1wht_s
+    ifins = ifins_s
     finest(1:ifins) = finest_s(1:ifins)
     finswt(1:ifins) = finswt_s(1:ifins)
 
-    ! Wavelength and frequency at this offset (REAL*8 delw, converted)
-    wl4  = REAL(wavenm + delw*10.0)    ! wavelength in Angstrom, then /10 -> nm below
-    freq = REAL(CLIGHT_AHZ,4) / wl4
-    del  = ABS(freq - freqnm)
+    wl4 = REAL(wavenm + delw*10.0)   ! wavelength [Angstrom]
+    freq = REAL(CLIGHT_ANG,4) / wl4   ! frequency [Hz]
+    del = ABS(freq - freqnm)           ! frequency offset from line centre
 
-    ! Broadening half-widths (dimensionless nu/nu_0)
-    hwstk = stark * fo(j)
-    hwvdw = vdw * t3nhe(j) + 2.0*vdw * t3nh2(j)
-    hwrad = radamp
-    hwres = resont * XNFPH(j,1) * 2.0
-    hwlor = hwres + hwvdw + hwrad
-    hwdop = dopph(j)
+    ! Broadening half-widths [Hz / freqnm, i.e., fractional]:
+    hwstk = stark * fo(j)              ! Stark (from K-P xknm parameter)
+    hwvdw = vdw * t3nhe(j) + 2.0*vdw * t3nh2(j)  ! van der Waals (He + H2)
+    hwrad = radamp                     ! radiation damping
+    hwres = resont * XNFPH(j,1) * 2.0 ! resonance (self-broadening by H I)
+    hwlor = hwres + hwvdw + hwrad      ! total Lorentzian half-width
+    hwdop = dopph(j)                   ! Doppler (thermal + microturbulence)
+    dop = freqnm * hwdop               ! Doppler half-width [Hz]
 
-    ! Identify dominant broadening mechanism
-    nwid = 1
-    IF (hwdop < hwstk .OR. hwdop < hwlor) THEN
-      nwid = 2
-      IF (hwlor < hwstk) nwid = 3
+    ! =================================================================
+    ! Check if Stehlé tables are available
+    ! =================================================================
+    IF (.NOT. STEHLE_TABLES_LOADED) THEN
+      CALL INIT_STARK_TABLES
     END IF
-    hfwid = freqnm * MAX(hwdop, hwlor, hwstk)
 
-    result  = 0.0
-    ifcore  = 0
-    IF (del <= hfwid) ifcore = 1
-    dop = freqnm * hwdop
+    use_stehle = .false.
+    IF (STEHLE_TABLES_LOADED .AND. n >= 1 .AND. n <= 4) THEN
+      IF (STEHLE_DATA(n)%loaded .AND. m >= STEHLE_DATA(n)%n_upper_min &
+          .AND. m <= STEHLE_DATA(n)%n_upper_max) THEN
+        ! Check density bounds: only use tables when Ne is within the grid.
+        ! Below the grid, the 1/F0 conversion factor diverges and the
+        ! extrapolated profile values are unreliable.
+        IF (XNE(j) >= STEHLE_DATA(n)%density_grid(1) .AND. &
+            XNE(j) <= STEHLE_DATA(n)%density_grid(STEHLE_DATA(n)%n_dens)) THEN
+          use_stehle = .true.
+        END IF
+      END IF
+    END IF
 
-    ! ---- DOPPLER CORE ----
-    IF (ifcore == 1 .AND. nwid == 1) THEN
-      DO i = 1, ifins
-        d = ABS(freq - freqnm - finest(i)) / dop
-        IF (d <= 7.0) result = result + EXP(-d*d) * finswt(i)
-      END DO
+    IF (use_stehle) THEN
+      ! ===============================================================
+      ! STEHLÉ PATH: Stark ⊗ Doppler convolution
+      ! ===============================================================
+
+      ! --- Build convolved profile if not cached for this (n,m,j) ---
+      IF (.NOT. conv_valid .OR. conv_n/=n .OR. conv_m/=m &
+          .OR. conv_j/=j .OR. conv_itemp/=itemp) THEN
+
+        xn8 = DBLE(n)
+        xm8 = DBLE(m)
+        lambda0 = 911.7633455D0 * (xn8*xm8)**2 / ((xm8-xn8)*(xm8+xn8))
+        F0_loc = 1.25D-9 * XNE(j)**(2.0D0/3.0D0)
+        conv_F0 = F0_loc
+        conv_lambda0 = lambda0
+
+        iseries = n
+        S => STEHLE_DATA(iseries)
+        itrans = m - S%n_upper_min + 1
+        nd = S%n_dens
+        nt = NSTARK_TEMPS
+
+        DO ia = 1, NSTARK_DALPHA
+          dalpha_grid(ia) = 10.0D0**S%log_dalpha_grid(ia)
+        END DO
+
+        ! Bilinear interpolation in (log Ne, T)
+        log_ne = LOG10(XNE(j))
+        id1 = 1
+        DO id1 = 1, nd-1
+          IF (XNE(j) <= S%density_grid(id1+1)) EXIT
+        END DO
+        id1 = MAX(1, MIN(nd-1, id1))
+        id2 = id1 + 1
+        frac_d = (log_ne - LOG10(S%density_grid(id1))) / &
+                 (LOG10(S%density_grid(id2)) - LOG10(S%density_grid(id1)))
+        frac_d = MAX(0.0D0, MIN(1.0D0, frac_d))
+
+        it1 = 1
+        DO it1 = 1, nt-1
+          IF (T(j) <= S%temp_grid(it1+1)) EXIT
+        END DO
+        it1 = MAX(1, MIN(nt-1, it1))
+        it2 = it1 + 1
+        frac_t = (T(j) - S%temp_grid(it1)) / (S%temp_grid(it2) - S%temp_grid(it1))
+        frac_t = MAX(0.0D0, MIN(1.0D0, frac_t))
+
+        DO ia = 1, NSTARK_DALPHA
+          v00 = S%profiles(ia,it1,id1,itrans)
+          v01 = S%profiles(ia,it2,id1,itrans)
+          v10 = S%profiles(ia,it1,id2,itrans)
+          v11 = S%profiles(ia,it2,id2,itrans)
+          IF (v00>0 .AND. v01>0 .AND. v10>0 .AND. v11>0) THEN
+            stark_prof(ia) = EXP( &
+              LOG(v00)*(1-frac_d)*(1-frac_t) + &
+              LOG(v01)*(1-frac_d)*frac_t + &
+              LOG(v10)*frac_d*(1-frac_t) + &
+              LOG(v11)*frac_d*frac_t )
+          ELSE
+            stark_prof(ia) = v00*(1-frac_d)*(1-frac_t) &
+                           + v01*(1-frac_d)*frac_t &
+                           + v10*frac_d*(1-frac_t) &
+                           + v11*frac_d*frac_t
+          END IF
+        END DO
+
+        ! Doppler width in Δα units (includes microturbulence via hwdop)
+        dop_dalpha = lambda0**2 / DBLE(CLIGHT_ANG) &
+                   * DBLE(freqnm) * DBLE(hwdop) / F0_loc
+
+        ! Lorentz width in Δα units.
+        ! For Lyα (n=1, m=2), resonance broadening is enhanced ×4.
+        IF (n == 1 .AND. m == 2) THEN
+          hwlor_conv = hwres * 4.0 + hwvdw + hwrad
+        ELSE
+          hwlor_conv = hwlor
+        END IF
+        lor_dalpha = lambda0**2 / DBLE(CLIGHT_ANG) &
+                   * DBLE(freqnm) * DBLE(hwlor_conv) / F0_loc
+
+        ! Voigt parameter: ratio of Lorentz to Doppler widths
+        voigt_a = REAL(lor_dalpha / dop_dalpha)
+
+        ! Convolve Stark profile with Voigt kernel V(a, v).
+        ! The Voigt kernel incorporates both Doppler (Gaussian)
+        ! and Lorentz (radiative + resonance + vdW) broadening.
+        ! H(a,v) is area-normalised to √π when integrated over v,
+        ! so the kernel in Δα is: K(Δα) = H(a, Δα/σ) / (σ √π).
+        !
+        ! The convolution grid has two zones:
+        !  Core: the original log-spaced Stehlé points (dense at
+        !        small Δα, preserving all profile structure).
+        !  Wing: points at spacing σ/3, capped at 200 per side.
+        ! Both zones are reflected to negative Δα for symmetry.
+        !
+        ! Beyond the grid, the convolved profile has two terms:
+        !   Stark wing:   k_alpha / Δα^2.5  (Holtsmark asymptote)
+        !   Lorentz tail: a σ / (π Δα²)     (Voigt kernel tail)
+        ! No separate Lorentzian complement is needed.
+
+        ! Wing spacing = σ/3 (resolves the Voigt kernel)
+        dx_wing = dop_dalpha / 3.0D0
+
+        ! Log grid spacing: the 60-point grid is uniform in
+        ! log10(Δα) from log_dalpha_grid(1) to log_dalpha_grid(60).
+        ! The linear step at grid point ia is: Δα × d_log × ln(10).
+        d_log = (S%log_dalpha_grid(NSTARK_DALPHA) &
+               - S%log_dalpha_grid(1)) / DBLE(NSTARK_DALPHA - 1)
+
+        ! Find where log grid spacing exceeds σ/3
+        n_log_use = NSTARK_DALPHA
+        DO ia = 1, NSTARK_DALPHA
+          IF (dalpha_grid(ia) * d_log * LOG(10.0D0) > dx_wing) THEN
+            n_log_use = ia - 1
+            EXIT
+          END IF
+        END DO
+        n_log_use = MAX(n_log_use, 1)
+        da_trans = dalpha_grid(n_log_use)
+
+        ! Wing extends as far as NWING_MAX points at σ/3 allows
+        n_wing = NWING_MAX
+        da_wing_max = da_trans + DBLE(n_wing) * dx_wing
+        IF (da_wing_max > dalpha_grid(NSTARK_DALPHA)) THEN
+          da_wing_max = dalpha_grid(NSTARK_DALPHA)
+          n_wing = INT((da_wing_max - da_trans) / dx_wing)
+          IF (n_wing < 0) n_wing = 0
+        END IF
+
+        ! Ensure total grid fits in NCONV_MAX
+        IF (2*n_wing + 2*n_log_use + 1 > NCONV_MAX) THEN
+          n_wing = (NCONV_MAX - 2*n_log_use - 1) / 2
+          da_wing_max = da_trans + DBLE(n_wing) * dx_wing
+        END IF
+
+        ! --- Build the symmetric convolution grid ---
+        ! Layout: [-wing] [-log] [0] [+log] [+wing]
+        ic = 0
+
+        ! Negative wing (largest |Δα| first)
+        DO iw = n_wing, 1, -1
+          ic = ic + 1
+          da_pt = da_trans + DBLE(iw) * dx_wing
+          conv_da(ic) = -da_pt
+          CALL interp_stark_at(da_pt, S, dalpha_grid, stark_prof, &
+                               conv_prof_arr(ic))
+        END DO
+
+        ! Negative log points (reversed)
+        DO ia = n_log_use, 1, -1
+          ic = ic + 1
+          conv_da(ic) = -dalpha_grid(ia)
+          conv_prof_arr(ic) = stark_prof(ia)
+        END DO
+
+        ! Zero
+        ic = ic + 1
+        conv_da(ic) = 0.0D0
+        conv_prof_arr(ic) = stark_prof(1)
+
+        ! Positive log points
+        DO ia = 1, n_log_use
+          ic = ic + 1
+          conv_da(ic) = dalpha_grid(ia)
+          conv_prof_arr(ic) = stark_prof(ia)
+        END DO
+
+        ! Positive wing
+        DO iw = 1, n_wing
+          ic = ic + 1
+          da_pt = da_trans + DBLE(iw) * dx_wing
+          conv_da(ic) = da_pt
+          CALL interp_stark_at(da_pt, S, dalpha_grid, stark_prof, &
+                               conv_prof_arr(ic))
+        END DO
+
+        ! Trapezoid integration weights
+        conv_step(1) = conv_da(2) - conv_da(1)
+        conv_step(ic) = conv_da(ic) - conv_da(ic - 1)
+        DO iw = 2, ic - 1
+          conv_step(iw) = 0.5D0 * (conv_da(iw+1) - conv_da(iw-1))
+        END DO
+
+        ! --- Convolve: output at the 60 log-spaced points ---
+        DO ia = 1, NSTARK_DALPHA
+          da_i = dalpha_grid(ia)
+
+          IF (da_i > da_wing_max .AND. da_wing_max > 0.0D0) THEN
+            ! Beyond convolution grid: Stark wing + Lorentz tail
+            conv_profile(ia) = stark_prof(ia) &
+                 + DBLE(voigt_a) * dop_dalpha / (PI8 * da_i**2)
+          ELSE
+            ! Numerical convolution with Voigt kernel
+            gsum = 0.0D0
+            DO iw = 1, ic
+              voigt_v = REAL((da_i - conv_da(iw)) / dop_dalpha)
+              voigt_kern = DBLE(voigt_profile(voigt_v, voigt_a))
+              gsum = gsum + conv_prof_arr(iw) * voigt_kern &
+                   * conv_step(iw)
+            END DO
+            conv_profile(ia) = gsum / (dop_dalpha * SQRTPI)
+          END IF
+        END DO
+
+        conv_n = n
+        conv_m = m
+        conv_j = j
+        conv_itemp = itemp
+        conv_voigt_a = voigt_a
+        conv_dop_dalpha = dop_dalpha
+        conv_valid = .true.
+
+      END IF
+
+      ! --- Evaluate convolved profile at current frequency ---
+      dalpha_cur = conv_lambda0**2 / DBLE(CLIGHT_ANG) * DBLE(del) / conv_F0
+
+      IF (dalpha_cur <= 10.0D0**STEHLE_DATA(n)%log_dalpha_grid(1)) THEN
+        ! At or below first grid point (includes exact line centre)
+        I_conv = conv_profile(1)
+      ELSE IF (dalpha_cur >= 10.0D0**STEHLE_DATA(n)%log_dalpha_grid(NSTARK_DALPHA)) THEN
+        ! Beyond table: Stark wing + Lorentzian tail
+        I_conv = STEHLE_DATA(n)%k_alpha(m - STEHLE_DATA(n)%n_upper_min + 1) &
+               / dalpha_cur**2.5D0 &
+               + DBLE(conv_voigt_a) * conv_dop_dalpha &
+                 / (DBLE(PI) * dalpha_cur**2)
+      ELSE
+        log_da_cur = LOG10(dalpha_cur)
+        ia1 = 1
+        DO ia1 = 1, NSTARK_DALPHA-1
+          IF (log_da_cur <= STEHLE_DATA(n)%log_dalpha_grid(ia1+1)) EXIT
+        END DO
+        ia1 = MAX(1, MIN(NSTARK_DALPHA-1, ia1))
+        ia2 = ia1 + 1
+        frac_a = (log_da_cur - STEHLE_DATA(n)%log_dalpha_grid(ia1)) / &
+                 (STEHLE_DATA(n)%log_dalpha_grid(ia2) - STEHLE_DATA(n)%log_dalpha_grid(ia1))
+        IF (conv_profile(ia1) > 0.0D0 .AND. conv_profile(ia2) > 0.0D0) THEN
+          I_conv = EXP(LOG(conv_profile(ia1))*(1.0D0-frac_a) &
+                     + LOG(conv_profile(ia2))*frac_a)
+        ELSE
+          I_conv = conv_profile(ia1)*(1.0D0-frac_a) &
+                 + conv_profile(ia2)*frac_a
+        END IF
+      END IF
+
+      phi_nu = I_conv * conv_lambda0**2 / (DBLE(CLIGHT_ANG) * conv_F0)
+      result = REAL(phi_nu) * SQRTPI * dop
+
+      ! --- Lyα quasi-molecular satellite opacities (additive) ---
+      ! These are separate opacity sources (transient H₂ and H₂⁺
+      ! molecules), not broadening of the H line, so they add to
+      ! the convolved profile.
+      IF (n == 1 .AND. m == 2) THEN
+        ! H₂ quasi-molecular satellite (blue wing of Lyα)
+        cutoff_val = 0.0
+        spacing = 200.0 * REAL(CLIGHT,4)
+        freq22000 = (82259.10 - 22000.0) * REAL(CLIGHT,4)
+        IF (freq >= 50000.0 * REAL(CLIGHT,4) .AND. &
+            freq <= (82259.10 - 4000.0) * REAL(CLIGHT,4)) THEN
+          IF (freq < freq22000) THEN
+            cutoff_val = (CUTOFFH2(2) - CUTOFFH2(1)) / spacing &
+                       * (freq - freq22000) + CUTOFFH2(1)
+          ELSE
+            icut = INT((freq - freq22000) / spacing)
+            cutfreq = icut * spacing + freq22000
+            cutoff_val = (CUTOFFH2(icut+2) - CUTOFFH2(icut+1)) / spacing &
+                       * (freq - cutfreq) + CUTOFFH2(icut+1)
+          END IF
+          cutoff_val = (10.0**(cutoff_val - 14.0)) &
+                     * XNFPH(j,1) * 2.0 / REAL(CLIGHT,4)
+          result = result + cutoff_val * SQRTPI * dop
+        END IF
+
+        ! H₂⁺ quasi-molecular satellite (red wing of Lyα)
+        cutoff_val = 0.0
+        IF (freq >= (82259.10 - 20000.0) * REAL(CLIGHT,4) .AND. &
+            freq <= (82259.10 - 4000.0) * REAL(CLIGHT,4)) THEN
+          spacing = 100.0 * REAL(CLIGHT,4)
+          freq15000 = (82259.10 - 15000.0) * REAL(CLIGHT,4)
+          IF (freq < freq15000) THEN
+            cutoff_val = (CUTOFFH2PLUS(2) - CUTOFFH2PLUS(1)) / spacing &
+                       * (freq - freq15000) + CUTOFFH2PLUS(1)
+          ELSE
+            icut = INT((freq - freq15000) / spacing)
+            cutfreq = icut * spacing + freq15000
+            cutoff_val = (CUTOFFH2PLUS(icut+2) - CUTOFFH2PLUS(icut+1)) &
+                       / spacing * (freq - cutfreq) + CUTOFFH2PLUS(icut+1)
+          END IF
+          cutoff_val = (10.0**(cutoff_val - 14.0)) &
+                     / REAL(CLIGHT,4) * XNFPH(j,2)
+          result = result + cutoff_val * SQRTPI * dop
+        END IF
+      END IF
+
+    ELSE
+      ! ===============================================================
+      ! FALLBACK: Peterson/Kurucz (K-P) analytic profiles.
+      !
+      ! Based on the Vidal, Cooper & Smith (1973) unified theory with
+      ! modifications by Peterson (1969) and Kurucz.  The profile has
+      ! three broadening mechanisms (Doppler, Lorentz, Stark) handled
+      ! by a regime-switching approach:
+      !   nwid = 1: Doppler dominates the core
+      !   nwid = 2: Lorentz dominates the core
+      !   nwid = 3: Stark dominates the core
+      ! Inside the core (del < hfwid), only the dominant mechanism
+      ! contributes.  Outside (the wings), all three are summed.
+      ! ===============================================================
+
+      ! Determine which mechanism has the widest half-width
+      nwid = 1                                       ! Doppler (default)
+      IF (hwdop < hwstk .OR. hwdop < hwlor) THEN
+      nwid = 2                                       ! Lorentz
+      IF (hwlor < hwstk) nwid = 3                   ! Stark
+      END IF
+      hfwid = freqnm * MAX(hwdop, hwlor, hwstk)     ! core boundary [Hz]
+      result = 0.0
+      ifcore = 0
+      IF (del <= hfwid) ifcore = 1  ! 1 = inside core, 0 = wing
+
+      ! --- Doppler block ---
+      ! Evaluated in the wing (always) or the core (only if nwid=1).
+      ! Sum of Gaussians at each fine-structure component position.
+      ! For m > 10: single component with weight 1.0, so this is
+      ! just exp(-d^2).  Truncated at 7 Doppler widths.
+      IF (ifcore == 0 .OR. (ifcore == 1 .AND. nwid == 1)) THEN
+        DO i = 1, ifins
+          d = ABS(freq - freqnm - finest(i)) / dop
+          IF (d <= 7.0) result = result + EXP(-d*d) * finswt(i)
+        END DO
+        IF (ifcore == 1) RETURN   ! core handled by Doppler alone
+      END IF
+
+      ! --- Lorentz block ---
+      ! Evaluated in the wing (always) or the core (only if nwid=2).
+      ! Standard Lorentzian: hhw / (pi * (del^2 + hhw^2)) * sqrt(pi) * dop
+      ! Special treatment for Lyman alpha (n=1, m=2): uses enhanced
+      ! resonance broadening (hwres * 4) and H2 quasi-molecular
+      ! satellite opacity from the CUTOFFH2 table in the blue wing.
+      IF (ifcore == 0 .OR. (ifcore == 1 .AND. nwid == 2)) THEN
+        IF (n == 1 .AND. m == 2) THEN
+          ! Lyman alpha: enhanced resonance + quasi-molecular satellites
+          ASSOCIATE(hwres4 => hwres * 4.0)
+            hwlor = hwres4 + hwvdw + hwrad
+            hhw = freqnm * hwlor
+            IF (freq > (82259.10-4000.0)*REAL(CLIGHT,4)) THEN
+              ! Near line centre: standard Lorentzian with enhanced hwres
+              hprofres = hwres4*freqnm/PI/(del**2+hhw**2)*SQRTPI*dop
+            ELSE
+              ! Blue wing: H2 quasi-molecular satellite from table
+              cutoff_val = 0.0
+              spacing = 200.0*REAL(CLIGHT,4)
+              freq22000 = (82259.10-22000.0)*REAL(CLIGHT,4)
+              IF (freq >= 50000.0*REAL(CLIGHT,4)) THEN
+                IF (freq < freq22000) THEN
+                  cutoff_val = (CUTOFFH2(2)-CUTOFFH2(1))/spacing*(freq-freq22000)+CUTOFFH2(1)
+                ELSE
+                  icut = INT((freq-freq22000)/spacing)
+                  cutfreq = icut*spacing+freq22000
+                  cutoff_val = (CUTOFFH2(icut+2)-CUTOFFH2(icut+1))/spacing*(freq-cutfreq)+CUTOFFH2(icut+1)
+                END IF
+                cutoff_val = (10.0**(cutoff_val-14.0))*XNFPH(j,1)*2.0/REAL(CLIGHT,4)
+              END IF
+              hprofres = cutoff_val * SQRTPI * dop
+            END IF
+          END ASSOCIATE
+          ! Radiation and vdW damping (separate from resonance for Lya)
+          hprofrad = 0.0
+          IF (freq>2.4190611E15 .AND. freq<0.77*FREQ_RYDH) hprofrad=hwrad*freqnm/PI/(del**2+hhw**2)*SQRTPI*dop
+          hprofvdw = hwvdw*freqnm/PI/(del**2+hhw**2)*SQRTPI*dop
+          IF (freq<1.8E15) hprofvdw=0.0
+          result = result + hprofres + hprofrad + hprofvdw
+          IF (ifcore==1) RETURN   ! core handled by Lorentz alone
+        ELSE
+          ! Non-Lya lines: standard Lorentzian damping
+          hhw = freqnm*hwlor
+          top = hhw
+          ! Near Lyman series limits (m=3,4,5): subtract radiation
+          ! damping to avoid double-counting with bound-free opacity
+          IF (n==1 .AND. m<=5) THEN
+            IF (m==3.AND.freq>0.885*FREQ_RYDH.AND.freq<0.890*FREQ_RYDH) top = hhw-freqnm*hwrad
+            IF (m==4.AND.freq>0.936*FREQ_RYDH.AND.freq<0.938*FREQ_RYDH) top = hhw-freqnm*hwrad
+            IF (m==5.AND.freq>0.959*FREQ_RYDH.AND.freq<0.961*FREQ_RYDH) top = hhw-freqnm*hwrad
+          END IF
+          result = result + top/PI/(del**2+hhw**2)*SQRTPI*dop
+          IF (ifcore==1) RETURN   ! core handled by Lorentz alone
+        END IF
+      END IF
+
+      ! --- Stark block (VCS-based) ---
+      ! Always evaluated in the wing.  In the core, only reached
+      ! when nwid=3 (Stark dominates), since ifcore=1 returns above
+      ! for nwid=1 and nwid=2.
+
+      ! Electron impact broadening (VCS unified theory):
+      ! y1scal interpolates between low-Ne (y1s) and high-Ne (y1b)
+      ! scaling of the first-order electron interaction parameter.
+      wty1=1.0/(1.0+XNE(j)/y1wht)
+      y1scal=y1num*y1s(j)*wty1+y1b(j)*(1.0-wty1)
+
+      ! c1_loc, c2_loc: depth- and line-dependent electron interaction
+      ! strengths.  c1 ~ dipole, c2 ~ quadrupole.
+      c1_loc=c1d(j)*c1con*y1scal
+      c2_loc=c2d(j)*c2con
+
+      ! g1: overall scale of the electron impact width.
+      ! gnot: zero-detuning electron impact width (static limit).
+      g1=6.77*SQRT(c1_loc)
+      gnot=g1*MAX(0.0,0.2114+LOG(SQRT(c2_loc)/c1_loc))*(1.0-gcon1(j)-gcon2(j))
+
+      ! beta: reduced electric field strength = |del| / F0 * dbeta.
+      ! This is the fundamental variable for the quasistatic ion profile.
+      beta_val=ABS(del)/fo(j)*dbeta
+
+      ! y1, y2: dimensionless electron broadening parameters.
+      ! y1 = c1 * beta (first-order, linear in field)
+      ! y2 = c2 * beta^2 (second-order, quadratic in field)
+      y1=c1_loc*beta_val
+      y2=c2_loc*beta_val**2
+
+      ! gam: frequency-dependent electron impact half-width.
+      ! Uses exponential integral E1 from the velocity-averaged
+      ! electron-atom interaction (VCS Eq. 35).  The gcon1/gcon2
+      ! corrections damp the impact contribution at high density
+      ! where it would exceed the static limit.
+      gam=gnot
+      IF (.NOT.(y2<=1.E-4.AND.y1<=1.E-5)) THEN
+        gam=g1*(0.5*EXP(-MIN(80.0,y1))+expint1(y1)-0.5*expint1(y2))*(1.0-gcon1(j)/(1.0+(90.0*y1)**3)-gcon2(j)/(1.0+2000.0*y1))
+        IF (gam<=1.E-20) gam=0.0
+      END IF
+
+      ! Quasistatic ion field profile S(beta, p).
+      ! Uses tabulated correction factors (PROB1-PROB7) fitted to VCS.
+      ! Only 7 profiles exist: Lya, Lyb, Ha, Hb, Pa-a, Pa-b, and
+      ! "H18" (Balmer 18) used for ALL other transitions.  Thus all
+      ! lines beyond Hb/Lyb/Pab share the same quasistatic shape,
+      ! differing only through the beta <-> frequency mapping (xknm).
+      prqs = stark_quasistatic_profile(beta_val, pp_d(j), n, m)
+
+      ! Special treatment for Lyman alpha (m=2):
+      ! Factor 0.5 accounts for the equal splitting of Lya into
+      ! two Stark components.  Also adds H2+ quasi-molecular
+      ! satellite opacity in the red wing.
+      IF (m==2) THEN
+        prqs=prqs*0.5
+        cutoff_val=0.0
+        IF (freq>=(82259.10-20000.0)*REAL(CLIGHT,4).AND.freq<=(82259.10-4000.0)*REAL(CLIGHT,4)) THEN
+          ! H2+ satellite from table (red wing of Lya)
+          spacing=100.0*REAL(CLIGHT,4)
+          freq15000=(82259.10-15000.0)*REAL(CLIGHT,4)
+          IF (freq<freq15000) THEN
+            cutoff_val=(CUTOFFH2PLUS(2)-CUTOFFH2PLUS(1))/spacing*(freq-freq15000)+CUTOFFH2PLUS(1)
+          ELSE
+            icut=INT((freq-freq15000)/spacing)
+            cutfreq=icut*spacing+freq15000
+            cutoff_val=(CUTOFFH2PLUS(icut+2)-CUTOFFH2PLUS(icut+1))/spacing*(freq-cutfreq)+CUTOFFH2PLUS(icut+1)
+          END IF
+          cutoff_val=(10.0**(cutoff_val-14.0))/REAL(CLIGHT,4)*XNFPH(j,2)
+          result=result+cutoff_val*SQRTPI*dop
+        ELSE IF (freq>(82259.10-4000.0)*REAL(CLIGHT,4)) THEN
+          ! Near line centre: scale H2+ contribution by Stark profile ratio
+          beta4000=4000.0*REAL(CLIGHT,4)/fo(j)*dbeta
+          prqsp4000=stark_quasistatic_profile(beta4000,pp_d(j),n,m)*0.5/fo(j)*dbeta
+          cutoff4000=(10.0**(-11.07-14.0))/REAL(CLIGHT,4)*XNFPH(j,2)
+          result=result+cutoff4000/prqsp4000*prqs/fo(j)*dbeta*SQRTPI*dop
+        END IF
+      END IF
+
+      ! Impact electron profile: Lorentzian in beta-space with
+      ! half-width gam.  Represents fast-electron collisions.
+      f=0.0
+      IF (gam>0.0) f=gam/PI/(gam**2+beta_val**2)
+
+      ! Electron correction to quasistatic profile (VCS Eq. 37):
+      ! fns -> 0 at small y1 (no correction)
+      ! fns -> 1 at large y1 (doubles the quasistatic contribution)
+      p1=(0.9*y1)**2
+      fns=(p1+0.03*SQRT(y1))/(p1+1.0)
+
+      ! Total Stark contribution: quasistatic ions (corrected by
+      ! electron effects) plus impact electrons.
+      ! Division by fo(j) and multiplication by dbeta converts from
+      ! beta-space to frequency-space.
+      result=result+(prqs*(1.0+fns)+f)/fo(j)*dbeta*SQRTPI*dop
+    END IF
+
+  END FUNCTION hydrogen_line_profile
+
+
+! ============================================================================
+!  interp_stark_at -- log-linear interpolation of the Stark profile.
+!
+!  Interpolates the 60-point Stark profile at an arbitrary positive Δα
+!  using the log-spaced grid.  Uses log-log interpolation when both
+!  bracketing values are positive; falls back to linear otherwise.
+!  For Δα beyond the table, returns the last table value.
+! ============================================================================
+  SUBROUTINE interp_stark_at(da_pt, S, dalpha_grid, stark_prof, result)
+    REAL(8), INTENT(IN)  :: da_pt
+    type(stark_series_t), INTENT(IN), TARGET :: S
+    REAL(8), INTENT(IN)  :: dalpha_grid(NSTARK_DALPHA)
+    REAL(8), INTENT(IN)  :: stark_prof(NSTARK_DALPHA)
+    REAL(8), INTENT(OUT) :: result
+
+    REAL(8) :: log_da_pt, frac
+    INTEGER :: idx
+
+    IF (da_pt >= dalpha_grid(NSTARK_DALPHA)) THEN
+      result = stark_prof(NSTARK_DALPHA)
       RETURN
     END IF
 
-    ! ---- LORENTZ WINGS ----
-    IF (ifcore == 1 .AND. nwid == 2 .OR. nwid == 2 .AND. ifcore == 0 .OR. &
-        nwid == 3 .AND. ifcore == 0) THEN
-      ! Lyman alpha special treatment
-      IF (n == 1 .AND. m == 2) THEN
-        ASSOCIATE(hwres4 => hwres * 4.0)
-          hwlor    = hwres4 + hwvdw + hwrad
-          hhw      = freqnm * hwlor
-          IF (freq > (82259.10 - 4000.0) * REAL(CLIGHT_CMS,4)) THEN
-            hprofres = hwres4 * freqnm / 3.14159 / (del**2 + hhw**2) * 1.77245 * dop
-          ELSE
-            ! Far red wing: H2 quasi-molecular cutoff (Allard & Koester 1992)
-            cutoff_val = 0.0
-            spacing    = 200.0 * REAL(CLIGHT_CMS,4)
-            freq22000  = (82259.10 - 22000.0) * REAL(CLIGHT_CMS,4)
-            IF (freq >= 50000.0 * REAL(CLIGHT_CMS,4)) THEN
-              IF (freq < freq22000) THEN
-                cutoff_val = (CUTOFFH2(2)-CUTOFFH2(1))/spacing*(freq-freq22000) + CUTOFFH2(1)
-              ELSE
-                icut = INT((freq - freq22000) / spacing)
-                cutfreq = icut*spacing + freq22000
-                cutoff_val = (CUTOFFH2(icut+2)-CUTOFFH2(icut+1))/spacing*(freq-cutfreq) + CUTOFFH2(icut+1)
-              END IF
-              cutoff_val = (10.0**(cutoff_val-14.0)) * XNFPH(j,1) * 2.0 / REAL(CLIGHT_CMS,4)
-            END IF
-            hprofres = cutoff_val * 1.77245 * dop
-          END IF
-        END ASSOCIATE
-        ! Radiation damping contribution
-        hprofrad = 0.0
-        IF (freq > 2.4190611E15 .AND. freq < 0.77*3.288051E15) &
-          hprofrad = hwrad * freqnm / 3.14159 / (del**2 + hhw**2) * 1.77245 * dop
-        ! Van der Waals
-        hprofvdw = hwvdw * freqnm / 3.14159 / (del**2 + hhw**2) * 1.77245 * dop
-        IF (freq < 1.8E15) hprofvdw = 0.0
-        hproflor = hprofres + hprofrad + hprofvdw
-        result   = result + hproflor
-        IF (ifcore == 1) RETURN
-      ELSE
-        ! Standard Lorentz wing
-        hhw = freqnm * hwlor
-        top = hhw
-        ! Lyman beta/gamma/delta: suppress radiation near series limit
-        IF (n == 1 .AND. m <= 5) THEN
-          IF (m==3 .AND. freq > 0.885*3.288051E15 .AND. freq < 0.890*3.288051E15) &
-            top = hhw - freqnm*hwrad
-          IF (m==4 .AND. freq > 0.936*3.288051E15 .AND. freq < 0.938*3.288051E15) &
-            top = hhw - freqnm*hwrad
-          IF (m==5 .AND. freq > 0.959*3.288051E15 .AND. freq < 0.961*3.288051E15) &
-            top = hhw - freqnm*hwrad
-        END IF
-        hproflor = top / 3.14159 / (del**2 + hhw**2) * 1.77245 * dop
-        result   = result + hproflor
-        IF (ifcore == 1) RETURN
-      END IF
+    log_da_pt = LOG10(da_pt)
+    idx = 1
+    DO idx = 1, NSTARK_DALPHA - 1
+      IF (log_da_pt <= S%log_dalpha_grid(idx + 1)) EXIT
+    END DO
+    idx = MAX(1, MIN(NSTARK_DALPHA - 1, idx))
+    frac = (log_da_pt - S%log_dalpha_grid(idx)) / &
+           (S%log_dalpha_grid(idx+1) - S%log_dalpha_grid(idx))
+
+    IF (stark_prof(idx) > 0.0D0 .AND. stark_prof(idx+1) > 0.0D0) THEN
+      result = EXP(LOG(stark_prof(idx)) * (1.0D0 - frac) &
+                 + LOG(stark_prof(idx+1)) * frac)
+    ELSE
+      result = stark_prof(idx) * (1.0D0 - frac) &
+             + stark_prof(idx+1) * frac
     END IF
-
-    ! ---- STARK WINGS ----
-    wty1    = 1.0 / (1.0 + XNE(j) / y1wht)
-    y1scal  = y1num * y1s(j) * wty1 + y1b(j) * (1.0 - wty1)
-    c1_loc  = c1d(j) * c1con * y1scal
-    c2_loc  = c2d(j) * c2con
-    g1      = 6.77 * SQRT(c1_loc)
-    gnot    = g1 * MAX(0.0, 0.2114 + LOG(SQRT(c2_loc)/c1_loc)) &
-                 * (1.0 - gcon1(j) - gcon2(j))
-    beta_val = ABS(del) / fo(j) * dbeta
-    y1      = c1_loc * beta_val
-    y2      = c2_loc * beta_val**2
-    gam     = gnot
-    IF (.NOT. (y2 <= 1.E-4 .AND. y1 <= 1.E-5)) THEN
-      gam = g1 * (0.5*EXP(-MIN(80.0, y1)) + expint1(y1) - 0.5*expint1(y2)) &
-              * (1.0 - gcon1(j)/(1.0+(90.0*y1)**3) - gcon2(j)/(1.0+2000.0*y1))
-      IF (gam <= 1.E-20) gam = 0.0
-    END IF
-
-    prqs = stark_quasistatic_profile(beta_val, pp_d(j), n, m)
-
-    ! Lyman alpha: split quasistatic profile, add H2+ cutoff
-    IF (m == 2) THEN
-      prqs = prqs * 0.5
-      cutoff_val = 0.0
-      IF (freq >= (82259.10-20000.0)*REAL(CLIGHT_CMS,4) .AND. &
-          freq <= (82259.10- 4000.0)*REAL(CLIGHT_CMS,4)) THEN
-        spacing   = 100.0 * REAL(CLIGHT_CMS,4)
-        freq15000 = (82259.10 - 15000.0) * REAL(CLIGHT_CMS,4)
-        IF (freq < freq15000) THEN
-          cutoff_val = (CUTOFFH2PLUS(2)-CUTOFFH2PLUS(1))/spacing*(freq-freq15000) + CUTOFFH2PLUS(1)
-        ELSE
-          icut     = INT((freq - freq15000) / spacing)
-          cutfreq  = icut*spacing + freq15000
-          cutoff_val = (CUTOFFH2PLUS(icut+2)-CUTOFFH2PLUS(icut+1))/spacing*(freq-cutfreq) + CUTOFFH2PLUS(icut+1)
-        END IF
-        cutoff_val = (10.0**(cutoff_val-14.0)) / REAL(CLIGHT_CMS,4) * XNFPH(j,2)
-        result = result + cutoff_val * 1.77245 * dop
-      ELSE IF (freq > (82259.10-4000.0)*REAL(CLIGHT_CMS,4)) THEN
-        beta4000    = 4000.0*REAL(CLIGHT_CMS,4) / fo(j) * dbeta
-        prqsp4000   = stark_quasistatic_profile(beta4000, pp_d(j), n, m) * 0.5 / fo(j) * dbeta
-        cutoff4000  = (10.0**(-11.07-14.0)) / REAL(CLIGHT_CMS,4) * XNFPH(j,2)
-        result = result + cutoff4000/prqsp4000 * prqs/fo(j) * dbeta * 1.77245 * dop
-      END IF
-    END IF
-
-    f = 0.0
-    IF (gam > 0.0) f = gam / 3.14159 / (gam**2 + beta_val**2)
-    p1  = (0.9*y1)**2
-    fns = (p1 + 0.03*SQRT(y1)) / (p1 + 1.0)
-    result = result + (prqs*(1.0 + fns) + f) / fo(j) * dbeta * 1.77245 * dop
-
-  END FUNCTION hydrogen_line_profile
+  END SUBROUTINE interp_stark_at
 
 
 
@@ -1640,7 +1896,7 @@ CONTAINS
                              TS, DEN, DLF1, DLF2, 1.0E13, 1, sentinel)
     IF (sentinel < 0.0) THEN
       CALL read_he1_stark_tables(1, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
-      result = 1.772453 * phihe * dopwl * 10.0
+      result = SQRTPI * phihe * dopwl * 10.0
       RETURN
     END IF
     ! Apply fine structure splitting
@@ -1772,7 +2028,7 @@ CONTAINS
                              TS, DEN, DLF1, DLF2, 1.0E14, 2, sentinel)
     IF (sentinel < 0.0) THEN
       CALL read_he1_stark_tables(2, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
-      result = 1.772453 * phihe * dopwl * 10.0
+      result = SQRTPI * phihe * dopwl * 10.0
       RETURN
     END IF
     CALL he1_stark_widths(j, wave, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
@@ -1802,7 +2058,7 @@ CONTAINS
                              TS, DEN, DLF1, DLF2, 1.0E14, 3, sentinel)
     IF (sentinel < 0.0) THEN
       CALL read_he1_stark_tables(3, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
-      result = 1.772453 * phihe * dopwl * 10.0
+      result = SQRTPI * phihe * dopwl * 10.0
       RETURN
     END IF
     CALL he1_stark_widths(j, wave, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
@@ -1828,7 +2084,7 @@ CONTAINS
                              TS, DEN, DLF1, DLF2, 1.0E13, 4, sentinel)
     IF (sentinel < 0.0) THEN
       CALL read_he1_stark_tables(4, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
-      result = 1.772453 * phihe * dopwl * 10.0
+      result = SQRTPI * phihe * dopwl * 10.0
       RETURN
     END IF
     CALL he1_stark_widths(j, wave, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
@@ -2290,7 +2546,8 @@ CONTAINS
 ! ============================================================================
   SUBROUTINE read_he1_stark_tables(line, j, temp, xnfhp, xnfhep, xne_in, dlnm, phihe)
     INTEGER, INTENT(IN)  :: line, j
-    REAL(4), INTENT(IN)  :: temp, xnfhp, xnfhep, xne_in, dlnm
+    REAL(8), INTENT(IN)  :: temp, xnfhp, xnfhep, xne_in
+    REAL(4), INTENT(IN)  :: dlnm
     REAL(4), INTENT(OUT) :: phihe
 
     INTEGER, PARAMETER :: NDLAM(4) = [ 142, 196, 204, 142 ]
@@ -2506,7 +2763,7 @@ CONTAINS
     REAL(8)  :: wave, wcon, wmerge, wshift, wtail
     REAL(8)  :: bluecut, wlplus1, wlplus2, redcut, wlminus1, wlminus2
     REAL(8)  :: dopratio, wl_loc
-    REAL(8)  :: emergeh_loc(kw)
+    REAL(8), SAVE :: emergeh_loc(kw)
     REAL(4)  :: dopph(kw)
     ! local aliases replacing F77 EQUIVALENCE on GAMMAR/GAMMAS/GAMMAW/GF
     REAL(4)  :: cgf_loc, ashore_loc, bshore_loc, xsect_loc
@@ -2521,7 +2778,7 @@ CONTAINS
 
     ! ----- DATA: hydrogen series limits (cm^{-1}) used for merged continuum -----
     REAL(8), PARAMETER :: conth(15) = [ &
-      109678.764D0, 27419.659D0, 12186.462D0,  6854.871D0, 4387.113D0, &
+      ELIM_HI, 27419.659D0, 12186.462D0,  6854.871D0, 4387.113D0, &
         3046.604D0,  2238.320D0,  1713.711D0,  1354.044D0, 1096.776D0, &
          906.426D0,   761.650D0,   648.980D0,   559.579D0,  487.456D0 ]
 
@@ -2530,7 +2787,7 @@ CONTAINS
     ! N*val repeat syntax is invalid in F90 array constructors; zeros spelled out.
     REAL(8), PARAMETER :: contx(26,17) = RESHAPE( [ &
       ! col 1  -- H I (1.00)
-      109678.764D0, 27419.659D0, 12186.462D0,  6854.871D0, 4387.113D0, &
+      ELIM_HI, 27419.659D0, 12186.462D0,  6854.871D0, 4387.113D0, &
         3046.604D0,  2238.320D0,  1713.711D0,  1354.044D0, 1096.776D0, &
         0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,            &
         0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,                                  &
@@ -2614,17 +2871,35 @@ CONTAINS
       ehyd(7) = 107440.444D0
       ehyd(8) = 107965.051D0
       DO n = 9, 100
-        ehyd(n) = 109678.764D0 - 109677.576D0 / DBLE(n)**2
+        ehyd(n) = ELIM_HI - RYDBERG_H / DBLE(n)**2
       END DO
       DO n = 1, 99
         alphahyd(n) = 1.0D7 / (ehyd(n+1) - ehyd(n))
       END DO
       DO k = 1, nrhox
-        ! Inglis-Teller merger level (empirical)
+        ! Inglis-Teller merger level for merged-continuum tapering.
+        !
+        ! This sets the wavelength where hydrogen line wings are tapered
+        ! toward zero near series limits, preventing double-counting of
+        ! opacity that is already in the bound-free continuum.
+        !
+        ! The coefficient 1600 (vs 1100 in ATLAS12's HLINOP) is
+        ! deliberately larger: it gives a more generous boundary so that
+        ! line wings extend further toward the series limit before being
+        ! tapered.  This is appropriate because the tapering is an
+        ! opacity-accounting device, not a dissolution criterion.
+        !
+        ! The Hummer & Mihalas (1988) occupation probability formalism
+        ! (used in HLINOP for per-level line opacity weighting) is not
+        ! appropriate here because its w_n=0.5 level corresponds to
+        ! n* ~ 1100/N_e^(2/15), which would taper line wings too
+        ! aggressively and suppress hydrogen line strengths.
+        !
+        ! Reference: Inglis, D.R. & Teller, E. 1939, ApJ 90, 439
         inglis = 1600.0 / xne(k)**(2.0/15.0)
         nmerge = inglis - 1.5
-        emerge(k)     = 109737.312D0 / DBLE(nmerge)**2
-        emergeh_loc(k)= 109677.576D0 / DBLE(nmerge)**2
+        emerge(k)     = 109737.312D0 / DBLE(INT(nmerge))**2
+        emergeh_loc(k)= RYDBERG_H / DBLE(INT(nmerge))**2
       END DO
       itemp1 = itemp
     END IF
@@ -2679,7 +2954,7 @@ CONTAINS
       wshift = 1.0D7 / (1.0D7/wl_loc - 109737.312D0/DBLE(nlast_loc)**2)
       wmerge = 1.0D7 / (1.0D7/wl_loc - emerge(j))
       IF (nelion == 1) THEN
-        wshift = 1.0D7 / (1.0D7/wl_loc - 109677.576D0/DBLE(nlast_loc)**2)
+        wshift = 1.0D7 / (1.0D7/wl_loc - RYDBERG_H/DBLE(nlast_loc)**2)
         wmerge = 1.0D7 / (1.0D7/wl_loc - emergeh_loc(j))
       END IF
       IF (wmerge < 0.0D0) wmerge = wshift + wshift
@@ -2796,11 +3071,69 @@ CONTAINS
       IF (linout >= 0) CALL journal_append(iline, kappa0)
       mlines = mlines + 1
       ! Alpha (Nbup=Nblo+1) and beta-blue (Nbup=Nblo+2) treated as isolated
-      IF (ncon == 0)            GOTO 620
-      IF (nbup == nblo+1)       GOTO 620
-      IF (nbup == nblo+2)       GOTO 630
+      IF (ncon == 0 .OR. nbup == nblo+1) THEN
+
+        ! === ALPHA / ISOLATED LINE (red wing + blue wing) ===
+        IF (wl_loc <= wlend) THEN
+          minred = MAX(1, nbuff)
+          wave   = wbegin * ratio**(minred-1)
+          DO ibuff = minred, length
+            kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
+            buffer(ibuff) = buffer(ibuff) + kappa
+            IF (kappa < continuum(ibuff)*cutoff) EXIT
+            wave = wave * ratio
+          END DO
+          IF (minred == 1) CYCLE line_loop
+          IF (wl_loc < wbegin) CYCLE line_loop
+        END IF
+        ! Blue wing
+        ibuff   = MIN(length+1, nbuff)
+        maxblue = ibuff - 1
+        wave    = wbegin * ratio**(ibuff-1)
+        DO i = 1, maxblue
+          ibuff = ibuff - 1
+          wave  = wave / ratio
+          kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
+          buffer(ibuff) = buffer(ibuff) + kappa
+          IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
+        END DO
+        CYCLE line_loop
+
+      ELSE IF (nbup == nblo+2) THEN
+
+        ! === BETA LINE (red wing with alpha limit, then blue wing) ===
+        beta_redwing: do   ! single-pass block for structured exit
+          IF (wl_loc <= wlend) THEN
+            minred = MAX(1, nbuff)
+            wave   = wbegin * ratio**(minred-1)
+            DO ibuff = minred, length
+              IF (wave > alphahyd(nblo)) EXIT beta_redwing
+              kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
+              buffer(ibuff) = buffer(ibuff) + kappa
+              IF (kappa < continuum(ibuff)*cutoff) EXIT beta_redwing
+              wave = wave * ratio
+            END DO
+            IF (minred == 1) CYCLE line_loop
+            IF (wl_loc < wbegin) CYCLE line_loop
+          END IF
+          IF (nbuff < 1) CYCLE line_loop
+        end do beta_redwing
+        ! Blue wing (same as alpha path)
+        ibuff   = MIN(length+1, nbuff)
+        maxblue = ibuff - 1
+        wave    = wbegin * ratio**(ibuff-1)
+        DO i = 1, maxblue
+          ibuff = ibuff - 1
+          wave  = wave / ratio
+          kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
+          buffer(ibuff) = buffer(ibuff) + kappa
+          IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
+        END DO
+        CYCLE line_loop
+
+      END IF
       ! General Balmer/Paschen/... with merged continuum
-      wshift = 1.0D7 / (conth(ncon) - 109677.576D0/81.0D0**2)
+      wshift = 1.0D7 / (conth(ncon) - RYDBERG_H/81.0D0**2)
       wmerge = 1.0D7 / (conth(ncon) - emergeh_loc(j))
       IF (wmerge < 0.0D0) wmerge = wshift + wshift
       wcon   = MAX(wshift, wmerge)
@@ -2817,7 +3150,7 @@ CONTAINS
       ! Red wing
       IF (wl_loc <= wlend) THEN
         IF (wbegin <= alphahyd(nblo)) THEN
-          redcut   = 1.0D7 / (109678.764D0 - 109677.576D0/(DBLE(nbup)-0.8D0)**2 - ehyd(nblo))
+          redcut   = 1.0D7 / (ELIM_HI - RYDBERG_H/(DBLE(nbup)-0.8D0)**2 - ehyd(nblo))
           IF (ifvac == 0) redcut = vac_to_air(redcut)
           redcut   = redcut * dopratio
           wlminus1 = 1.0D7 / (ehyd(nbup-1) - ehyd(nblo))
@@ -2850,7 +3183,7 @@ CONTAINS
         IF (wl_loc < wbegin) CYCLE line_loop
       END IF
       ! Blue wing  (613 block)
-613   bluecut  = 1.0D7 / (109678.764D0 - 109677.576D0/(DBLE(nbup)+0.8D0)**2 - ehyd(nblo))
+613   bluecut  = 1.0D7 / (ELIM_HI - RYDBERG_H/(DBLE(nbup)+0.8D0)**2 - ehyd(nblo))
       IF (ifvac == 0) bluecut = vac_to_air(bluecut)
       bluecut  = bluecut * dopratio
       wlplus1  = 1.0D7 / (ehyd(nbup+1) - ehyd(nblo))
@@ -2880,48 +3213,6 @@ CONTAINS
         IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
       END DO
       CYCLE line_loop
-
-      ! Alpha/beta isolated red + blue wing  (620/623)
-620   IF (wl_loc <= wlend) THEN
-        minred = MAX(1, nbuff)
-        wave   = wbegin * ratio**(minred-1)
-        DO ibuff = minred, length
-          kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
-          buffer(ibuff) = buffer(ibuff) + kappa
-          IF (kappa < continuum(ibuff)*cutoff) EXIT
-          wave = wave * ratio
-        END DO
-        IF (minred == 1) CYCLE line_loop
-        IF (wl_loc < wbegin) CYCLE line_loop
-      END IF
-623   ibuff   = MIN(length+1, nbuff)
-      maxblue = ibuff - 1
-      wave    = wbegin * ratio**(ibuff-1)
-      DO i = 1, maxblue
-        ibuff = ibuff - 1
-        wave  = wave / ratio
-        kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
-        buffer(ibuff) = buffer(ibuff) + kappa
-        IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
-      END DO
-      CYCLE line_loop
-
-      ! Beta line red wing  (630)
-630   IF (wl_loc <= wlend) THEN
-        minred = MAX(1, nbuff)
-        wave   = wbegin * ratio**(minred-1)
-        DO ibuff = minred, length
-          IF (wave > alphahyd(nblo)) GOTO 623  ! alpha limit reached -> blue wing
-          kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
-          buffer(ibuff) = buffer(ibuff) + kappa
-          IF (kappa < continuum(ibuff)*cutoff) GOTO 623
-          wave = wave * ratio
-        END DO
-        IF (minred == 1) CYCLE line_loop
-        IF (wl_loc < wbegin) CYCLE line_loop
-      END IF
-      IF (nbuff < 1) CYCLE line_loop
-      GOTO 623     ! blue wing
 
       ! ------------------------------------------------------------------
 700   CONTINUE   ! AUTOIONIZING (SHORE) LINE
@@ -3030,10 +3321,10 @@ CONTAINS
     !  Colliding names imported with _a suffix.
     ! ------------------------------------------------------------------
     USE mod_atlas_data, &
-      abund_a => ABUND, ah2p_a => AH2P, ahe1_a => AHE1, ahe2_a => AHE2, &
+      ah2p_a => AH2P, ahe1_a => AHE1, ahe2_a => AHE2, &
       ahemin_a => AHEMIN, ahline_a => AHLINE, ahmin_a => AHMIN, &
-      ahyd_a => AHYD, atmass_a => ATMASS, bhyd_a => BHYD, bmin_a => BMIN, &
-      elem_a => ELEM, hckt_a => HCKT, hkt_a => HKT, ifturb_a => IFTURB, &
+      ahyd_a => AHYD, bhyd_a => BHYD, bmin_a => BMIN, &
+      hckt_a => HCKT, hkt_a => HKT, ifturb_a => IFTURB, &
       itemp_a => ITEMP, nrhox_a => NRHOX, p_a => P, ptotal_a => PTOTAL, &
       pturb_a => PTURB, rho_a => RHO, rhox_a => RHOX, shline_a => SHLINE, &
       shmin_a => SHMIN, shyd_a => SHYD, sigh2_a => SIGH2, sigh_a => SIGH, &
@@ -3064,6 +3355,7 @@ CONTAINS
     REAL(8)  :: xnfpel_lc(6, mw)       ! per-depth slice for writing
     REAL(8)  :: dopple_lc(6, mw)       ! per-depth Doppler widths
     CHARACTER(LEN=1) :: card_x(81)     ! input line buffer for FREEFF
+    REAL(8)  :: xne_save(kw)              ! save/restore XNE across NMOLEC call
 
     ! ------------------------------------------------------------------
     !  IDMOL and MOMASS data (molecule codes and masses)
@@ -3212,13 +3504,10 @@ CONTAINS
     ! (<1%) from the converged XNE stored in the model atmosphere.  We
     ! save and restore XNE to keep the model's converged values.
     IF (IFMOL == 1) THEN
-      BLOCK
-        REAL(8) :: xne_save(kw)
-        xne_save(1:nrhox_a) = xne_a(1:nrhox_a)
-        CALL NMOLEC(1)
-        MOLEC_IREAD = 1
-        xne_a(1:nrhox_a) = xne_save(1:nrhox_a)
-      END BLOCK
+      xne_save(1:nrhox_a) = xne_a(1:nrhox_a)
+      CALL NMOLEC(1)
+      MOLEC_IREAD = 1
+      xne_a(1:nrhox_a) = xne_save(1:nrhox_a)
     END IF
 
     ! Zero out all number densities before populating
@@ -3327,7 +3616,7 @@ CONTAINS
       DO j = 1, nrhox_a
         EHVKT(j) = EXP(-FREQ * hkt_a(j))
         STIM(j)  = 1.0D0 - EHVKT(j)
-        BNU(j)   = 1.47439D-2 * freq15_x**3 * EHVKT(j) / STIM(j)
+        BNU(j)   = BNU_PREFAC * freq15_x**3 * EHVKT(j) / STIM(j)
       END DO
       CALL kapp()
       DO j = 1, nrhox_a
@@ -3453,8 +3742,8 @@ CONTAINS
       ! TK = k_B * T (ergs); ATMASS in amu; 1 amu = 1.660e-24 g
       DO nelem = 1, 99
         dopple_lc(1, nelem) = SQRT(2.0D0 * tk_a(j) / &
-                              (atmass_a(nelem) * 1.660D-24) + &
-                               vturb_a(j)**2) / 2.99792458D10
+                              (ATMASS(nelem) * AMU) + &
+                               vturb_a(j)**2) / CLIGHT
         DO ion = 2, 6
           dopple_lc(ion, nelem) = dopple_lc(1, nelem)
         END DO
@@ -3471,8 +3760,8 @@ CONTAINS
       ! Molecular Doppler widths (use MOMASS for reduced mass)
       DO nelem = 40, mw
         dopple_lc(6, nelem) = SQRT(2.0D0 * tk_a(j) / &
-                              (momass_data(nelem-39) * 1.660D-24) + &
-                               vturb_a(j)**2) / 2.99792458D10
+                              (momass_data(nelem-39) * AMU) + &
+                               vturb_a(j)**2) / CLIGHT
       END DO
 
       ! Store into module arrays

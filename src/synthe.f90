@@ -55,7 +55,7 @@ PROGRAM SYNTHE
   USE synthe_module
   USE mod_atlas_data, only: &
     ! Procedures
-    JOSH, READIN, KAPP, &
+    JOSH, READIN, KAPP, BLOCKJ, BLOCKH, &
     ! Data directory path
     DATADIR, &
     ! flag to broadcast if synthe is running
@@ -161,7 +161,7 @@ PROGRAM SYNTHE
   REAL(8)   :: qablog(1131)
   REAL(8)   :: qcongf
 
-  REAL(4)   :: ablog(3, 377)
+  REAL(8)   :: ablog(3, 377)
 
   REAL(4)   :: asynth(kw_p), alinec(kw_p)
   REAL(4)   :: asyncont(kw_p), alinecont(kw_p)
@@ -176,7 +176,7 @@ PROGRAM SYNTHE
   ! ==========================================================================
   !  SYNTHE SCALAR WORK VARIABLES
   ! ==========================================================================
-  INTEGER   :: i, j, l, n, nu, iedge, nbuff_i
+  INTEGER   :: i, j, l, n, nu, iedge, nbuff_i, ib
   INTEGER   :: n12, nlines, iline, ilines, n191
   INTEGER   :: n9, ncen
   INTEGER   :: nvshift
@@ -188,7 +188,7 @@ PROGRAM SYNTHE
   REAL(4)   :: adamp_s
   REAL(4)   :: congf_s, alpha_s, v2_s
   REAL(4)   :: gamrf, gamsf, gamwf
-  REAL(4)   :: vsteps, tabstep, tabi, dvoigt
+  REAL(4)   :: dvoigt
   REAL(4)   :: x_wing
   REAL(8)   :: wave8, freq8
   REAL(4)   :: elo_s, dopple_nel
@@ -227,6 +227,16 @@ PROGRAM SYNTHE
   ! Flags
   INTEGER   :: ifvac_sv   ! local copy of ifvac for SPECTRV /TRASH/ and title
 
+  ! --- Variables formerly scoped in BLOCK constructs (hoisted to program level) ---
+  CHARACTER(256) :: envval
+  INTEGER        :: envlen, envstat
+  INTEGER        :: dotpos
+  INTEGER        :: ios25
+  INTEGER(8)     :: itmp
+  INTEGER        :: jptr, k9
+  REAL(8), ALLOCATABLE :: lindat8_arr(:,:)
+  REAL(4), ALLOCATABLE :: lindat4_arr(:,:)
+
   ! ==========================================================================
 
   IFSYNTHE = 1
@@ -237,19 +247,15 @@ PROGRAM SYNTHE
   !  Locate data files via $ATLAS12 environment variable.
   !  If unset, defaults to ./data/
   ! ==========================================================================
-  BLOCK
-    CHARACTER(256) :: envval
-    INTEGER :: envlen, envstat
-    CALL GET_ENVIRONMENT_VARIABLE('ATLAS12', envval, envlen, envstat)
-    IF (envstat == 0 .AND. envlen > 0) THEN
-      DATADIR = TRIM(envval)
-      IF (DATADIR(envlen:envlen) /= '/') DATADIR = TRIM(DATADIR) // '/'
-      DATADIR = TRIM(DATADIR) // 'data/'
-    ELSE
-      DATADIR = 'data/'
-    END IF
-    WRITE(6, '(/A,A)') ' DATADIR = ', TRIM(DATADIR)
-  END BLOCK
+  CALL GET_ENVIRONMENT_VARIABLE('ATLAS12', envval, envlen, envstat)
+  IF (envstat == 0 .AND. envlen > 0) THEN
+    DATADIR = TRIM(envval)
+    IF (DATADIR(envlen:envlen) /= '/') DATADIR = TRIM(DATADIR) // '/'
+    DATADIR = TRIM(DATADIR) // 'data/'
+  ELSE
+    DATADIR = 'data/'
+  END IF
+  WRITE(6, '(/A,A)') ' DATADIR = ', TRIM(DATADIR)
 
   ! ==========================================================================
   !  PARSE COMMAND-LINE ARGUMENT: model atmosphere filename
@@ -258,37 +264,37 @@ PROGRAM SYNTHE
   !  The input extension is stripped and replaced with .spec for the
   !  ASCII spectrum output (unit 11).
   ! ==========================================================================
-  BLOCK
-    INTEGER :: dotpos
-    IF (COMMAND_ARGUMENT_COUNT() < 1) THEN
-      WRITE(6, '(A)') ' ERROR: expected model filename as argument'
-      WRITE(6, '(A)') ' Usage: synthe_spectrv.exe <model_file>'
-      STOP 1
-    END IF
-    CALL GET_COMMAND_ARGUMENT(1, model_file)
-    WRITE(6, '(A,A)') ' Input model      = ', TRIM(model_file)
+  IF (COMMAND_ARGUMENT_COUNT() < 1) THEN
+    WRITE(6, '(A)') ' ERROR: expected model filename as argument'
+    WRITE(6, '(A)') ' Usage: synthe_spectrv.exe <model_file>'
+    STOP 1
+  END IF
+  CALL GET_COMMAND_ARGUMENT(1, model_file)
+  WRITE(6, '(A,A)') ' Input model      = ', TRIM(model_file)
 
-    ! Strip extension: find last '.' and replace with .spec / .linform
-    dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
-    IF (dotpos > 1) THEN
-      spec_file    = model_file(1:dotpos-1) // '.spec'
-      mol_file     = model_file(1:dotpos-1) // '.mol'
-      linform_file = model_file(1:dotpos-1) // '.linform'
-    ELSE
-      spec_file    = TRIM(model_file) // '.spec'
-      mol_file     = TRIM(model_file) // '.mol'
-      linform_file = TRIM(model_file) // '.linform'
-    END IF
-    WRITE(6, '(A,A)') ' Spectrum output  = ', TRIM(spec_file)
-    WRITE(6, '(A,A)') ' Linform output   = ', TRIM(linform_file)
-    WRITE(6, '(A,A)') ' Mol nden output  = ', TRIM(mol_file)
-  END BLOCK
+  ! Strip extension: find last '.' and replace with .spec / .linform
+  dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
+  IF (dotpos > 1) THEN
+    spec_file    = model_file(1:dotpos-1) // '.spec'
+    mol_file     = model_file(1:dotpos-1) // '.mol'
+    linform_file = model_file(1:dotpos-1) // '.linform'
+  ELSE
+    spec_file    = TRIM(model_file) // '.spec'
+    mol_file     = TRIM(model_file) // '.mol'
+    linform_file = TRIM(model_file) // '.linform'
+  END IF
+  WRITE(6, '(A,A)') ' Spectrum output  = ', TRIM(spec_file)
+  WRITE(6, '(A,A)') ' Linform output   = ', TRIM(linform_file)
+  WRITE(6, '(A,A)') ' Mol nden output  = ', TRIM(mol_file)
   ! ==========================================================================
   OPEN(UNIT=93, FORM='UNFORMATTED')
   READ(93) nlines_in, length, ifvac, ifnlte, n19, turbv, deckj, ifpred, &
        wlbeg, wlend, resolu, ratio, ratiolg, cutoff, linout
   CLOSE(UNIT=93, STATUS='DELETE')
 
+nlines_in = 100
+ 
+  
   ixwlbeg = INT(LOG(wlbeg) / ratiolg)
   wbegin  = EXP(DBLE(ixwlbeg) * ratiolg)
   IF (wbegin < wlbeg) THEN
@@ -334,10 +340,10 @@ PROGRAM SYNTHE
   CLOSE(UNIT=14, STATUS='DELETE')
 
   ! ==========================================================================
-  !  SECTION 4.  INITIALISE VOIGT LOOKUP TABLES
+  !  SECTION 4.  VOIGT FUNCTION
+  !  The Weideman (1994) algorithm uses precomputed PARAMETER coefficients
+  !  in synthe_module — no runtime initialisation is needed.
   ! ==========================================================================
-  vsteps = 200.0
-  CALL init_voigt_tables(vsteps, NTAB_VOIGT)
 
   ! ==========================================================================
   !  SPECTRV INITIALISATION  (formerly the opening sections of spectrv.f90)
@@ -348,15 +354,12 @@ PROGRAM SYNTHE
   ! ==========================================================================
 
   ! --- Read run parameters from spectrv.input ---
-  BLOCK
-    INTEGER :: ios25
-    OPEN(UNIT=25, FILE=trim(DATADIR)//'spectrv.input', STATUS='OLD', &
-         ACTION='READ', IOSTAT=ios25)
-    IF (ios25 /= 0) THEN
-      WRITE(6,'(A,A)') ' ERROR: cannot open ', trim(DATADIR)//'spectrv.input'
-      STOP 1
-    END IF
-  END BLOCK
+  OPEN(UNIT=25, FILE=trim(DATADIR)//'spectrv.input', STATUS='OLD', &
+       ACTION='READ', IOSTAT=ios25)
+  IF (ios25 /= 0) THEN
+    WRITE(6,'(A,A)') ' ERROR: cannot open ', trim(DATADIR)//'spectrv.input'
+    STOP 1
+  END IF
   READ(25, '(8F10.5)') rhoxj, r1, r101, ph1, pc1, psi1, PRDDOP, PRDPOW
   CLOSE(UNIT=25)
   slope  = 100.0D0 / (r101 - r1)
@@ -474,12 +477,9 @@ PROGRAM SYNTHE
   n10_loc         = 0              ! NLTE line centres (not currently used)
 
   ! Store 'A' or 'V' flag in title(74)
-  BLOCK
-    INTEGER(8) :: itmp
-    itmp = INT(ICHAR('A'), 8)
-    IF (ifvac == 1) itmp = INT(ICHAR('V'), 8)
-    title(74) = TRANSFER(itmp, title(74))
-  END BLOCK
+  itmp = INT(ICHAR('A'), 8)
+  IF (ifvac == 1) itmp = INT(ICHAR('V'), 8)
+  title(74) = TRANSFER(itmp, title(74))
 
   WRITE(6, '(/A,F6.1,A,I8,A,F6.1,A,I6,A,I2)') &
     ' WLBEG=', wlbeg, 'nm,   RESOLU=', int(resolu), ',   WLEND=', wlend, &
@@ -512,6 +512,14 @@ PROGRAM SYNTHE
   aplot   = ' '
   iedge_sv = 1
 
+  ! Initialise JOSH operator matrices (COEFJ, COEFH).
+  ! The F77 code called BLOCKJH at the start of every JOSH call, which
+  ! loaded the 51x51 Lambda-operator matrices from DATA statements.
+  ! The F90 BLOCKJ/BLOCKH read from external files and cache the result,
+  ! so they only need to be called once before the first JOSH call.
+  CALL BLOCKJ
+  CALL BLOCKH
+
   ! ==========================================================================
   !  SECTION 7.  MAIN DEPTH LOOP  (SYNTHE opacity accumulation)
   ! ==========================================================================
@@ -536,9 +544,9 @@ PROGRAM SYNTHE
 
     nu = 0
     DO iedge = 1, nedge-1
-      nu = nu + 1;  ablog(1,iedge) = REAL(qablog(nu))
-      nu = nu + 1;  ablog(2,iedge) = REAL(qablog(nu))
-      nu = nu + 1;  ablog(3,iedge) = REAL(qablog(nu))
+      nu = nu + 1;  ablog(1,iedge) = qablog(nu)
+      nu = nu + 1;  ablog(2,iedge) = qablog(nu)
+      nu = nu + 1;  ablog(3,iedge) = qablog(nu)
     END DO
 
     iedge = 1
@@ -547,11 +555,11 @@ PROGRAM SYNTHE
       DO WHILE (wave8 >= wledge(iedge+1) .AND. iedge < nedge-1)
         iedge = iedge + 1
       END DO
-      continuum(nbuff_i) = REAL( &
+      continuum(nbuff_i) = &
         ((wave8 - halfedge(iedge))*(wave8 - wledge(iedge+1))*ablog(1,iedge) + &
          (wledge(iedge) - wave8)*(wave8 - wledge(iedge+1))*2.0D0*ablog(2,iedge) + &
          (wave8 - wledge(iedge))*(wave8 - halfedge(iedge))*ablog(3,iedge)) / &
-        deledge(iedge) )
+        deledge(iedge)
     END DO
     DO nbuff_i = 1, length
       continuum(nbuff_i) = 10.0**continuum(nbuff_i)
@@ -632,30 +640,16 @@ PROGRAM SYNTHE
           
           centre_on_grid: IF (nbuff_s >= 1 .AND. nbuff_s <= length) THEN
              mlines = mlines + 1
-             IF (adamp_s < VOIGT_APPROX_LIMIT) THEN
-                kapcen_s = kappa0_s * (1.0 - 1.128*adamp_s)
-             ELSE
-                kapcen_s = kappa0_s * voigt_profile(0.0, adamp_s)
-             END IF
+             kapcen_s = kappa0_s * voigt_profile(0.0, adamp_s)
              IF (linout >= 0) CALL journal_append(iline, kapcen_s)
              buffer(nbuff_s) = buffer(nbuff_s) + kapcen_s
           END IF centre_on_grid
           
-          IF (adamp_s < VOIGT_APPROX_LIMIT) THEN
-             tabstep = vsteps / (dopple_nel * REAL(resolu))
-             tabi    = 1.5
-             DO nstep = 1, n10dop
-                tabi = tabi + tabstep
-                profile(nstep) = kappa0_s * (h0tab(INT(tabi)) + adamp_s*h1tab(INT(tabi)))
-                IF (profile(nstep) < kapmin_s) EXIT
-             END DO
-          ELSE
-             dvoigt = 1.0 / dopple_nel / REAL(resolu)
-             DO nstep = 1, n10dop
-                profile(nstep) = kappa0_s * voigt_profile(REAL(nstep)*dvoigt, adamp_s)
-                IF (profile(nstep) < kapmin_s) EXIT
-             END DO
-          END IF
+          dvoigt = 1.0 / dopple_nel / REAL(resolu)
+          DO nstep = 1, n10dop
+             profile(nstep) = kappa0_s * voigt_profile(REAL(nstep)*dvoigt, adamp_s)
+             IF (profile(nstep) < kapmin_s) EXIT
+          END DO
           
           IF (nstep > n10dop) THEN
              x_wing  = profile(n10dop) * REAL(n10dop)**2
@@ -711,11 +705,6 @@ PROGRAM SYNTHE
   ! Open ASCII spectrum output (replaces standalone syntoascanga post-processing)
   OPEN(UNIT=11, FILE=TRIM(spec_file), STATUS='REPLACE', ACTION='WRITE')
   OPEN(UNIT=33, FILE=TRIM(linform_file), STATUS='REPLACE', ACTION='WRITE')
-  BLOCK
-    REAL(8) :: wend_loc, vstep_loc
-    wend_loc  = wbegin * ratio**(length-1)
-    vstep_loc = CLIGHT_KMS / resolu
-  END BLOCK
 
   DO n9 = 1, length
     wave8 = wbegin * ratio**(n9-1)
@@ -768,20 +757,15 @@ PROGRAM SYNTHE
   END IF
 
   ! Second pass: store compacted lindat records in memory
-  BLOCK
-    REAL(8), ALLOCATABLE :: lindat8_arr(:,:)
-    REAL(4), ALLOCATABLE :: lindat4_arr(:,:)
-    INTEGER :: k9
-
-    ALLOCATE(lindat8_arr(14, n9), lindat4_arr(28, n9))
-    k9 = 0
-    DO i = 1, nlines
-      IF (line_flag(i) == 0) CYCLE
-      k9 = k9 + 1
-      lindat8_arr(:, k9) = merged_lindat8(:, i)
-      lindat4_arr(:, k9) = merged_lindat4(:, i)
-    END DO
-    DEALLOCATE(merged_lindat8, merged_lindat4)
+  ALLOCATE(lindat8_arr(14, n9), lindat4_arr(28, n9))
+  k9 = 0
+  DO i = 1, nlines
+    IF (line_flag(i) == 0) CYCLE
+    k9 = k9 + 1
+    lindat8_arr(:, k9) = merged_lindat8(:, i)
+    lindat4_arr(:, k9) = merged_lindat4(:, i)
+  END DO
+  DEALLOCATE(merged_lindat8, merged_lindat4)
 
   ! ==========================================================================
   !  SECTION 10.  LINE-CENTRE OPACITIES AND IDENTIFICATION RECORDS
@@ -792,20 +776,17 @@ PROGRAM SYNTHE
   ALLOCATE(linecen_matrix(n9, nrhox))
   linecen_matrix = 0.0
 
-  BLOCK
-    INTEGER :: jptr
-    jptr = 0
-    DO j = 1, nrhox
-      maxline = mlinej(j)
-      IF (maxline == 0) CYCLE
-      DO l = 1, maxline
-        jptr = jptr + 1
-        i9 = line_flag(journal_iline(jptr))
-        IF (i9 == 0) CYCLE
-        linecen_matrix(i9, j) = journal_kapcen(jptr)
-      END DO
+  jptr = 0
+  DO j = 1, nrhox
+    maxline = mlinej(j)
+    IF (maxline == 0) CYCLE
+    DO l = 1, maxline
+      jptr = jptr + 1
+      i9 = line_flag(journal_iline(jptr))
+      IF (i9 == 0) CYCLE
+      linecen_matrix(i9, j) = journal_kapcen(jptr)
     END DO
-  END BLOCK
+  END DO
 
   DEALLOCATE(journal_iline, journal_kapcen)
   journal_count = 0
@@ -842,7 +823,6 @@ PROGRAM SYNTHE
 
   DEALLOCATE(linecen_matrix)
   DEALLOCATE(lindat8_arr, lindat4_arr)
-  END BLOCK
 
   WRITE(6,'(I10,A)') ncen, ' LINE CENTER RECORDS PROCESSED'
 

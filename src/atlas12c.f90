@@ -337,13 +337,13 @@ PROGRAM ATLAS12
         CMD_ZSCALE > 0.0D0 .or. CMD_HEABND > 0.0D0 .or. &
         len_trim(ABUND_FILE) > 0) then
       do J = 1, NRHOX
-        TK(J) = 1.38054D-16 * T(J)
-        HKT(J) = 6.6256D-27 / TK(J)
-        HCKT(J) = HKT(J) * 2.99792458D10
-        TKEV(J) = 8.6171D-5 * T(J)
+        TK(J) = KBOL * T(J)
+        HKT(J) = HPLANCK / TK(J)
+        HCKT(J) = HKT(J) * CLIGHT
+        TKEV(J) = KBOL_EV * T(J)
         TLOG(J) = LOG(T(J))
         XNATOM(J) = P(J) / TK(J) - XNE(J)
-        RHO(J) = XNATOM(J) * WTMOLE(J) * 1.660D-24
+        RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
         if (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
         ! Approximate CHARGESQ = sum(n_i * Z_i^2) + n_e for Debye shielding.
         ! Assuming mostly singly ionized gas, the ion sum ~ n_e, so

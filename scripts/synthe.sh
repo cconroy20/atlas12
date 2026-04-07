@@ -40,7 +40,8 @@ mkdir $rundir
 cd $rundir
 
 # Set the directory containing the line information
-linedir="Lines_RV31new"
+#linedir="Lines_RV31new"
+linedir="Lines_v2.3_uncal_old"
 echo " Input line dir:" $linedir
 
 #generate synthe-ready input file

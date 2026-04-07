@@ -160,6 +160,352 @@ module mod_parameters
 end module mod_parameters
 
 !=========================================================================
+! mod_constants: Physical constants and derived quantities
+!
+!   Fundamental constants: CODATA 2018 / 2019 SI redefinition.
+!   k_B and h are exact by definition; c is exact by the definition
+!   of the metre; sigma_T and m_u carry experimental uncertainties
+!   negligible for our purposes.
+!
+!   Derived constants: pre-computed combinations that appear throughout
+!   ATLAS12/SYNTHE (Planck function prefactor, Saha prefactor, free-free
+!   coefficient, etc.).  Defining them here once eliminates scattered
+!   magic numbers and ensures self-consistency.
+!
+!   Spectroscopic constants: measured quantities (Rydberg, H⁻ electron
+!   affinity, H₂ dissociation energy) that are not fundamental but appear
+!   in many routines.  Kept in a separate section with references.
+!
+!   CHANGE LOG:
+!     Initial creation consolidating CODATA-1963 literals scattered
+!     across ~100 locations in the codebase.  Values updated to
+!     CODATA 2018 (Tiesinga et al. 2021, Rev. Mod. Phys. 93, 025010).
+!
+!   Previously used (CODATA 1963):
+!     k_B = 1.38054E-16,  h = 6.6256E-27,  m_u = 1.660E-24
+!=========================================================================
+
+module mod_constants
+
+  implicit none
+
+  ! =====================================================================
+  !  FUNDAMENTAL CONSTANTS  (CGS-Gaussian units)
+  !
+  !  Source: CODATA 2018 (Tiesinga et al. 2021, RMP 93, 025010)
+  !  Values marked (exact) are exact under the 2019 SI redefinition.
+  ! =====================================================================
+
+  real*8, parameter :: PI        = 3.14159265358979323846D0
+  real*8, parameter :: FOURPI    = 4.0D0 * PI               ! 12.566370614...
+  real*8, parameter :: SQRTPI    = 1.7724538509055159D0      ! sqrt(pi)
+  real*8, parameter :: INVSQRTPI = 0.5641895835477563D0      ! 1/sqrt(pi)
+
+  ! Boltzmann constant [erg K⁻¹]  (exact)
+  real*8, parameter :: KBOL = 1.380649D-16
+
+  ! Planck constant [erg s]  (exact)
+  real*8, parameter :: HPLANCK = 6.62607015D-27
+
+  ! Speed of light [cm s⁻¹]  (exact)
+  real*8, parameter :: CLIGHT = 2.99792458D10
+
+  ! Speed of light in other wavelength·frequency unit systems
+  real*8, parameter :: CLIGHT_NM  = 2.99792458D17   ! [nm Hz]   freq = CLIGHT_NM / lambda_nm
+  real*8, parameter :: CLIGHT_ANG = 2.99792458D18   ! [Å Hz]    freq = CLIGHT_ANG / lambda_Ang
+  real*8, parameter :: CLIGHT_KMS = 2.99792458D5    ! [km s⁻¹]
+
+  ! Unified atomic mass unit [g]
+  ! CODATA 2018: 1.66053906660(50) × 10⁻²⁴ g
+  real*8, parameter :: AMU = 1.66053907D-24
+
+  ! Electron mass [g]
+  ! CODATA 2018: 9.1093837015(28) × 10⁻²⁸ g
+  real*8, parameter :: EMASS = 9.1093837D-28
+
+  ! Elementary charge [esu = statcoulomb]
+  ! CODATA 2018: 4.80320451(10) × 10⁻¹⁰ esu
+  real*8, parameter :: ECHARGE = 4.80320451D-10
+
+  ! Stefan-Boltzmann constant [erg cm⁻² s⁻¹ K⁻⁴]
+  ! σ = 2π⁵k⁴/(15h³c²)
+  ! CODATA 2018: 5.670374419 × 10⁻⁵
+  real*8, parameter :: SIGMA_SB = 5.670374419D-5
+
+  ! Thomson scattering cross section [cm²]
+  ! σ_T = 8π/3 × (e²/m_e c²)²
+  ! CODATA 2018: 6.6524587321(60) × 10⁻²⁵ cm²
+  real*8, parameter :: SIGMA_THOMSON = 6.6524587D-25
+
+  ! Electron volt [erg]
+  ! CODATA 2018: 1.602176634 × 10⁻¹² erg  (exact)
+  real*8, parameter :: EV_ERG = 1.602176634D-12
+
+  ! =====================================================================
+  !  DERIVED CONSTANTS
+  !
+  !  Pre-computed combinations that appear frequently in the code.
+  !  All derived from the fundamental constants above.
+  ! =====================================================================
+
+  ! hc/k  [cm K]  — exponent factor: exp(-E_cm * HCK / T)
+  real*8, parameter :: HCK = HPLANCK * CLIGHT / KBOL
+  !                        = 1.43877688... (vs old 1.43879 from CODATA 1963)
+
+  ! h/k  [s K]  — for computing HKT = h/(kT) = HOVERK / T(K)
+  ! then hν/kT = HKT * freq
+  real*8, parameter :: HOVERK = HPLANCK / KBOL
+
+  ! k/eV  [K⁻¹]  — so TKEV = T * KBOL_EV
+  real*8, parameter :: KBOL_EV = KBOL / EV_ERG
+  !                            = 8.617333262... × 10⁻⁵ eV/K
+
+  ! Reciprocal temperature coefficient: θ = THETA_COEFF / T
+  ! where θ is the conventional log₁₀ Boltzmann parameter
+  ! THETA_COEFF = log₁₀(e) / k_B(eV) = 5039.81...
+  real*8, parameter :: THETA_COEFF = 0.4342944819032518D0 / KBOL_EV
+
+  ! 4π/c  [cm⁻¹ s]  — radiation energy density factor
+  real*8, parameter :: FOURPI_OVER_C = FOURPI / CLIGHT
+
+  ! 4σ/π  [erg cm⁻² s⁻¹ K⁻⁴]  — appears in convection
+  real*8, parameter :: FOUR_SIGMA_OVER_PI = 4.0D0 * SIGMA_SB / PI
+
+  ! Planck function prefactor: 2h/c² × (10¹⁵)³  [cgs]
+  ! For B_ν = BNU_PREFAC * (ν/10¹⁵)³ × exp(-hν/kT) / (1 - exp(-hν/kT))
+  real*8, parameter :: BNU_PREFAC = 2.0D0 * HPLANCK / CLIGHT**2 * 1.0D45
+  !                               = 1.47449...E-2  (vs old 1.47439E-2)
+
+  ! Saha equation prefactor: 2 × (2π m_e k / h²)^(3/2)  [cm⁻³ K⁻³/²]
+  ! Usage: n_e × n⁺/n₀ = SAHA_PREFAC × T^(3/2) × (U⁺/U₀) × exp(-χ/kT)
+  real*8, parameter :: SAHA_PREFAC = 2.0D0 &
+    * (2.0D0 * PI * EMASS * KBOL / HPLANCK**2)**1.5D0
+  !                               = 2.4150...E15  (vs old 2.4148E15)
+
+  ! Free-free opacity coefficient  [cgs]
+  ! κ_ff = COEFF_FF / ν³ × g_ff × n_e × n_ion / (ρ √T)
+  ! COEFF_FF = 32π² e⁶ / (3√3 m_e c h) × √(2π / (3 m_e k))
+  !          = 3.6919...E8
+  ! The full derivation is given by, e.g., Mihalas (1978) eq. 4-64.
+  real*8, parameter :: COEFF_FF = 3.69196D8
+
+  ! =====================================================================
+  !  SPECTROSCOPIC CONSTANTS
+  !
+  !  These are measured physical quantities, not fundamental constants.
+  !  Updated values and references are given where relevant.
+  ! =====================================================================
+
+  ! Rydberg constant for infinite mass [cm⁻¹]
+  ! CODATA 2018: R_∞ = 109737.31568160(21)
+  ! For hydrogen: R_H = R_∞ × m_p/(m_e + m_p) = 109677.5774...
+  real*8, parameter :: RYDBERG_INF = 109737.31568D0   ! R_∞ [cm⁻¹]
+  real*8, parameter :: RYDBERG_H   = 109677.576D0     ! R_H [cm⁻¹]
+
+  ! H I ionization limit [cm⁻¹]  (observed, including quantum defect)
+  real*8, parameter :: ELIM_HI = 109678.764D0
+
+  ! Hydrogen ionization frequency [Hz]:  ν_∞ = R_H × c
+  real*8, parameter :: FREQ_RYDH = RYDBERG_H * CLIGHT
+  !                              = 3.288055...E15  (vs old 3.28805E15)
+
+  ! He I Rydberg [cm⁻¹]:  R_He = R_∞ × M_He/(m_e + M_He) ≈ 109722.267
+  real*8, parameter :: RYDBERG_HE = 109722.267D0
+
+  ! H⁻ electron affinity [eV]
+  ! Lykke, Murray & Lineberger (1991, Phys. Rev. A 43, 6104):
+  !   E_A(H⁻) = 6082.99 ± 0.15 cm⁻¹ = 0.75419(2) eV
+  ! Previously used: 0.754209 eV (Hotop & Lineberger 1985)
+  real*8, parameter :: HMINUS_EA = 0.75419D0   ! [eV]
+
+
+  ! =====================================================================
+  !  HOLTSMARK MICROFIELD DISTRIBUTION TABLE
+  !
+  !  Q(beta) = probability that the electric microfield F < beta * F_0
+  !  at a test charge surrounded by randomly distributed perturber ions.
+  !  F_0 = 2.6031 * Z_p * e * (4*pi*N_ion/3)^(2/3) is the Holtsmark
+  !  normal field strength.
+  !
+  !  Used for the Hummer & Mihalas (1988, ApJ 331, 794) occupation
+  !  probability formalism: the probability that hydrogen level n
+  !  survives dissolution is w_n = Q(beta_crit), where
+  !    beta_crit = BETA_COEFF_HM88 / (n^5 * N_e^(2/3))
+  !
+  !  Table: 150 points on a uniform log10(beta) grid from 0.01 to 50.
+  !  For beta < 0.01, Q ~ 0 (level fully bound).
+  !  For beta > 50,   Q ~ 1 (level fully dissolved / always survives).
+  !
+  !  References:
+  !    Holtsmark, J. 1919, Ann. Phys. 363, 577
+  !    Hummer, D.G. & Mihalas, D. 1988, ApJ 331, 794
+  !    Nayfonov, A. et al. 1999, ApJ 526, 451
+  ! =====================================================================
+  integer, parameter :: NQ_HOLTSMARK = 150
+  real*8,  parameter :: LOG_BETA_MIN  = -2.0000000000000000D+00
+  real*8,  parameter :: LOG_BETA_MAX  = 1.6989700043360187D+00
+  real*8,  parameter :: LOG_BETA_STEP = 2.4825302042523617D-02
+
+  real*8,  parameter :: Q_HOLTSMARK(150) = [ &
+    1.414671303101461D-07, &
+    1.679306576215498D-07, &
+    1.993444994252022D-07, &
+    2.366346434794731D-07, &
+    2.809002805410456D-07, &
+    3.334461984807552D-07, &
+    3.958212340900693D-07, &
+    4.698639150426803D-07, &
+    5.577566360795190D-07, &
+    6.620899645927724D-07, &
+    7.859389687582573D-07, &
+    9.329538149374408D-07, &
+    1.107467300593689D-06, &
+    1.314622486716282D-06, &
+    1.560524184270007D-06, &
+    1.852418749731333D-06, &
+    2.198907475766682D-06, &
+    2.610199848759794D-06, &
+    3.098414113872032D-06, &
+    3.677933974566057D-06, &
+    4.365831897218437D-06, &
+    5.182371440131865D-06, &
+    6.151603336163127D-06, &
+    7.302072795786128D-06, &
+    8.667658741262937D-06, &
+    1.028856952546623D-05, &
+    1.221252424026525D-05, &
+    1.449615410836965D-05, &
+    1.720666483126171D-05, &
+    2.042380831343906D-05, &
+    2.424222111026057D-05, &
+    2.877419750061379D-05, &
+    3.415297755655442D-05, &
+    4.053664530978627D-05, &
+    4.811274949652059D-05, &
+    5.710377986116004D-05, &
+    6.777365615449882D-05, &
+    8.043541539930427D-05, &
+    9.546031643883215D-05, &
+    1.132886200658068D-04, &
+    1.344423491071419D-04, &
+    1.595403868046069D-04, &
+    1.893163349213092D-04, &
+    2.246396266107989D-04, &
+    2.665404747620448D-04, &
+    3.162393359894821D-04, &
+    3.751816855286531D-04, &
+    4.450790309992992D-04, &
+    5.279572453545271D-04, &
+    6.262134733849464D-04, &
+    7.426830638017916D-04, &
+    8.807182017925553D-04, &
+    1.044280166083684D-03, &
+    1.238047410111971D-03, &
+    1.467541967671182D-03, &
+    1.739277006102283D-03, &
+    2.060928688577077D-03, &
+    2.441535851096500D-03, &
+    2.891731333794821D-03, &
+    3.424009106941961D-03, &
+    4.053031566870220D-03, &
+    4.795981500493777D-03, &
+    5.672963167595142D-03, &
+    6.707456645870922D-03, &
+    7.926828918285955D-03, &
+    9.362904019250405D-03, &
+    1.105259272456321D-02, &
+    1.303857956034104D-02, &
+    1.537006106786488D-02, &
+    1.810352400480589D-02, &
+    2.130354516765621D-02, &
+    2.504358545069891D-02, &
+    2.940673929734126D-02, &
+    3.448638660516894D-02, &
+    4.038667732307838D-02, &
+    4.722275959985061D-02, &
+    5.512064100258095D-02, &
+    6.421655023415057D-02, &
+    7.465564600958080D-02, &
+    8.658990347532045D-02, &
+    1.001750012765402D-01, &
+    1.155660400501043D-01, &
+    1.329119530555128D-01, &
+    1.523485300474136D-01, &
+    1.739900743830450D-01, &
+    1.979198568471881D-01, &
+    2.241797192777529D-01, &
+    2.527594102861463D-01, &
+    2.835864859104609D-01, &
+    3.165178467055500D-01, &
+    3.513341604156768D-01, &
+    3.877384740815520D-01, &
+    4.253601858765986D-01, &
+    4.637651729352414D-01, &
+    5.024722401913855D-01, &
+    5.409752086892451D-01, &
+    5.787690154213567D-01, &
+    6.153773349921458D-01, &
+    6.503786770405923D-01, &
+    6.834278586173648D-01, &
+    7.142702953716408D-01, &
+    7.427476403869326D-01, &
+    7.687946986070335D-01, &
+    7.924289205182540D-01, &
+    8.137347922132799D-01, &
+    8.328458692792989D-01, &
+    8.499270198328847D-01, &
+    8.651588016097912D-01, &
+    8.787250560031417D-01, &
+    8.908040093261350D-01, &
+    9.015625910920573D-01, &
+    9.111533622086631D-01, &
+    9.197133565854327D-01, &
+    9.273641961484557D-01, &
+    9.342129682962188D-01, &
+    9.403534976718694D-01, &
+    9.458677646981941D-01, &
+    9.508273225009358D-01, &
+    9.552946289851881D-01, &
+    9.593242514728686D-01, &
+    9.629639386838167D-01, &
+    9.662555465715050D-01, &
+    9.692358425479507D-01, &
+    9.719372021216177D-01, &
+    9.743882111568676D-01, &
+    9.766141278943968D-01, &
+    9.786373698849190D-01, &
+    9.804778420731699D-01, &
+    9.821532811516551D-01, &
+    9.836795130160503D-01, &
+    9.850706740272015D-01, &
+    9.863394492399232D-01, &
+    9.874972091274948D-01, &
+    9.885541671623754D-01, &
+    9.895195463975206D-01, &
+    9.904015671946884D-01, &
+    9.912077851485863D-01, &
+    9.919449707318418D-01, &
+    9.926192297837247D-01, &
+    9.932361028219120D-01, &
+    9.938006248722731D-01, &
+    9.943173688128598D-01, &
+    9.947904964619882D-01, &
+    9.952237635494758D-01, &
+    9.956206036156809D-01, &
+    9.959840685797559D-01, &
+    9.963172215001466D-01, &
+    9.966224531295311D-01, &
+    9.969021568157113D-01, &
+    9.971585495409699D-01  ]
+
+  ! beta_crit(n, N_e) = BETA_COEFF_HM88 / (n^5 * N_e^(2/3))
+  ! Derived from Inglis-Teller critical field F_crit = Ry/(3*n^5*e*a_0)
+  ! and Holtsmark normal field F_0 = 2.6031*e*(4*pi*N_e/3)^(2/3)
+  real*8,  parameter :: BETA_COEFF_HM88 = 8.798905203085208D+14
+
+end module mod_constants
+
+!=========================================================================
 ! mod_atlas_data: Shared arrays replacing all COMMON blocks
 !   Original ATLAS12 used 58 COMMON blocks for shared state.
 !   All are consolidated here as module variables with SAVE attribute.
@@ -168,6 +514,7 @@ end module mod_parameters
 module mod_atlas_data
 
   use mod_parameters
+  use mod_constants
   implicit none
   save
 
@@ -182,6 +529,7 @@ module mod_atlas_data
   ! --- Cool-star continuous opacities (C I, Mg I, Al I, Si I, Fe I) ---
   ! COMMON /ACOOL/
   real*8  :: AC1(kw), AMG1(kw), AAL1(kw), ASI1(kw), AFE1(kw)
+  real*8  :: SAL1(kw), SFE1(kw), SHE2(kw), SC1(kw)   ! source functions for Al I, Fe I, He II, C I
 
   ! --- Lukewarm opacities (C II, N I, O I, Mg II, Si II, Ca II) ---
   ! COMMON /ALUKE/
@@ -208,19 +556,37 @@ module mod_atlas_data
   ! --- Element abundances, atomic masses, labels ---
   ! COMMON /ELEM/
   real*8       :: YABUND(99)
-  real*8       :: ABUND(99) = (/ 0.911D0, 0.089D0, &
-  -10.88D0,-10.89D0, -9.44D0, -3.48D0, -3.99D0, -3.11D0, -7.48D0, -3.95D0, &
-   -5.71D0, -4.46D0, -5.57D0, -4.49D0, -6.59D0, -4.83D0, -6.54D0, -5.48D0, &
-   -6.92D0, -5.68D0, -8.94D0, -7.05D0, -8.04D0, -6.37D0, -6.65D0, -4.37D0, &
-   -7.12D0, -5.79D0, -7.83D0, -7.44D0, -9.16D0, -8.63D0, -9.67D0, -8.69D0, &
-   -9.41D0, -8.81D0, -9.44D0, -9.14D0, -9.80D0, -9.44D0,-10.62D0,-10.12D0, &
-  -20.00D0,-10.20D0,-10.92D0,-10.35D0,-11.10D0,-10.18D0,-10.38D0,-10.04D0, &
-  -11.04D0, -9.80D0,-10.53D0, -9.81D0,-10.92D0, -9.91D0,-10.82D0,-10.49D0, &
-  -11.33D0,-10.54D0,-20.00D0,-11.04D0,-11.53D0,-10.92D0,-12.14D0,-10.94D0, &
-  -11.78D0,-11.11D0,-12.04D0,-10.96D0,-11.28D0,-11.16D0,-11.91D0,-10.93D0, &
-  -11.77D0,-10.59D0,-10.69D0,-10.24D0,-11.03D0,-10.95D0,-11.14D0,-10.19D0, &
-  -11.33D0,-20.00D0,-20.00D0,-20.00D0,-20.00D0,-20.00D0,-20.00D0,-11.92D0, &
-  -20.00D0,-12.51D0,-20.00D0,-20.00D0,-20.00D0,-20.00D0,-20.00D0,-20.00D0,-20.00D0/)
+  ! Default solar abundances: Anders & Grevesse (1989, Geochim. Cosmochim.
+  ! Acta, 53, 197).  H and He are fractional number densities (H+He=1);
+  ! Z >= 3 are log10(N_Z / N_total).  Elements with -20.00 have no
+  ! astrophysically relevant abundance.
+  real*8       :: ABUND(99) = (/ &
+  !   1 H        2 He
+       0.911D0,  0.089D0, &
+  !   3 Li       4 Be       5 B        6 C        7 N        8 O        9 F       10 Ne
+     -10.88D0, -10.89D0,  -9.44D0,  -3.48D0,  -3.99D0,  -3.11D0,  -7.48D0,  -3.95D0, &
+  !  11 Na      12 Mg      13 Al      14 Si      15 P       16 S       17 Cl      18 Ar
+      -5.71D0,  -4.46D0,  -5.57D0,  -4.49D0,  -6.59D0,  -4.83D0,  -6.54D0,  -5.48D0, &
+  !  19 K       20 Ca      21 Sc      22 Ti      23 V       24 Cr      25 Mn      26 Fe
+      -6.92D0,  -5.68D0,  -8.94D0,  -7.05D0,  -8.04D0,  -6.37D0,  -6.65D0,  -4.37D0, &
+  !  27 Co      28 Ni      29 Cu      30 Zn      31 Ga      32 Ge      33 As      34 Se
+      -7.12D0,  -5.79D0,  -7.83D0,  -7.44D0,  -9.16D0,  -8.63D0,  -9.67D0,  -8.69D0, &
+  !  35 Br      36 Kr      37 Rb      38 Sr      39 Y       40 Zr      41 Nb      42 Mo
+      -9.41D0,  -8.81D0,  -9.44D0,  -9.14D0,  -9.80D0,  -9.44D0, -10.62D0, -10.12D0, &
+  !  43 Tc      44 Ru      45 Rh      46 Pd      47 Ag      48 Cd      49 In      50 Sn
+     -20.00D0, -10.20D0, -10.92D0, -10.35D0, -11.10D0, -10.18D0, -10.38D0, -10.04D0, &
+  !  51 Sb      52 Te      53 I       54 Xe      55 Cs      56 Ba      57 La      58 Ce
+     -11.04D0,  -9.80D0, -10.53D0,  -9.81D0, -10.92D0,  -9.91D0, -10.82D0, -10.49D0, &
+  !  59 Pr      60 Nd      61 Pm      62 Sm      63 Eu      64 Gd      65 Tb      66 Dy
+     -11.33D0, -10.54D0, -20.00D0, -11.04D0, -11.53D0, -10.92D0, -12.14D0, -10.94D0, &
+  !  67 Ho      68 Er      69 Tm      70 Yb      71 Lu      72 Hf      73 Ta      74 W
+     -11.78D0, -11.11D0, -12.04D0, -10.96D0, -11.28D0, -11.16D0, -11.91D0, -10.93D0, &
+  !  75 Re      76 Os      77 Ir      78 Pt      79 Au      80 Hg      81 Tl      82 Pb
+     -11.77D0, -10.59D0, -10.69D0, -10.24D0, -11.03D0, -10.95D0, -11.14D0, -10.19D0, &
+  !  83 Bi      84 Po      85 At      86 Rn      87 Fr      88 Ra      89 Ac      90 Th
+     -11.33D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -11.92D0, &
+  !  91 Pa      92 U       93 Np      94 Pu      95 Am      96 Cm      97 Bk      98 Cf      99 Es
+     -20.00D0, -12.51D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0/)
   real*8       :: ATMASS(99) = (/ 1.008D0, 4.003D0, &
    6.939D0,9.013D0,10.81D0,12.01D0,14.01D0,16.00D0,19.00D0,20.18D0,22.99D0,24.31D0, &
   26.98D0,28.09D0,30.98D0,32.07D0,35.45D0,39.95D0,39.10D0,40.08D0,44.96D0,47.90D0, &
@@ -470,6 +836,31 @@ module mod_atlas_data
   ! --- In-memory line data storage (replaces fort.12 I/O) ---
   integer*4, allocatable :: LINEDATA(:,:)   ! (4, NLINES_STORED)
   integer :: NLINES_STORED = 0
+
+  ! --- Stehlé MMM hydrogen Stark broadening tables ---
+  ! Preprocessed from Stehlé & Hutcheon (1999) and Stehlé & Fouquet (2010).
+  ! Loaded by INIT_STARK_TABLES; used by STARK_MMM.
+  integer, parameter :: NSTARK_SERIES = 4         ! Ly, Ba, Pa, Br
+  integer, parameter :: NSTARK_DALPHA = 60        ! Δα grid points
+  integer, parameter :: NSTARK_TEMPS  = 10        ! temperature grid points
+  integer, parameter :: NSTARK_DENS_MAX = 20      ! max density grid points
+
+  type :: stark_series_t
+    integer :: n_lower                             ! lower quantum number
+    integer :: n_upper_min, n_upper_max            ! upper quantum number range
+    integer :: n_transitions                       ! = n_upper_max - n_upper_min + 1
+    integer :: n_dens                              ! actual number of density points
+    real*8  :: density_grid(NSTARK_DENS_MAX)       ! Ne [cm^-3]
+    real*8  :: temp_grid(NSTARK_TEMPS)             ! T [K]
+    real*8  :: log_dalpha_grid(NSTARK_DALPHA)      ! log10(Δα)
+    integer, allocatable :: max_dens_idx(:)        ! (n_transitions) highest valid density
+    real*8,  allocatable :: k_alpha(:)             ! (n_transitions) asymptotic wing constant
+    real*8,  allocatable :: profiles(:,:,:,:)      ! (NSTARK_DALPHA, NSTARK_TEMPS, n_dens, n_transitions)
+    logical :: loaded = .false.
+  end type stark_series_t
+
+  type(stark_series_t), target :: STEHLE_DATA(NSTARK_SERIES)
+  logical :: STEHLE_TABLES_LOADED = .false.
 
 contains
 
@@ -815,8 +1206,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   real*8,  intent(in)  :: RCOWT   ! quadrature weight for current frequency
 
   ! --- Named constants ---
-  real*8, parameter :: SIGMA_SB  = 5.6697D-5    ! Stefan-Boltzmann (cgs)
-  real*8, parameter :: FOURPI    = 12.5664D0     ! 4*pi
+  ! SIGMA_SB and FOURPI now from mod_constants
   real*8, parameter :: EULER_M1  = 0.922784335098467D0  ! 1 - gamma_Euler + ln(2)
   real*8, parameter :: RDIAGJ_FLOOR = 1.0D-30    ! prevent division by zero
   real*8, parameter :: ABROSS_FLOOR = 1.0D-30    ! prevent division by zero
@@ -1354,9 +1744,9 @@ SUBROUTINE TCORR(MODE, RCOWT)
   IFUDGE = 0
 
   do J = 1, NRHOX
-    TK(J)   = 1.38054D-16 * T(J)
-    HKT(J)  = 6.6256D-27 / TK(J)
-    HCKT(J) = HKT(J) * 2.99792458D10
+    TK(J)   = KBOL * T(J)
+    HKT(J)  = HPLANCK / TK(J)
+    HCKT(J) = HKT(J) * CLIGHT
     TKEV(J) = 8.6171D-5 * T(J)
     TLOG(J) = log(T(J))
   end do
@@ -1395,9 +1785,9 @@ SUBROUTINE TCORR(MODE, RCOWT)
   do J = 1, NRHOX
     RHOX(J)   = REMAP(J, 1)
     T(J)      = REMAP(J, 2)
-    TK(J)     = 1.38054D-16 * T(J)
-    HKT(J)    = 6.6256D-27 / TK(J)
-    HCKT(J)   = HKT(J) * 2.99792458D10
+    TK(J)     = KBOL * T(J)
+    HKT(J)    = HPLANCK / TK(J)
+    HCKT(J)   = HKT(J) * CLIGHT
     TKEV(J)   = 8.6171D-5 * T(J)
     TLOG(J)   = log(T(J))
     P(J)      = REMAP(J, 3)
@@ -1515,10 +1905,7 @@ SUBROUTINE STATEQ(MODE, RCOWT)
     0.003184D0,0.008037D0,0.01604D0,0.03229D0,0.07455D0,0.2340D0,1.615D0,0.0D0     &
     ], shape=[NATOM, NATOM] )
 
-  ! --- Physical constants (cgs) ---
-  real*8, parameter :: H_PLANCK   = 6.6256D-27   ! Planck constant
-  real*8, parameter :: C_LIGHT    = 2.99792458D10 ! speed of light
-  real*8, parameter :: FOURPI     = 12.5664D0     ! 4*pi
+  ! --- Physical constants now from mod_constants ---
 
   ! --- External functions ---
 
@@ -1550,10 +1937,10 @@ SUBROUTINE STATEQ(MODE, RCOWT)
   else if (MODE == 2) then
 
     ! Rate prefactor: (4*pi / h*nu) * quadrature weight
-    RFRWT = FOURPI / H_PLANCK * RCOWT / FREQ
+    RFRWT = FOURPI / HPLANCK * RCOWT / FREQ
 
     ! Stimulated emission term: 2*h*nu * (nu/c)^2
-    HVC = 2.0D0 * H_PLANCK * FREQ * (FREQ / C_LIGHT)**2
+    HVC = 2.0D0 * HPLANCK * FREQ * (FREQ / CLIGHT)**2
 
     ! Hydrogen bound-free cross-sections for levels 2-6
     do N = 2, NLEV
@@ -1611,7 +1998,7 @@ SUBROUTINE STATEQ(MODE, RCOWT)
 
   do J = 1, NRHOX
     DT    = T(J) - TOLD(J)
-    THETA = 5040.0D0 / T(J)
+    THETA = THETA_COEFF / T(J)
 
     ! Collisional detachment by electrons: rate ∝ theta^{3/2} * n_e
     QELECT = 10.0D0**(-8.7D0) * THETA**1.5D0 * XNE(J)
@@ -1789,8 +2176,7 @@ SUBROUTINE RADIAP(MODE, RCOWT)
   integer, intent(in) :: MODE
   real*8,  intent(in) :: RCOWT    ! quadrature weight for current frequency
 
-  ! --- Named constants ---
-  real*8, parameter :: FOURPI_OVER_C = 12.5664D0 / 2.99792458D10  ! 4*pi / c
+  ! --- Named constants: FOURPI_OVER_C now from mod_constants ---
 
   ! --- Persistent local: frequency-integrated flux (for error scaling) ---
   real*8, save :: H_TOTAL(kw)    ! integrated Eddington flux at each depth
@@ -1910,8 +2296,7 @@ SUBROUTINE ROSS(MODE, RCOWT)
   real*8  :: DBDT
   integer :: J
 
-  ! 4*sigma/pi in CGS (sigma = 5.6697e-5 erg/cm^2/s/K^4)
-  real*8, parameter :: FOUR_SIGMA_OVER_PI = 4.0D0 * 5.6697D-5 / 3.14159D0
+  ! FOUR_SIGMA_OVER_PI now from mod_constants
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING ROSS'
   select case (MODE)
@@ -3087,7 +3472,7 @@ SUBROUTINE READIN(MODE)
       !-----------------------------------------------------------------
       if (trim(KEYWORD) == 'TEFF') then
         TEFF = FREEFF(CARD)
-        FLUX = 5.6697D-5 / 12.5664D0 * TEFF**4
+        FLUX = SIGMA_SB / FOURPI * TEFF**4
         cycle keyword_loop
 
       !-----------------------------------------------------------------
@@ -3301,13 +3686,13 @@ SUBROUTINE READIN(MODE)
     YABUND(IZ) = ABUND(IZ) + XRELATIVE(IZ)
   end do
   do J = 1, NRHOX
-    TK(J) = 1.38054D-16 * T(J)
-    HKT(J) = 6.6256D-27 / TK(J)
-    HCKT(J) = HKT(J) * 2.99792458D10
+    TK(J) = KBOL * T(J)
+    HKT(J) = HPLANCK / TK(J)
+    HCKT(J) = HKT(J) * CLIGHT
     TKEV(J) = 8.6171D-5 * T(J)
     TLOG(J) = LOG(T(J))
     XNATOM(J) = P(J) / TK(J) - XNE(J)
-    RHO(J) = XNATOM(J) * WTMOLE(J) * 1.660D-24
+    RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
     if (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
     CHARGESQ(J) = XNE(J)
   end do
@@ -3432,7 +3817,7 @@ SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
   PRADK0 = PRADK0 * (TEFF_NEW/TEFF)**4
   PZERO  = PCON + PRADK0 + PTURB0
   TEFF   = TEFF_NEW
-  FLUX   = 5.6697D-5 / 12.5664D0 * TEFF**4
+  FLUX   = SIGMA_SB / FOURPI * TEFF**4
   GRAV   = GNEW
   GLOG   = LOG10(GRAV)
   do J = 1, NRHOX
@@ -4408,7 +4793,7 @@ SUBROUTINE NELECT
 
       ! Debye length (for diagnostic; also sets ionization potential
       ! lowering inside PFSAHA on the next iteration)
-      DEBYE = sqrt(TK(J) / (12.5664D0 * (4.801D-10)**2 &
+      DEBYE = sqrt(TK(J) / (FOURPI * ECHARGE**2 &
                              * (CHARGESQUARE + XNENEW)))
 
       ! Damped update: average old and new
@@ -4430,7 +4815,7 @@ SUBROUTINE NELECT
     end if
 
     ! Mass density from atom count and mean molecular weight
-    RHO(J) = XNATOM(J) * WTMOLE(J) * 1.660D-24
+    RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
 
   end do  ! depth loop
 
@@ -4623,7 +5008,7 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
   if (MODE1 > 10) MODE1 = MODE1 - 10
 
   ! Debye-Hückel lowering of ionization potential (volts per unit Zeff)
-  DEBYE  = SQRT(TK(J) / 12.5664d0 / 4.801D-10**2 / CHARGESQ(J))
+  DEBYE  = SQRT(TK(J) / FOURPI / ECHARGE**2 / CHARGESQ(J))
   POTLOW = MIN(1.D0, 1.44D-7 / DEBYE)
   TV     = TKEV(J)
 
@@ -4683,13 +5068,29 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
     select case (N)
 
     case (1)  ! ---- Hydrogen I ----
-      PART(1) = 2.d0 * B_dep
+      ! Partition function with Hummer & Mihalas (1988) occupation
+      ! probability weighting.  Each level n is weighted by w_n, the
+      ! probability that the level survives Stark dissolution.
+      ! For FGK stars (T < 8000 K), the ground state dominates and
+      ! this gives PF ≈ 2.000 regardless of density.  For hotter stars
+      ! the weighting properly truncates the sum that would otherwise
+      ! diverge from unweighted high-n levels.
+      !
+      ! Replaces the former approach of levels 1-6 at full weight plus
+      ! a fixed Euler-Maclaurin integral from n=6.5 to ionization.
+      PART(1) = 2.d0 * B_dep       ! n=1: w_1 = 1 always
       do I = 2, 6
-        PART(1) = PART(1) + GHYD(I) * B_dep * EXP(-EHYD(I)*HCKT(J))
+        PART(1) = PART(1) + occupation_prob(I, XNE(J)) &
+                * GHYD(I) * B_dep * EXP(-EHYD(I)*HCKT(J))
       end do
-      D1 = 109677.576d0 / 6.5d0 / 6.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
-                             POTLO(ION), D1)
+      ! Levels n=7 and above: hydrogenic energies, weighted by w_n.
+      ! Sum truncates naturally where w_n -> 0 or Boltzmann factor -> 0.
+      do I = 7, 80
+        D1 = occupation_prob(I, XNE(J))
+        if (D1 < 1.0d-6) exit   ! remaining levels fully dissolved
+        PART(1) = PART(1) + D1 &
+                * 2.0d0 * dble(I)**2 * EXP(-(ELIM_HI - RYDBERG_H/dble(I)**2)*HCKT(J))
+      end do
       cycle
 
     case (3)  ! ---- Helium I ----
@@ -4697,7 +5098,7 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
       do I = 2, 29
         PART(1) = PART(1) + GHE1(I) * B_dep * EXP(-EHE1(I)*HCKT(J))
       end do
-      D1 = 109677.576d0 / 5.5d0 / 5.5d0 * HCKT(J)
+      D1 = RYDBERG_H / 5.5d0 / 5.5d0 * HCKT(J)
       call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
       cycle
@@ -4707,7 +5108,7 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
       do I = 2, 6
         PART(2) = PART(2) + GHE2(I) * B_dep * EXP(-EHE2(I)*HCKT(J))
       end do
-      D1 = 4.d0 * 109722.267d0 / 6.5d0 / 6.5d0 * HCKT(J)
+      D1 = 4.d0 * RYDBERG_HE / 6.5d0 / 6.5d0 * HCKT(J)
       call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
       cycle
@@ -4916,35 +5317,43 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
   !=====================================================================
   ! Phase 2: Saha equation and output
   !=====================================================================
-  if (MODE1 == 3) goto 350
-  if (MODE1 == 5) goto 500
+  if (MODE1 == 5) then
+    ! MODE 5: partition functions + cumulative ionization potentials
+    ANSWER(32,1) = 0.d0
+    do ION = 1, NION
+      ANSWER(ION,1)    = PART(ION)
+      ANSWER(ION+32,1) = IP(ION) + ANSWER(ION+31,1)
+    end do
+    return
+  end if
 
-  ! Compute Saha ionization fractions
-  N = N - NION2
-  CF = 2.d0 * 2.4148D15 * T(J) * SQRT(T(J)) / XNE(J)
+  if (MODE1 /= 3) then
+    ! Compute Saha ionization fractions
+    N = N - NION2
+    CF = SAHA_PREFAC * T(J) * SQRT(T(J)) / XNE(J)
 
-  do ION = 2, NION2
-    N = N + 1
-    F(ION) = CF * PART(ION) / PART(ION-1) * EXP(-(IP(ION-1) - POTLO(ION-1))/TV)
-  end do
+    do ION = 2, NION2
+      N = N + 1
+      F(ION) = CF * PART(ION) / PART(ION-1) * EXP(-(IP(ION-1) - POTLO(ION-1))/TV)
+    end do
 
-  ! Normalize fractions
-  F(1) = 1.d0
-  L = NION2 + 1
-  do ION = 2, NION2
-    L = L - 1
-    F(1) = 1.d0 + F(L)*F(1)
-  end do
-  F(1) = 1.d0 / F(1)
+    ! Normalize fractions
+    F(1) = 1.d0
+    L = NION2 + 1
+    do ION = 2, NION2
+      L = L - 1
+      F(1) = 1.d0 + F(L)*F(1)
+    end do
+    F(1) = 1.d0 / F(1)
 
-  do ION = 2, NION2
-    F(ION) = F(ION-1) * F(ION)
-  end do
+    do ION = 2, NION2
+      F(ION) = F(ION-1) * F(ION)
+    end do
+  end if
 
   !---------------------------------------------------------------------
   ! Fill ANSWER based on MODE
   !---------------------------------------------------------------------
-350 continue
   if (MODE >= 10) then
     ! Multi-ion output modes (MODE = 11, 12, 13, 14)
     select case (MODE1)
@@ -4979,15 +5388,6 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
       end do
     end select
   endif
-  return
-
-  ! MODE 5: partition functions + cumulative ionization potentials
-500 continue
-  ANSWER(32,1) = 0.d0
-  do ION = 1, NION
-    ANSWER(ION,1)    = PART(ION)
-    ANSWER(ION+32,1) = IP(ION) + ANSWER(ION+31,1)
-  end do
   return
 
 END SUBROUTINE PFSAHA
@@ -5455,7 +5855,7 @@ SUBROUTINE NMOLEC(MODE)
       XNZ(J, K) = XN(K)
     end do
     XNATOM(J) = XN(1)
-    RHO(J) = XNATOM(J) * WTMOLE(J) * 1.660D-24
+    RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
     if (IDEQUA(NEQUA) == 100) XNE(J) = XN(NEQUA)
 
     ! Compute molecular number densities from converged XN
@@ -5525,7 +5925,7 @@ SUBROUTINE NMOLEC(MODE)
       ! Electrons: divide by electron partition function (= 2)
       ! and translational PF: (2*pi*m_e*kT/h^2)^(3/2) = 2.4148e15 * T^(3/2)
       do J = 1, NRHOX
-        XNZ(J, K) = XNZ(J, K) / 2.0D0 / 2.4148D15 / T(J) / sqrt(T(J))
+        XNZ(J, K) = XNZ(J, K) / SAHA_PREFAC / T(J) / sqrt(T(J))
       end do
     else
       ! Atoms: divide by partition function and translational PF
@@ -6154,7 +6554,7 @@ SUBROUTINE CONVEC
         * sqrt(max(-0.5D0 * PTOTAL(J) / RHO(J) * DLRDLT(J), 0.0D0))
     if (VCO == 0.0D0) cycle
 
-    FLUXCO = 0.5D0 * RHO(J) * HEATCP(J) * T(J) * MIXLTH / 12.5664D0
+    FLUXCO = 0.5D0 * RHO(J) * HEATCP(J) * T(J) * MIXLTH / FOURPI
     ROSST(J) = ROSSTAB(T(J), P(J), VTURB(J))
     OLDDELT = 0.0D0
 
@@ -6168,9 +6568,9 @@ SUBROUTINE CONVEC
       ABCONV(J) = 2.0D0 / (1.0D0 / DPLUS + 1.0D0 / DMINUS) * ABROSS(J)
 
       ! Radiative damping parameter
-      D = 8.0D0 * 5.6697D-5 * T(J)**4 &
+      D = 8.0D0 * SIGMA_SB * T(J)**4 &
         / (ABCONV(J) * HSCALE(J) * RHO(J)) &
-        / (FLUXCO * 12.5664D0) / VCO
+        / (FLUXCO * FOURPI) / VCO
 
       ! Correction for optically thin bubbles (Mihalas)
       TAUB = ABCONV(J) * RHO(J) * MIXLTH * HSCALE(J)
@@ -6653,6 +7053,10 @@ SUBROUTINE KAPP
     SHLINE(J) = 0.0D0
     SXLINE(J) = 0.0D0
     SXCONT(J) = 0.0D0
+    SAL1(J)   = 0.0D0
+    SFE1(J)   = 0.0D0
+    SHE2(J)   = 0.0D0
+    SC1(J)    = 0.0D0
   end do
 
   ! Call each enabled opacity source
@@ -6673,15 +7077,31 @@ SUBROUTINE KAPP
   if (IFOP(19) == 1) call XCONOP
 
   ! Assemble totals: true absorption, source function, and scattering
+  ! Matches the F77 atlas7lib.for KAPP assembly exactly.
+  ! Note: ACOOL (from COOLOP) includes CH, OH, and H2 CIA terms that the
+  ! F77 KAPP does not include in ACONT.  We use the individual metal
+  ! opacity arrays (AC1, AMG1, AAL1, ASI1, AFE1) directly instead.
   do J = 1, NRHOX
-    ! Continuum absorption and source function
-    A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) &
-      + ACOOL(J) + ALUKE(J) + AHOT(J)
-    ACONT(J) = A + AHYD(J) + AHMIN(J) + AXCONT(J)
+    ! Continuum absorption: A = minor sources emitting at BNU
+    A = AH2P(J) + AHEMIN(J) + ALUKE(J) + AHOT(J)
+    ACONT(J) = A + AHYD(J) + AHMIN(J) + AXCONT(J) &
+             + AHE1(J) + AHE2(J) &
+             + AC1(J) + AMG1(J) + AAL1(J) + ASI1(J) + AFE1(J)
+
+    ! Source function
+    ! TODO: The F77 KAPP weights each source by its individual source
+    ! function (SHE1, SHE2, SC1, SMG1, SAL1, SSI1, SFE1).  The F90
+    ! code currently lacks SMG1, SSI1, SHE1 — those routines don't
+    ! compute source functions yet.  For the SYNTHE path this doesn't
+    ! matter because SPECTRV overwrites SCONT = BNU before JOSH.
     SCONT(J) = BNU(J)
     if (ACONT(J) > 0.0D0) then
       SCONT(J) = (A * BNU(J) + AHYD(J) * SHYD(J) &
-               + AHMIN(J) * SHMIN(J) + AXCONT(J) * SXCONT(J)) / ACONT(J)
+               + AHMIN(J) * SHMIN(J) + AXCONT(J) * SXCONT(J) &
+               + AHE1(J) * BNU(J) + AHE2(J) * SHE2(J) &
+               + AC1(J) * SC1(J) + AMG1(J) * BNU(J) &
+               + AAL1(J) * SAL1(J) + ASI1(J) * BNU(J) &
+               + AFE1(J) * SFE1(J)) / ACONT(J)
     end if
 
     ! Line absorption and source function
@@ -6706,109 +7126,231 @@ END SUBROUTINE KAPP
 !
 ! Hydrogen bound-free and free-free opacity.
 !
-! Computes the hydrogen continuum absorption and source function at the
-! current frequency for all depth points. The opacity has three parts:
+! Computes hydrogen continuum absorption and source function at the
+! current frequency for all depth points.  Two contributions:
 !
-! 1. Bound-free from levels n=1-8:
-!    kappa_bf(n) = sigma_bf(n) * n_n / rho
-!    where sigma_bf uses Karzas & Latter (1961) cross-sections via
-!    XKARZAS, and n_n is the level population including non-LTE
-!    departure coefficients BHYD(J,n) for levels 1-6.
+!   1. Bound-free from explicit levels n=1-15, with REAL*8 wavenumber
+!      threshold checks for each level.  Each level is weighted by its
+!      occupation probability w_n from the Hummer & Mihalas (1988)
+!      formalism.  Levels 1-6 include non-LTE departure coefficients
+!      BHYD(J,n).  Levels 7-15 are in LTE.
 !
-! 2. "Dissolved level" contribution: opacity from highly excited
-!    states near the series limit that merge into the continuum.
-!    Computed as (EX - EXLIM) * C where EX is the occupation
-!    probability-weighted population up to the effective ionization
-!    limit (13.427 eV rather than 13.595 eV).
+!   2. Free-free (bremsstrahlung).
 !
-! 3. Free-free (bremsstrahlung):
-!    kappa_ff = (3.6919e8 / nu^3) * COULFF * n_e * n(H+) / (rho * sqrt(T))
+! The former "dissolved levels n >= 16" integral has been removed.
+! That integral assumed a fixed cutoff at n=16 regardless of density.
+! With occupation probabilities, levels 7-15 are smoothly weighted
+! and levels above 15 contribute negligibly to the bound-free opacity
+! because their w_n is small and their cross-sections are tiny.
 !
-! The source function SHYD accounts for non-LTE effects in levels 1-6
-! via the departure coefficients BHYD, while levels 7-8, dissolved
-! levels, and free-free emit in LTE (S_nu = B_nu).
+! The population normalization XNFP(J,1)/RHO(J) is applied once at
+! the end (after summing all bound-free terms), matching the F77
+! structure exactly.
 !
-! Temperature-dependent quantities (Boltzmann populations, free-free
-! coefficient) are cached and only recomputed when ITEMP changes.
+! CRITICAL: The wavenumber threshold checks must be at REAL*8 precision
+! (via WAVENO) to produce sharp continuum edges.
+!
+! References:
+!   Hummer, D.G. & Mihalas, D. 1988, ApJ 331, 794
 !=========================================================================
 
 SUBROUTINE HOP
 
   implicit none
 
-  ! --- Local arrays ---
-  real*8,  save :: BOLT(kw, 8)    ! Boltzmann populations * (n/U) / rho
-  real*8,  save :: EXLIM(kw)      ! population at ionization limit (13.595 eV)
-  real*8,  save :: FREET(kw)      ! free-free population factor: n_e * n(H+) / (rho * sqrt(T))
-  real*8,  save :: BOLTEX(kw)     ! population at dissolved limit (13.427 eV)
-  integer, save :: ITEMP1 = 0     ! cached ITEMP for skip logic
+  ! Maximum level for pseudo-continuum computation
+  integer, parameter :: NMAX_PSEUDO = 30
 
-  real*8  :: CONT(8)              ! bound-free cross-sections per level
-
-  ! --- Local scalars ---
-  real*8  :: FREQ3, CFREE, C      ! frequency-dependent constants
-  real*8  :: XR                   ! reduced population factor
-  real*8  :: EX                   ! effective dissolved-level population
-  real*8  :: H, S                 ! running sums for opacity and source function
-  integer :: J, N
-
-  ! --- External functions ---
+  real*8  :: X            ! bound-free cross-section from XKARZAS
+  real*8  :: A            ! single-level opacity contribution
+  real*8  :: H, S         ! running sums for opacity and source function
+  real*8  :: w_n          ! occupation probability for current level
+  real*8  :: E_n          ! excitation energy for pseudo-continuum level [cm^-1]
+  real*8  :: FREQ3_INV    ! 1 / FREQ^3 (precomputed for pseudo-continuum)
+  integer :: J, I_PC
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HOP'
 
-  !---------------------------------------------------------------------
-  ! Recompute temperature-dependent quantities if T has changed
-  !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
-    ITEMP1 = ITEMP
-    do J = 1, NRHOX
-      ! Boltzmann populations for levels n=1-8
-      do N = 1, 8
-        BOLT(J, N) = exp(-(13.595D0 - 13.595D0 / dble(N)**2) / TKEV(J)) &
-                   * 2.0D0 * dble(N)**2 * XNFP(J, 1) / RHO(J)
-      end do
-      ! Apply non-LTE departure coefficients for levels 1-6
-      do N = 1, 6
-        BOLT(J, N) = BOLT(J, N) * BHYD(J, N)
-      end do
-
-      FREET(J) = XNE(J) * XNF(J, 2) / RHO(J) / sqrt(T(J))
-      XR = XNFP(J, 1) * (2.0D0 / 2.0D0 / 13.595D0) * TKEV(J) / RHO(J)
-      BOLTEX(J) = exp(-13.427D0 / TKEV(J)) * XR
-      EXLIM(J) = exp(-13.595D0 / TKEV(J)) * XR
-    end do
-  end if
-
-  !---------------------------------------------------------------------
-  ! Compute cross-sections and assemble opacity at the current frequency
-  !---------------------------------------------------------------------
-  do N = 1, 8
-    CONT(N) = XKARZAS(FREQ, 1.0D0, N, N)
-  end do
-
-  FREQ3 = FREQ**3
-  CFREE = 3.6919D8 / FREQ3       ! free-free coefficient
-  C = 2.815D29 / FREQ3           ! dissolved-level coefficient
-
   do J = 1, NRHOX
-    ! Dissolved-level population (adjusted below Balmer limit)
-    EX = BOLTEX(J)
-    if (FREQ < 4.05933D13) EX = EXLIM(J) / EHVKT(J)
 
-    ! LTE contribution: levels 7-8 + dissolved + free-free
-    H = (CONT(7) * BOLT(J, 7) + CONT(8) * BOLT(J, 8) &
-      + (EX - EXLIM(J)) * C &
-      + COULFF(J, 1) * FREET(J) * CFREE) * STIM(J)
-    S = H * BNU(J)
+    H = 0.0D0
+    S = 0.0D0
 
-    ! Non-LTE contribution from levels 1-6
-    do N = 1, 6
-      H = H + CONT(N) * BOLT(J, N) * (1.0D0 - EHVKT(J) / BHYD(J, N))
-      S = S + CONT(N) * BOLT(J, N) * BNU(J) * STIM(J) / BHYD(J, N)
+    ! ------------------------------------------------------------------
+    ! Explicit levels n=15 down to n=1.
+    ! Cascading: exit as soon as WAVENO is below a threshold, skipping
+    ! that level and all lower levels (higher thresholds).
+    ! Each level is weighted by its occupation probability w_n.
+    ! Levels 7-15: LTE (use STIM), weighted by w_n
+    ! Levels 1-6:  non-LTE (use BHYD departure coefficients), w_n ~ 1
+    ! ------------------------------------------------------------------
+    levels: do
+
+      ! n=15  threshold =    487.456 cm^{-1}
+      IF (WAVENO < 487.456D0) EXIT levels
+      w_n = occupation_prob(15, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 15, 15)
+      A = w_n * X * 450.0D0 * EXP(-109191.313D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=14  threshold =    559.579 cm^{-1}
+      IF (WAVENO < 559.579D0) EXIT levels
+      w_n = occupation_prob(14, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 14, 14)
+      A = w_n * X * 392.0D0 * EXP(-109119.188D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=13  threshold =    648.980 cm^{-1}
+      IF (WAVENO < 648.980D0) EXIT levels
+      w_n = occupation_prob(13, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 13, 13)
+      A = w_n * X * 338.0D0 * EXP(-109029.789D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=12  threshold =    761.649 cm^{-1}
+      IF (WAVENO < 761.649D0) EXIT levels
+      w_n = occupation_prob(12, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 12, 12)
+      A = w_n * X * 288.0D0 * EXP(-108917.117D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=11  threshold =    906.426 cm^{-1}
+      IF (WAVENO < 906.426D0) EXIT levels
+      w_n = occupation_prob(11, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 11, 11)
+      A = w_n * X * 242.0D0 * EXP(-108772.336D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=10  threshold =   1096.776 cm^{-1}
+      IF (WAVENO < 1096.776D0) EXIT levels
+      w_n = occupation_prob(10, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 10, 10)
+      A = w_n * X * 200.0D0 * EXP(-108581.992D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=9   threshold =   1354.044 cm^{-1}
+      IF (WAVENO < 1354.044D0) EXIT levels
+      w_n = occupation_prob(9, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 9, 9)
+      A = w_n * X * 162.0D0 * EXP(-108324.719D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=8   threshold =   1713.713 cm^{-1}
+      IF (WAVENO < 1713.713D0) EXIT levels
+      w_n = occupation_prob(8, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 8, 8)
+      A = w_n * X * 128.0D0 * EXP(-107965.051D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=7   threshold =   2238.320 cm^{-1}
+      IF (WAVENO < 2238.320D0) EXIT levels
+      w_n = occupation_prob(7, XNE(J))
+      X = XKARZAS(FREQ, 1.0D0, 7, 7)
+      A = w_n * X * 98.0D0 * EXP(-107440.444D0 * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+
+      ! n=6   threshold =   3046.604 cm^{-1}   (non-LTE)
+      IF (WAVENO < 3046.604D0) EXIT levels
+      X = XKARZAS(FREQ, 1.0D0, 6, 6)
+      A = X * 72.0D0 * EXP(-106632.160D0 * HCKT(J)) * (BHYD(J,6) - EHVKT(J))
+      H = H + A
+      S = S + A * BNU(J) * STIM(J) / (BHYD(J,6) - EHVKT(J))
+
+      ! n=5   threshold =   4387.113 cm^{-1}   (non-LTE)
+      IF (WAVENO < 4387.113D0) EXIT levels
+      X = XKARZAS(FREQ, 1.0D0, 5, 5)
+      A = X * 50.0D0 * EXP(-105291.651D0 * HCKT(J)) * (BHYD(J,5) - EHVKT(J))
+      H = H + A
+      S = S + A * BNU(J) * STIM(J) / (BHYD(J,5) - EHVKT(J))
+
+      ! n=4   threshold =   6854.871 cm^{-1}   (non-LTE)
+      IF (WAVENO < 6854.871D0) EXIT levels
+      X = XKARZAS(FREQ, 1.0D0, 4, 4)
+      A = X * 32.0D0 * EXP(-102823.893D0 * HCKT(J)) * (BHYD(J,4) - EHVKT(J))
+      H = H + A
+      S = S + A * BNU(J) * STIM(J) / (BHYD(J,4) - EHVKT(J))
+
+      ! n=3   threshold =  12186.462 cm^{-1}   (non-LTE)
+      IF (WAVENO < 12186.462D0) EXIT levels
+      X = XKARZAS(FREQ, 1.0D0, 3, 3)
+      A = X * 18.0D0 * EXP(-97492.302D0 * HCKT(J)) * (BHYD(J,3) - EHVKT(J))
+      H = H + A
+      S = S + A * BNU(J) * STIM(J) / (BHYD(J,3) - EHVKT(J))
+
+      ! n=2   threshold =  27419.659 cm^{-1}   (non-LTE)  [Balmer limit]
+      IF (WAVENO < 27419.659D0) EXIT levels
+      X = XKARZAS(FREQ, 1.0D0, 2, 2)
+      A = X * 8.0D0 * EXP(-82259.105D0 * HCKT(J)) * (BHYD(J,2) - EHVKT(J))
+      H = H + A
+      S = S + A * BNU(J) * STIM(J) / (BHYD(J,2) - EHVKT(J))
+
+      ! n=1   threshold = 109678.764 cm^{-1}   (non-LTE)  [Lyman limit]
+      IF (WAVENO < 109678.764D0) EXIT levels
+      X = XKARZAS(FREQ, 1.0D0, 1, 1)
+      A = X * 2.0D0 * 1.0D0 * (BHYD(J,1) - EHVKT(J))
+      H = H + A
+      S = S + A * BNU(J) * STIM(J) / (BHYD(J,1) - EHVKT(J))
+
+      EXIT levels  ! all levels processed
+    end do levels
+
+    ! ------------------------------------------------------------------
+    ! Pseudo-continuum from dissolved hydrogen levels.
+    !
+    ! For each level n where the occupation probability w_n < 1, the
+    ! dissolved fraction (1 - w_n) contributes a smooth Kramers-like
+    ! opacity at ALL frequencies.  This replaces the former fixed
+    ! "dissolved levels n >= 16" Boltzmann integral.
+    !
+    ! Above threshold, this term restores the opacity reduced by the
+    ! w_n weighting of the explicit bound-free levels, so the total
+    ! above-threshold opacity is approximately unchanged.
+    ! Below threshold, this is new opacity that smooths the region
+    ! near series limits (the Balmer jump, Paschen jump, etc.).
+    !
+    ! Cross-section: Kramers formula sigma = 2.815e29 / (n^5 * nu^3)
+    ! Population: g_n * exp(-E_n * hc/kT) = 2*n^2 * exp(-E_n * hc/kT)
+    ! Combined: 2.815e29 * 2 / (n^3 * nu^3) * exp(-E_n * hc/kT)
+    !
+    ! References:
+    !   Hubeny, I., Hummer, D.G. & Lanz, T. 1994, A&A 282, 151
+    !   Tremblay, P.-E. & Bergeron, P. 2009, ApJ 696, 1755
+    ! ------------------------------------------------------------------
+    FREQ3_INV = 1.0D0 / (FREQ * FREQ * FREQ)
+    do I_PC = 7, NMAX_PSEUDO
+      w_n = occupation_prob(I_PC, XNE(J))
+      if (1.0D0 - w_n < 1.0D-6) cycle   ! fully bound, no dissolved fraction
+      E_n = ELIM_HI - RYDBERG_H / dble(I_PC)**2
+      A = (1.0D0 - w_n) * 2.815D29 * FREQ3_INV &
+        * 2.0D0 / dble(I_PC)**3 * EXP(-E_n * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
     end do
+
+    ! ------------------------------------------------------------------
+    ! Apply population normalization and add free-free
+    ! ------------------------------------------------------------------
+    H = H * XNFP(J, 1) / RHO(J)
+    S = S * XNFP(J, 1) / RHO(J)
+
+    ! Free-free: kappa_ff = 3.6919e8 / sqrt(T) * g_ff / nu^3 * n_e * n_H+ * STIM / rho
+    A = COEFF_FF / SQRT(T(J)) * COULFF(J,1) / FREQ * XNE(J) / FREQ &
+      * XNFP(J, 2) / FREQ * STIM(J) / RHO(J)
+    H = H + A
+    S = S + A * BNU(J)
 
     AHYD(J) = H
-    SHYD(J) = S / H
+    IF (H > 0.0D0) SHYD(J) = S / H
+
   end do
 
   return
@@ -6889,11 +7431,11 @@ FUNCTION XKARZAS(FREQ, ZEFF2, N, L)
     !-----------------------------------------------------------------
     if (N > NMAX) then
       ! N > 15: rescale from N=15 using hydrogenic frequency scaling
-      FREQN15(NPTS) = log10(109677.576 * 2.99792458E10 / real(N)**2)
+      FREQN15(NPTS) = log10(FREQ_RYDH / real(N)**2)
       if (FREQLG < FREQN15(NPTS)) return
       do I = 2, NPTS - 1
         FREQN15(I) = log10((EKARZAS(I) + 1.0 / real(N)**2) &
-                   * 109677.576 * 2.99792458E10)
+                   * FREQ_RYDH)
         if (FREQLG > FREQN15(I)) exit
       end do
       if (I > NPTS - 1) I = NPTS
@@ -7049,7 +7591,7 @@ FUNCTION COULX(N, FREQ, Z)
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING COULX'
 
   ! Check if frequency is above the ionization threshold: nu_edge = Z^2 * R_inf * c / n^2
-  if (FREQ < Z * Z * 3.28805D15 / dble(N)**2) then
+  if (FREQ < Z * Z * FREQ_RYDH / dble(N)**2) then
     COULX = 0.0D0
     return
   end if
@@ -7141,13 +7683,13 @@ FUNCTION COULBF1S(FREQ, Z)
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING COULBF1S'
 
   ! Below ionization threshold
-  if (FREQ / Z**2 < 3.28805D15) then
+  if (FREQ / Z**2 < FREQ_RYDH) then
     COULBF1S = 0.0D0
     return
   end if
 
   ! Linear interpolation in log10(nu/nu_edge)
-  ELOG = log10(FREQ / Z**2 / 3.28805D15)
+  ELOG = log10(FREQ / Z**2 / FREQ_RYDH)
   I = int(ELOG / DLOG_STEP)
   I = max(min(I + 1, NGAUNT - 1), 1)
 
@@ -7280,7 +7822,7 @@ SUBROUTINE H2PLOP
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING H2PLOP'
 
   ! No contribution above Lyman limit
-  if (FREQ > 3.28805D15) return
+  if (FREQ > FREQ_RYDH) return
 
   ! Frequency-dependent cross-section factor (polynomial in log10(freq))
   FR = -3.0233D3 + (3.7797D2 + (-1.82496D1 &
@@ -7468,11 +8010,11 @@ SUBROUTINE HMINOP
   if (ITEMP /= ITEMP1) then
     ITEMP1 = ITEMP
     do J = 1, NRHOX
-      THETA(J) = 5040.0D0 / T(J)
+      THETA(J) = THETA_COEFF / T(J)
       ! H⁻ population: Saha equation for H⁻ ↔ H + e⁻
       ! 0.754209 eV = H⁻ electron affinity (Hotop & Lineberger 1985)
-      XHMIN(J) = exp(0.754209D0 / TKEV(J)) &
-               / (2.0D0 * 2.4148D15 * T(J) * sqrt(T(J))) &
+      XHMIN(J) = exp(HMINUS_EA / TKEV(J)) &
+               / (SAHA_PREFAC * T(J) * sqrt(T(J))) &
                * BMIN(J) * BHYD(J, 1) * XNFP(J, 1) * XNE(J)
     end do
   end if
@@ -7484,7 +8026,7 @@ SUBROUTINE HMINOP
   WAVELOG(1) = log(WAVE)
   do ITHETA = 1, NFF_THETA
     call LINTER(WFFLOG, FFLOG(1, ITHETA), NFF_WAVE, WAVELOG(1), FFTLOG(1))
-    FFTT(ITHETA) = exp(FFTLOG(1)) / THETAFF(ITHETA) * 5040.0D0 * 1.380658D-16
+    FFTT(ITHETA) = exp(FFTLOG(1)) / THETAFF(ITHETA) * THETA_COEFF * KBOL
   end do
 
   !---------------------------------------------------------------------
@@ -7563,40 +8105,195 @@ END SUBROUTINE LINTER
 !
 ! Hydrogen Rayleigh scattering opacity.
 !
-! Computes the Rayleigh scattering cross-section for neutral hydrogen
-! atoms in the ground state. The cross-section follows the standard
-! form sigma ~ lambda^{-4} with higher-order corrections:
+! Full Gavrila (1966) treatment matching atlas7lib.for.
+! Reference: Gavrila, M. 1966, "Coherent scattering of light by
+!   atomic hydrogen", JILA Report No. 86.
 !
-!   sigma(lambda) = (5.799e-13 + 1.422e-6/w^2 + 2.784/w^4) / w^4
+! The scattering amplitude f(ν) is tabulated across five frequency
+! ranges, capturing the resonance structure near each Lyman line:
 !
-! where w = wavelength in Angstroms. The frequency is capped at the
-! Lyman limit (2.463e15 Hz) since the formula is not valid above it.
+!   Range 1: ν < 0.01 ν_L       — extrapolation using f(1)²×(ν/ν_L)⁴
+!   Range 2: ν ≤ 0.74 ν_L       — GAVRILAM (74 pts, step 0.01 ν_L)
+!   Range 3: 0.77–0.885 ν_L     — GAVRILAMAB (27 pts, near Ly β)
+!   Range 4: 0.890–0.936 ν_L    — GAVRILAMBC (24 pts, near Ly γ)
+!   Range 5: 0.938–0.959 ν_L    — GAVRILAMCD (22 pts, near Ly δ)
+!   Range 6: 0.961–1.000 ν_L    — constant (series limit)
+!   Range 7: ν > ν_L            — GAVRILALYMANCONT (64 pts, continuum)
 !
-! The opacity per gram is:
-!   kappa_scat = sigma * n(H,1s) * 2 * b(1) / rho
+! Cross-section: σ = 6.65×10⁻²⁵ × f² (in ranges 1–5)
+!            or: σ = 6.65×10⁻²⁵ × f   (in range 7, above Lyman limit)
 !
-! where the factor 2*b(1) accounts for the statistical weight and
-! non-LTE departure coefficient.
+! Gaps between ranges (0.74–0.77, 0.885–0.890, 0.936–0.938,
+! 0.959–0.961 ν_L) have XSECT = 0.
+!
+! The opacity per gram:
+!   κ_scat = σ × n(H,1s) × 2 × b(1) / ρ
 !=========================================================================
 
 SUBROUTINE HRAYOP
 
   implicit none
 
-  real*8  :: W, WW, SIG
-  integer :: J
+  ! FREQ_RYDH and SIGMA_THOMSON from mod_constants
+
+  ! Range 1: scattering amplitude f, ν/ν_L = 0.01 to 0.74 by 0.01
+  real*8, parameter :: GAVRILAM(74) = (/ &
+   -0.000113D0,  -0.000450D0,  -0.001014D0,  -0.001804D0,  -0.002823D0, &
+   -0.004072D0,  -0.005553D0,  -0.007269D0,  -0.009223D0,  -0.011419D0, &
+   -0.013861D0,  -0.016553D0,  -0.019500D0,  -0.022709D0,  -0.026185D0, &
+   -0.029936D0,  -0.033968D0,  -0.038291D0,  -0.042913D0,  -0.047843D0, &
+   -0.053093D0,  -0.058674D0,  -0.064599D0,  -0.070882D0,  -0.077537D0, &
+   -0.084581D0,  -0.092031D0,  -0.099907D0,  -0.108230D0,  -0.117022D0, &
+   -0.126308D0,  -0.136117D0,  -0.146477D0,  -0.157422D0,  -0.168987D0, &
+   -0.181213D0,  -0.194143D0,  -0.207825D0,  -0.222313D0,  -0.237667D0, &
+   -0.253953D0,  -0.271245D0,  -0.289626D0,  -0.309189D0,  -0.330041D0, &
+   -0.352300D0,  -0.376103D0,  -0.401605D0,  -0.428985D0,  -0.458448D0, &
+   -0.490235D0,  -0.524625D0,  -0.561947D0,  -0.602591D0,  -0.647023D0, &
+   -0.695805D0,  -0.749619D0,  -0.809306D0,  -0.875910D0,  -0.950750D0, &
+   -1.035515D0,  -1.132403D0,  -1.244337D0,  -1.375285D0,  -1.530787D0, &
+   -1.718821D0,  -1.951320D0,  -2.246993D0,  -2.636960D0,  -3.177142D0, &
+   -3.979234D0,  -5.303624D0,  -7.930999D0, -15.763602D0 /)
+
+  ! Range 3: near Ly β, ν/ν_L = 0.755 to 0.885 by 0.005
+  real*8, parameter :: GAVRILAMAB(27) = (/ &
+   31.008832D0,  15.382871D0,  10.160646D0,   7.538338D0,   5.955062D0, &
+    4.890397D0,   4.121176D0,   3.535672D0,   3.071659D0,   2.691623D0, &
+    2.371483D0,   2.094936D0,   1.850395D0,   1.629203D0,   1.424526D0, &
+    1.230596D0,   1.042127D0,   0.853766D0,   0.659460D0,   0.451533D0, &
+    0.219115D0,  -0.054939D0,  -0.400868D0,  -0.879559D0,  -1.637857D0, &
+   -3.150374D0,  -8.326078D0 /)
+
+  ! Range 4: near Ly γ, ν/ν_L = 0.890 to 0.936 by 0.002
+  real*8, parameter :: GAVRILAMBC(24) = (/ &
+   32.260389D0,  11.880702D0,   7.418436D0,   5.442077D0,   4.313409D0, &
+    3.573504D0,   3.043218D0,   2.637983D0,   2.312466D0,   2.039959D0, &
+    1.803441D0,   1.591244D0,   1.394717D0,   1.206823D0,   1.021148D0, &
+    0.831020D0,   0.628449D0,   0.402484D0,   0.136127D0,  -0.200462D0, &
+   -0.667435D0,  -1.410661D0,  -2.906862D0,  -8.169314D0 /)
+
+  ! Range 5: near Ly δ, ν/ν_L = 0.938 to 0.959 by 0.001
+  real*8, parameter :: GAVRILAMCD(22) = (/ &
+   27.981406D0,   9.816495D0,   6.145775D0,   4.544224D0,   3.630968D0, &
+    3.029081D0,   2.593248D0,   2.255265D0,   1.978565D0,   1.741426D0, &
+    1.529699D0,   1.333240D0,   1.143898D0,   0.954154D0,   0.755875D0, &
+    0.538760D0,   0.287687D0,  -0.022759D0,  -0.441666D0,  -1.081712D0, &
+   -2.278530D0,  -5.705843D0 /)
+
+  ! Range 7: above Lyman limit, correction factors
+  real*8, parameter :: GAVRILALYMANCONT(64) = (/ &
+    2.667783D0,   2.526696D0,   2.408970D0,   2.308970D0,   2.222736D0, &
+    2.147415D0,   2.080913D0,   2.021653D0,   1.968431D0,   1.920304D0, &
+    1.876527D0,   1.799739D0,   1.734455D0,   1.678180D0,   1.629118D0, &
+    1.585943D0,   1.547643D0,   1.513435D0,   1.482700D0,   1.454941D0, &
+    1.429751D0,   1.406798D0,   1.385804D0,   1.366536D0,   1.348797D0, &
+    1.332419D0,   1.317257D0,   1.303187D0,   1.290100D0,   1.277901D0, &
+    1.266509D0,   1.255848D0,   1.245856D0,   1.236474D0,   1.227652D0, &
+    1.219344D0,   1.190492D0,   1.167227D0,   1.148153D0,   1.132293D0, &
+    1.118945D0,   1.107593D0,   1.097848D0,   1.089413D0,   1.082059D0, &
+    1.075606D0,   1.069908D0,   1.064850D0,   1.060338D0,   1.056294D0, &
+    1.052655D0,   1.038936D0,   1.030042D0,   1.023928D0,   1.019536D0, &
+    1.016269D0,   1.011814D0,   1.008986D0,   1.007074D0,   1.005720D0, &
+    1.004724D0,   1.003970D0,   1.003385D0,   1.003140D0 /)
+
+  ! Frequency grid for Lyman continuum table (ν/ν_L)
+  real*8, parameter :: FGAVRILALYMANCONT(64) = (/ &
+    1.00D0, 1.05D0, 1.10D0, 1.15D0, 1.20D0, 1.25D0, 1.30D0, 1.35D0, &
+    1.40D0, 1.45D0, 1.5D0,  1.6D0,  1.7D0,  1.8D0,  1.9D0,  2.0D0,  &
+    2.1D0,  2.2D0,  2.3D0,  2.4D0,  2.5D0,  2.6D0,  2.7D0,  2.8D0,  &
+    2.9D0,  3.0D0,  3.1D0,  3.2D0,  3.3D0,  3.4D0,  3.5D0,  3.6D0,  &
+    3.7D0,  3.8D0,  3.9D0,  4.0D0,  4.4D0,  4.8D0,  5.2D0,  5.6D0,  &
+    6.0D0,  6.4D0,  6.8D0,  7.2D0,  7.6D0,  8.0D0,  8.4D0,  8.8D0,  &
+    9.2D0,  9.6D0, 10.0D0, 12.0D0, 14.0D0, 16.0D0, 18.0D0, 20.0D0, &
+   24.0D0, 28.0D0, 32.0D0, 36.0D0, 40.0D0, 44.0D0, 48.0D0, 50.0D0 /)
+
+  ! Local variables
+  real*8  :: XSECT, G, FRAC
+  integer :: I, J, IDUM
+
+  ! Frequency step sizes for each range
+  real*8, parameter :: DFREQ1  = 0.01D0  * FREQ_RYDH  ! 0.01 × ν_L
+  real*8, parameter :: DFREQAB = 0.005D0 * FREQ_RYDH  ! 0.005 × ν_L
+  real*8, parameter :: DFREQBC = 0.002D0 * FREQ_RYDH  ! 0.002 × ν_L
+  real*8, parameter :: DFREQCD = 0.001D0 * FREQ_RYDH  ! 0.001 × ν_L
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HRAYOP'
 
-  ! Wavelength in Angstroms, capped at Lyman limit
-  W = 2.99792458D18 / min(FREQ, 2.463D15)
-  WW = W**2
+  XSECT = 0.0D0
 
-  ! Rayleigh scattering cross-section (cm^2)
-  SIG = (5.799D-13 + 1.422D-6 / WW + 2.784D0 / (WW * WW)) / (WW * WW)
+  if (FREQ < DFREQ1) then
+    ! Below 0.01 ν_L: extrapolate using lowest table value
+    XSECT = SIGMA_THOMSON * GAVRILAM(1)**2 * (FREQ / DFREQ1)**4
 
+  else if (FREQ <= 2.4190611D15) then
+    ! Range 1: 0.01–0.74 ν_L, table step = 0.01 ν_L
+    I = int(FREQ / DFREQ1)
+    I = MIN(I + 1, 74)
+    G = GAVRILAM(I-1) + (GAVRILAM(I) - GAVRILAM(I-1)) / DFREQ1 &
+      * (FREQ - dble(I-1) * DFREQ1)
+    XSECT = SIGMA_THOMSON * G**2
+
+  else if (FREQ < 0.77D0 * FREQ_RYDH) then
+    ! Gap between range 1 and Ly β region
+    XSECT = 0.0D0
+
+  else if (FREQ <= 0.885D0 * FREQ_RYDH) then
+    ! Range 3: 0.755–0.885 ν_L (near Ly β), step = 0.005 ν_L
+    I = int((FREQ - 0.755D0 * FREQ_RYDH) / DFREQAB)
+    I = I + 1
+    I = MIN(I + 1, 27)
+    G = GAVRILAMAB(I-1) + (GAVRILAMAB(I) - GAVRILAMAB(I-1)) / DFREQAB &
+      * (FREQ - (0.755D0 * FREQ_RYDH + dble(I-1-1) * DFREQAB))
+    XSECT = SIGMA_THOMSON * G**2
+
+  else if (FREQ < 0.890D0 * FREQ_RYDH) then
+    ! Gap between Ly β and Ly γ regions
+    XSECT = 0.0D0
+
+  else if (FREQ <= 0.936D0 * FREQ_RYDH) then
+    ! Range 4: 0.890–0.936 ν_L (near Ly γ), step = 0.002 ν_L
+    I = int((FREQ - 0.890D0 * FREQ_RYDH) / DFREQBC)
+    I = I + 1
+    I = MIN(I + 1, 24)
+    G = GAVRILAMBC(I-1) + (GAVRILAMBC(I) - GAVRILAMBC(I-1)) / DFREQBC &
+      * (FREQ - (0.890D0 * FREQ_RYDH + dble(I-1-1) * DFREQBC))
+    XSECT = SIGMA_THOMSON * G**2
+
+  else if (FREQ < 0.938D0 * FREQ_RYDH) then
+    ! Gap between Ly γ and Ly δ regions
+    XSECT = 0.0D0
+
+  else if (FREQ <= 0.959D0 * FREQ_RYDH) then
+    ! Range 5: 0.938–0.959 ν_L (near Ly δ), step = 0.001 ν_L
+    I = int((FREQ - 0.938D0 * FREQ_RYDH) / DFREQCD)
+    I = I + 1
+    I = MIN(I + 1, 22)
+    G = GAVRILAMCD(I-1) + (GAVRILAMCD(I) - GAVRILAMCD(I-1)) / DFREQCD &
+      * (FREQ - (0.938D0 * FREQ_RYDH + dble(I-1-1) * DFREQCD))
+    XSECT = SIGMA_THOMSON * G**2
+
+  else if (FREQ < 0.961D0 * FREQ_RYDH) then
+    ! Gap between Ly δ and series limit
+    XSECT = 0.0D0
+
+  else if (FREQ <= FREQ_RYDH) then
+    ! Near series limit: constant value
+    XSECT = SIGMA_THOMSON * GAVRILALYMANCONT(1)
+
+  else
+    ! Above Lyman limit: interpolate from continuum table
+    BLOCK
+      real*8 :: XNEW(1), FNEW(1)
+      XNEW(1) = FREQ / FREQ_RYDH
+      IDUM = MAP1(FGAVRILALYMANCONT, GAVRILALYMANCONT, 64, &
+                  XNEW, FNEW, 1)
+      XSECT = SIGMA_THOMSON * FNEW(1)
+    END BLOCK
+
+  end if
+
+  ! Apply to all depth points
   do J = 1, NRHOX
-    SIGH(J) = SIG * XNFP(J, 1) * 2.0D0 * BHYD(J, 1) / RHO(J)
+    SIGH(J) = XSECT * XNFP(J, 1) * 2.0D0 * BHYD(J, 1) / RHO(J)
   end do
 
   return
@@ -7677,7 +8374,7 @@ SUBROUTINE HE1OP
   !---------------------------------------------------------------------
   if (ITEMP /= ITEMP1) then
     ITEMP1 = ITEMP
-    RYD = 109722.273D0 * 2.99792458D10
+    RYD = RYDBERG_HE * CLIGHT
     do J = 1, NRHOX
       ! Boltzmann populations for 10 resolved levels
       do N = 1, 10
@@ -7699,9 +8396,9 @@ SUBROUTINE HE1OP
   ! Cross-sections at the current frequency
   !---------------------------------------------------------------------
   FREQ3 = FREQ**3
-  CFREE = 3.6919D8 / FREQ3
+  CFREE = COEFF_FF / FREQ3
   C = 2.815D29 / FREQ3
-  RYD = 109722.273D0 * 2.99792458D10
+  RYD = RYDBERG_HE * CLIGHT
 
   ! Find lowest level whose threshold is at or below FREQ
   IMIN = 0
@@ -7741,22 +8438,22 @@ SUBROUTINE HE1OP
   if (IMIN >= 1) then
     ELIM = 527490.06D0
     ! 1s2p 1P → He II 2p
-    FREQHE = (ELIM - 171135.000D0) * 2.99792458D10
+    FREQHE = (ELIM - 171135.000D0) * CLIGHT
     if (FREQ >= FREQHE) then
       ZEFF2 = FREQHE / RYD
       TRANS(5) = TRANS(5) + XKARZAS(FREQ, ZEFF2, 1, 0)
       ! 1s2p 3P → He II 2p
-      FREQHE = (ELIM - 169087.0D0) * 2.99792458D10
+      FREQHE = (ELIM - 169087.0D0) * CLIGHT
       if (FREQ >= FREQHE) then
         ZEFF2 = FREQHE / RYD
         TRANS(4) = TRANS(4) + XKARZAS(FREQ, ZEFF2, 1, 0)
         ! 1s2s 1S → He II 2s
-        FREQHE = (ELIM - 166277.546D0) * 2.99792458D10
+        FREQHE = (ELIM - 166277.546D0) * CLIGHT
         if (FREQ >= FREQHE) then
           ZEFF2 = FREQHE / RYD
           TRANS(3) = TRANS(3) + XKARZAS(FREQ, ZEFF2, 1, 0)
           ! 1s2s 3S → He II 2s
-          FREQHE = (ELIM - 159856.069D0) * 2.99792458D10
+          FREQHE = (ELIM - 159856.069D0) * CLIGHT
           if (FREQ >= FREQHE) then
             ZEFF2 = FREQHE / RYD
             TRANS(2) = TRANS(2) + XKARZAS(FREQ, ZEFF2, 1, 0)
@@ -7769,23 +8466,23 @@ SUBROUTINE HE1OP
     ! Inner-shell ionization: He I excited state → He II n=3
     !-------------------------------------------------------------------
     ELIM = 588451.59D0
-    FREQHE = (ELIM - 186209.471D0) * 2.99792458D10
+    FREQHE = (ELIM - 186209.471D0) * CLIGHT
     if (FREQ >= FREQHE) then
       ZEFF2 = FREQHE / RYD
       TRANS(10) = TRANS(10) + XKARZAS(FREQ, ZEFF2, 1, 0)
-      FREQHE = (ELIM - 186101.0D0) * 2.99792458D10
+      FREQHE = (ELIM - 186101.0D0) * CLIGHT
       if (FREQ >= FREQHE) then
         ZEFF2 = FREQHE / RYD
         TRANS(9) = TRANS(9) + XKARZAS(FREQ, ZEFF2, 1, 0)
-        FREQHE = (ELIM - 185564.0D0) * 2.99792458D10
+        FREQHE = (ELIM - 185564.0D0) * CLIGHT
         if (FREQ >= FREQHE) then
           ZEFF2 = FREQHE / RYD
           TRANS(8) = TRANS(8) + XKARZAS(FREQ, ZEFF2, 1, 0)
-          FREQHE = (ELIM - 184864.0D0) * 2.99792458D10
+          FREQHE = (ELIM - 184864.0D0) * CLIGHT
           if (FREQ >= FREQHE) then
             ZEFF2 = FREQHE / RYD
             TRANS(7) = TRANS(7) + XKARZAS(FREQ, ZEFF2, 1, 0)
-            FREQHE = (ELIM - 183236.0D0) * 2.99792458D10
+            FREQHE = (ELIM - 183236.0D0) * CLIGHT
             if (FREQ >= FREQHE) then
               ZEFF2 = FREQHE / RYD
               TRANS(6) = TRANS(6) + XKARZAS(FREQ, ZEFF2, 1, 0)
@@ -7902,7 +8599,7 @@ FUNCTION CROSSHE(FREQ)
   CROSSHE = 0.0D0
   if (FREQ < 5.945209D15) return
 
-  WAVE = 2.99792458D18 / FREQ
+  WAVE = CLIGHT_ANG / FREQ
 
   if (WAVE > 50.0D0) then
     ! 50–505 Å regime (Δλ = 5 Å)
@@ -7982,7 +8679,7 @@ FUNCTION HE111S(FREQ)
   HE111S = 0.0D0
   if (FREQ < 5.945209D15) return
 
-  WAVE = 2.99792458D18 / FREQ
+  WAVE = CLIGHT_ANG / FREQ
   do I = 2, NP
     if (WAVE > W(I)) exit
   end do
@@ -8029,12 +8726,12 @@ FUNCTION HE12S1S(FREQ)
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE12S1S'
 
   HE12S1S = 0.0D0
-  if (FREQ < 32033.214D0 * 2.99792458D10) return
+  if (FREQ < 32033.214D0 * CLIGHT) return
 
-  if (FREQ > 2.4D0 * 109722.267D0 * 2.99792458D10) then
+  if (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) then
     ! High-energy resonance formula
-    WAVNO = FREQ / 2.99792458D10
-    EK = (WAVNO - 32033.214D0) / 109722.267D0
+    WAVNO = FREQ / CLIGHT
+    EK = (WAVNO - 32033.214D0) / RYDBERG_HE
     EPS = 2.0D0 * (EK - 2.612316D0) / 0.00322D0
     HE12S1S = 0.008175D0 * (484940.0D0 / WAVNO)**2.71D0 * 8.067D-18 &
             * (EPS + 76.21D0)**2 / (1.0D0 + EPS**2)
@@ -8089,12 +8786,12 @@ FUNCTION HE12S3S(FREQ)
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE12S3S'
 
   HE12S3S = 0.0D0
-  if (FREQ < 38454.691D0 * 2.99792458D10) return
+  if (FREQ < 38454.691D0 * CLIGHT) return
 
-  if (FREQ > 2.4D0 * 109722.267D0 * 2.99792458D10) then
+  if (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) then
     ! High-energy resonance formula
-    WAVNO = FREQ / 2.99792458D10
-    EK = (WAVNO - 38454.691D0) / 109722.267D0
+    WAVNO = FREQ / CLIGHT
+    EK = (WAVNO - 38454.691D0) / RYDBERG_HE
     EPS = 2.0D0 * (EK - 2.47898D0) / 0.000780D0
     HE12S3S = 0.01521D0 * (470310.0D0 / WAVNO)**3.12D0 * 8.067D-18 &
             * (EPS - 122.4D0)**2 / (1.0D0 + EPS**2)
@@ -8149,12 +8846,12 @@ FUNCTION HE12P1P(FREQ)
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE12P1P'
 
   HE12P1P = 0.0D0
-  if (FREQ < 27175.76D0 * 2.99792458D10) return
+  if (FREQ < 27175.76D0 * CLIGHT) return
 
-  if (FREQ > 2.4D0 * 109722.267D0 * 2.99792458D10) then
+  if (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) then
     ! High-energy: two autoionization resonances (¹S and ¹D channels)
-    WAVNO = FREQ / 2.99792458D10
-    EK = (WAVNO - 27175.76D0) / 109722.267D0
+    WAVNO = FREQ / CLIGHT
+    EK = (WAVNO - 27175.76D0) / RYDBERG_HE
     EPS1S = 2.0D0 * (EK - 2.446534D0) / 0.01037D0
     EPS1D = 2.0D0 * (EK - 2.59427D0) / 0.00538D0
     HE12P1P = 0.0009487D0 * (466750.0D0 / WAVNO)**3.69D0 * 8.067D-18 &
@@ -8209,7 +8906,7 @@ FUNCTION HE12P3P(FREQ)
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE12P3P'
 
   HE12P3P = 0.0D0
-  if (FREQ < 29223.753D0 * 2.99792458D10) return
+  if (FREQ < 29223.753D0 * CLIGHT) return
 
   FREQLG = log10(FREQ)
   do I = 2, NP
@@ -8240,55 +8937,133 @@ END FUNCTION HE12P3P
 ! Temperature-dependent Boltzmann populations cached when ITEMP changes.
 !=======================================================================
 
+!==========================================================================
+! SUBROUTINE HE2OP
+!
+! He II bound-free and free-free opacity.
+!
+! Full level-by-level version matching atlas7lib.for.  He II is
+! hydrogenic (Z=2), so the structure parallels HOP but with:
+!   - Ionization limit  = 4 × Rydberg = 438908.85 cm⁻¹ (54.403 eV)
+!   - 4 × Rydberg const = 438889.068 cm⁻¹
+!   - Z⁴ = 16 in the cross-section scaling
+!   - Z² = 4 in the free-free scaling
+!
+! Structure:
+!   n >= 10 : dissolved-level integral, LTE, S = B_nu
+!   n = 7-9 : explicit hydrogenic (Kramers: ν³×Z⁴/n⁵), LTE
+!   n = 1-6 : Gaunt-factor-corrected hydrogenic, with departure
+!             coefficients.  In LTE, (BHE2-EHVKT) = STIM.
+!   free-free: Kramers with Z²=4, Gaunt factor COULFF(J,2),
+!              population n_e × n(He III).
+!
+! Note: line 5611 of atlas7lib.for marks a typo correction:
+!   n=3 denominator is 243 (= 3⁵), not 343 (= 7³).
+!==========================================================================
+
 SUBROUTINE HE2OP
 
   implicit none
 
-  real*8,  save :: BOLT(kw, 9), EXLIM(kw), FREET(kw), BOLTEX(kw)
-  integer, save :: ITEMP1 = 0
-
-  real*8  :: CONT(9), FREQ3, CFREE, C, XR, EX, HE2
-  integer :: J, N
+  real*8  :: FREQ3, XNFPRHO
+  real*8  :: H, S, A, X
+  integer :: J
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE2OP'
 
-  ! Recompute Boltzmann populations when temperature changes
-  if (ITEMP /= ITEMP1) then
-    ITEMP1 = ITEMP
-    do J = 1, NRHOX
-      do N = 1, 9
-        BOLT(J, N) = exp(-(54.403D0 - 54.403D0 / dble(N)**2) / TKEV(J)) &
-                   * 2.0D0 * dble(N)**2 * XNFP(J, 4) / RHO(J)
-      end do
-      FREET(J) = XNE(J) * XNF(J, 5) / RHO(J) / sqrt(T(J))
-      XR = XNFP(J, 4) * (2.0D0 / 2.0D0 / 13.595D0) * TKEV(J) / RHO(J)
-      BOLTEX(J) = exp(-53.859D0 / TKEV(J)) * XR
-      EXLIM(J) = exp(-54.403D0 / TKEV(J)) * XR
-    end do
-  end if
+  FREQ3 = 2.815D29 / FREQ / FREQ / FREQ
 
-  ! Cross-sections for levels n=1–9
-  do N = 1, 9
-!   21 CONT(N)=COULX(N,FREQ,2.D0)
-    CONT(N) = XKARZAS(FREQ, 4.D0, N, N)
-  end do
-
-  FREQ3 = FREQ**3
-  CFREE = 3.6919D8 / FREQ3 * 4.0D0
-  C = 2.815D29 * 2.0D0 * 2.0D0 / FREQ3
-
-  ! Assemble bound-free + free-free for each depth
   do J = 1, NRHOX
-    EX = BOLTEX(J)
-    if (FREQ < 1.31522D14) EX = EXLIM(J) / EHVKT(J)
-    HE2 = (EX - EXLIM(J)) * C
-    do N = 1, 9
-      HE2 = HE2 + CONT(N) * BOLT(J, N)
-    end do
-!      AHE2BOUND(J)=HE2*STIM(J)
-!      AHE2FREE(J)=(COULFF(J,2)*CFREE*FREET(J))*STIM(J)
-    AHE2(J) = (HE2 + COULFF(J, 2) * CFREE * FREET(J)) * STIM(J)
+
+    ! Population factor: He II (mode-11) / rho
+    XNFPRHO = XNFP(J, 4) / RHO(J)
+
+    ! --- n >= 10 to infinity: dissolved-level integral (LTE) ---
+    ! Z⁴=16, gfactor=2, ionization limit = 438908.85 cm⁻¹
+    ! Lower integration bound at n=10: E_10 = 438908.85 - 438908.85/100 = 434519.959
+    H = FREQ3 * 16.0D0 * 2.0D0 / 2.0D0 / (438889.068D0 * HCKT(J)) &
+      * (EXP(-MAX(434519.959D0, 438908.85D0 - WAVENO) * HCKT(J)) &
+       - EXP(-438908.85D0 * HCKT(J))) * STIM(J) * XNFPRHO
+    S = H * BNU(J)
+
+    levels: do
+
+      ! --- n = 9 (threshold 5418.390 cm⁻¹) : hydrogenic ---
+      if (WAVENO < 5418.390D0) exit levels
+      X = FREQ3 / 59049.0D0 * 16.0D0
+      A = X * 162.0D0 * EXP(-433490.46D0 * HCKT(J)) * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- n = 8 (threshold 6857.660 cm⁻¹) : hydrogenic ---
+      if (WAVENO < 6857.660D0) exit levels
+      X = FREQ3 * 16.0D0 / 32768.0D0
+      A = X * 128.0D0 * EXP(-432051.19D0 * HCKT(J)) * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- n = 7 (threshold 8956.950 cm⁻¹) : hydrogenic ---
+      if (WAVENO < 8956.950D0) exit levels
+      X = FREQ3 * 16.0D0 / 16807.0D0
+      A = X * 98.0D0 * EXP(-429951.90D0 * HCKT(J)) * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- n = 6 (threshold 12191.437 cm⁻¹) : Gaunt-corrected, LTE ---
+      if (WAVENO < 12191.437D0) exit levels
+      X = FREQ3 * 16.0D0 / 7776.0D0 &
+        * (1.0986D0 + (-2.704D13 + 1.229D27 / FREQ) / FREQ)
+      A = X * 72.0D0 * EXP(-426717.413D0 * HCKT(J)) * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- n = 5 (threshold 17555.715 cm⁻¹) : Gaunt-corrected, LTE ---
+      if (WAVENO < 17555.715D0) exit levels
+      X = FREQ3 * 16.0D0 / 3125.0D0 &
+        * (1.102D0 + (-3.909D13 + 2.371D27 / FREQ) / FREQ)
+      A = X * 50.0D0 * EXP(-421353.135D0 * HCKT(J)) * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- n = 4 (threshold 27430.925 cm⁻¹) : Gaunt-corrected, LTE ---
+      if (WAVENO < 27430.925D0) exit levels
+      X = FREQ3 * 16.0D0 / 1024.0D0 &
+        * (1.101D0 + (-5.765D13 + 4.593D27 / FREQ) / FREQ)
+      A = X * 32.0D0 * EXP(-411477.925D0 * HCKT(J)) * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- n = 3 (threshold 48766.491 cm⁻¹) : Gaunt-corrected, LTE ---
+      ! Note: denominator is 243 (= 3⁵), not 343 (typo corrected in atlas7lib)
+      if (WAVENO < 48766.491D0) exit levels
+      X = FREQ3 * 16.0D0 / 243.0D0 &
+        * (1.101D0 + (-9.863D13 + 1.035D28 / FREQ) / FREQ)
+      A = X * 18.0D0 * EXP(-390142.359D0 * HCKT(J)) * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- n = 2 (threshold 109726.529 cm⁻¹) : Gaunt-corrected, LTE ---
+      if (WAVENO < 109726.529D0) exit levels
+      X = FREQ3 * 16.0D0 / 32.0D0 &
+        * (1.105D0 + (-2.375D14 + 4.077D28 / FREQ) / FREQ)
+      A = X * 8.0D0 * EXP(-329182.321D0 * HCKT(J)) * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- n = 1 (threshold 438908.850 cm⁻¹) : Gaunt-corrected, LTE ---
+      if (WAVENO < 438908.850D0) exit levels
+      X = FREQ3 * 16.0D0 / 1.0D0 &
+        * (0.9916D0 + (2.719D13 - 2.268D30 / FREQ) / FREQ)
+      A = X * 2.0D0 * STIM(J) * XNFPRHO
+      H = H + A;  S = S + A * BNU(J)
+
+      exit levels
+    end do levels
+
+    ! --- Free-free (bremsstrahlung, Z²=4) ---
+    A = COEFF_FF * 4.0D0 / SQRT(T(J)) * COULFF(J, 2) / FREQ * XNE(J) &
+      / FREQ * XNFP(J, 5) / FREQ * STIM(J) / RHO(J)
+    H = H + A
+    S = S + A * BNU(J)
+
+    AHE2(J) = H
+    SHE2(J) = BNU(J)
+    if (H > 0.0D0) SHE2(J) = S / H
+
   end do
+
   return
 
 END SUBROUTINE HE2OP
@@ -8326,7 +9101,7 @@ SUBROUTINE HERAOP
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HERAOP'
   ! He I Rayleigh scattering, capped at He I ionization threshold
-  W = 2.99792458D18 / min(FREQ, 5.15D15)
+  W = CLIGHT_ANG / min(FREQ, 5.15D15)
   WW = W**2
   SIG = 5.484D-14 / WW / WW * (1.0D0 + (2.44D5 + 5.94D10 &
       / (WW - 2.90D5)) / WW)**2
@@ -8349,15 +9124,16 @@ SUBROUTINE COOLOP
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING COOLOP'
   ! Cool-star opacities: only contribute below Lyman limit
-  if (FREQ > 3.28805D15) return
+  if (FREQ > FREQ_RYDH) return
   call C1OP
   call MG1OP
+  call AL1OP
   call SI1OP
+  call FE1OP
   call H2COLLOP(AH2COLL)
   do J = 1, NRHOX
-    ACOOL(J) = AC1(J) + AMG1(J) + ASI1(J) &
-             + (AL1OP(J) * XNFP(J, 91) + FE1OP(J) * XNFP(J, 351) &
-             + CHOP(J) * XNFP(J, 846) + OHOP(J) * XNFP(J, 848)) &
+    ACOOL(J) = AC1(J) + AMG1(J) + AAL1(J) + ASI1(J) + AFE1(J) &
+             + (CHOP(J) * XNFP(J, 846) + OHOP(J) * XNFP(J, 848)) &
              * STIM(J) / RHO(J) + AH2COLL(J)
   end do
   return
@@ -8369,209 +9145,191 @@ END SUBROUTINE COOLOP
 !
 ! C I bound-free photoionization opacity.
 !
-! Computes cross-sections for 25 energy levels of neutral carbon,
-! organized into four blocks by ionization limit of the C II parent:
+! Full level-by-level version matching atlas7lib.for.  Computes opacity
+! from 14 levels of neutral carbon with explicit cross-section formulas,
+! including Luo & Pradhan (1989) background fits and Burke & Taylor
+! (1979) Fano resonance profiles for the ground-term levels.
 !
-!   Block 1 (levels 1–14): Excited 2s²2p 3s/3p/3d configurations
-!     ionizing to C II 2s²2p ²P average (ELIM = 90862.70 cm⁻¹).
-!     Cross-sections from hydrogenic XKARZAS with effective charges:
-!       levels 1–6:   n=3, l=2  (3d states)
-!       levels 7–12:  n=3, l=1  (3p states)
-!       levels 13–14: n=3, l=0  (3s states)
+! Structure (evaluated from lowest to highest threshold):
 !
-!   Block 2 (levels 15–19): Ground-term 2s²2p² states
-!     ionizing to C II 2s²2p ²P₁/₂ (ELIM = 90820.42 cm⁻¹).
-!     Cross-sections from:
-!       Luo & Pradhan 1989, J.Phys.B 22, 3377  (smooth background)
-!       Burke & Taylor 1979, J.Phys.B 12, 2971  (Fano resonances)
-!     Weighted by 1/3  (²P₁/₂ statistical weight).
+!   Levels 13-9 (3p 1S,1D,3P,3S,3D): X=0 (cross-sections not available)
+!   Level 8  (3p 1P):  sigma = 2.1E-18 * (nu0/nu)^1.5
+!   Level 6  (3s 1P):  sigma = 1.54E-18 * (nu0/nu)^1.2
+!   Level 5  (3s 3P):  sigma = 0.2E-18 * (nu0/nu)^1.2
+!   Level 14 (2s2p3 3P, 4P limit): X=0
+!   Level 3  (2p2 1S):  Luo & Pradhan + 1 Fano resonance
+!   Level 7  (2s2p3 3D, 4P limit): sigma = 16E-18 * (nu0/nu)^3
+!   Level 2  (2p2 1D):  Luo & Pradhan + 2 Fano resonances
+!   Level 1  (2p2 3P):  Luo & Pradhan, 3 fine-structure x 2 limits
+!   Level 4  (2s2p3 5S, 4P limit): sigma = 1E-18 * (nu0/nu)^3
 !
-!   Block 3 (levels 15–19): Same ground-term states, contribution from
-!     ionization to C II 2s²2p ²P₃/₂ (ELIM = 90820.42 + 63.42 cm⁻¹).
-!     Same cross-section formulas, weighted by 2/3 and added to Block 2.
+! Ionization limits:
+!   C II 2P_0.5 = 90820.42 cm-1
+!   C II 2P_1.5 = 90883.84 cm-1
+!   C II 4P     = 133856.20 cm-1
 !
-!   Block 4 (levels 20–25): Inner-shell 2s 2p³ configurations
-!     ionizing to C II 2s 2p² ⁴P₁/₂ (ELIM = 133823.72 cm⁻¹).
-!     Cross-sections from XKARZAS with n=2, l=1, degeneracy factor 3.
-!
-! Final assembly sums over all levels with Boltzmann populations plus
-! a hydrogenic high-n (n≥4) dissolved-level contribution near the
-! C II ²P series limit.
-!
-! Temperature-dependent Boltzmann factors are cached and only
-! recomputed when ITEMP changes.
+! In LTE, departure coefficients = 1, so (BC1-BC2*EHVKT) = STIM
+! and the source function S/H = BNU.
 !
 ! References:
-!   Karzas & Latter 1961, ApJS 6, 167  (hydrogenic cross-sections)
-!   Luo & Pradhan 1989, J.Phys.B 22, 3377  (ground-term background)
-!   Burke & Taylor 1979, J.Phys.B 12, 2971  (resonance fits)
-!   Lester sign correction 22 Feb 2005 (³P Luo & Pradhan formula)
-!!==========================================================================
+!   Luo, D. & Pradhan, A.K. 1989, J.Phys.B 22, 3377
+!   Burke, P.G. & Taylor, K.T. 1979, J.Phys.B 12, 2971
+!=========================================================================
 
 SUBROUTINE C1OP
 
   implicit none
 
-  integer, parameter :: NLEV = 25
+  real*8, parameter :: RYD = 109732.298D0
 
-  ! --- Atomic data: energy levels (cm⁻¹) and statistical weights ---
-  !
-  ! Levels 1–6:   2s²2p 3d  (³P, ¹P, ¹F, ³D, ³F, ¹D)
-  ! Levels 7–12:  2s²2p 3p  (¹S, ¹D, ³P, ³S, ³D, ¹P)
-  ! Levels 13–14: 2s²2p 3s  (¹P, ³P)
-  ! Levels 15–19: 2s²2p²    (¹S, ¹D, ³P₂, ³P₁, ³P₀)
-  ! Levels 20–25: 2s 2p³    (¹P, ³S, ¹D, ³P, ³D, ⁵S)
-  real*8, parameter :: ELEV(NLEV) = (/ &
-    79314.86D0, 78731.27D0, 78529.62D0, 78309.76D0, 78226.35D0, &  ! 3d states
-    77679.82D0, 73975.91D0, 72610.72D0, 71374.90D0, 70743.95D0, &  ! 3p states (1-4)
-    69722.00D0, 68856.33D0, 61981.82D0, 60373.00D0,             &  ! 3p(5-6), 3s states
-    21648.01D0, 10192.63D0,    43.42D0,    16.42D0,     0.00D0, &  ! ground-term 2p²
-   119878.00D0,105798.70D0, 97878.00D0, 75254.93D0, 64088.85D0, &  ! inner-shell 2s2p³
-    33735.20D0 /)
-
-  real*8, parameter :: GLEV(NLEV) = (/ &
-    9.D0, 3.D0, 7.D0, 15.D0, 21.D0, 5.D0,  &  ! 3d states
-    1.D0, 5.D0, 9.D0,  3.D0, 15.D0, 3.D0,  &  ! 3p states
-    3.D0, 9.D0,                              &  ! 3s states
-    1.D0, 5.D0, 5.D0,  3.D0,  1.D0,         &  ! ground-term 2p²
-    3.D0, 3.D0, 5.D0, 12.D0, 15.D0, 5.D0 /)    ! inner-shell 2s2p³
-
-  ! Quantum numbers (n,l) for XKARZAS calls per level
-  integer, parameter :: NQ(NLEV) = (/ &
-    3,3,3,3,3,3,  3,3,3,3,3,3,  3,3,  0,0,0,0,0,  2,2,2,2,2,2 /)
-  integer, parameter :: LQ(NLEV) = (/ &
-    2,2,2,2,2,2,  1,1,1,1,1,1,  0,0,  0,0,0,0,0,  1,1,1,1,1,1 /)
-
-  ! Ionization limits (cm⁻¹)
-  real*8, parameter :: ELIM_2P_AVG  = 90862.70D0    ! C II ²P average (Block 1)
-  real*8, parameter :: ELIM_2P12    = 90820.42D0    ! C II ²P₁/₂ (Block 2)
-  real*8, parameter :: ELIM_2P32    = 90883.84D0    ! C II ²P₃/₂ (Block 3) = 90820.42 + 63.42
-  real*8, parameter :: ELIM_4P12    = 133823.72D0   ! C II ⁴P₁/₂ (Block 4) = 90820.42 + 43003.3
-  real*8, parameter :: DEGEN_INNER  = 3.0D0         ! degeneracy factor for Block 4
-
-  real*8, parameter :: RYD = 109732.298D0           ! Rydberg constant (cm⁻¹)
-
-  ! --- Persistent state ---
-  real*8,  save :: BOLT(NLEV, kw)   ! Boltzmann factors: g * exp(-E*hc/kT)
-  integer, save :: ITEMP1 = 0       ! cached ITEMP for skip logic
-
-  ! --- Local variables ---
-  real*8  :: X(NLEV)                ! cross-sections per level (cm²)
-  real*8  :: ELIM                   ! current ionization limit
-  real*8  :: ZEFF2                  ! effective charge squared
-  real*8  :: FREQ3                  ! 2.815e29 / nu³  (dissolved-level coefficient)
-  real*8  :: H                      ! running opacity sum per depth
-  real*8  :: XS0, XS1              ! ¹S background + resonance cross-sections
-  real*8  :: XD0, XD1, XD2         ! ¹D background + two resonance cross-sections
-  real*8  :: EPS, A, B             ! Fano resonance profile parameters
-  integer :: I, J, K
-
-  ! --- External functions ---
+  real*8  :: H, S, A, B, X, EPS
+  integer :: J
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING C1OP'
 
-  !---------------------------------------------------------------------
-  ! Recompute Boltzmann factors when temperature structure changes
-  !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
-    ITEMP1 = ITEMP
-    do K = 1, NRHOX
-      do I = 1, NLEV
-        BOLT(I, K) = GLEV(I) * exp(-ELEV(I) * HCKT(K))
-      end do
-    end do
-  end if
-
-  !---------------------------------------------------------------------
-  ! Compute cross-sections at the current frequency
-  !---------------------------------------------------------------------
-  X(:) = 0.0D0
-
-  ! --- Block 1: Excited states -> C II ²P average ---
-  ELIM = ELIM_2P_AVG
-  do I = 1, 14
-    if (WAVENO < ELIM - ELEV(I)) exit
-    ZEFF2 = 9.0D0 / RYD * (ELIM - ELEV(I))
-    X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
-  end do
-
-  ! --- Block 2: Ground-term -> C II ²P₁/₂  (weight 1/3) ---
-  ! Luo & Pradhan background + Burke & Taylor Fano resonances
-  ELIM = ELIM_2P12
-  call c1op_ground_term(ELIM, 1.0D0/3.0D0)
-
-  ! --- Block 3: Ground-term -> C II ²P₃/₂  (weight 2/3) ---
-  ELIM = ELIM_2P32
-  call c1op_ground_term(ELIM, 2.0D0/3.0D0)
-
-  ! --- Block 4: Inner-shell 2s2p³ -> C II ⁴P₁/₂ ---
-  ELIM = ELIM_4P12
-  do I = 20, 25
-    if (WAVENO < ELIM - ELEV(I)) exit
-    ZEFF2 = 4.0D0 / RYD * (ELIM - ELEV(I))
-    X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I)) * DEGEN_INNER
-  end do
-
-  !---------------------------------------------------------------------
-  ! Assemble opacity over depth: levels + dissolved high-n contribution
-  !---------------------------------------------------------------------
-  ELIM = ELIM_2P12
-  FREQ3 = 2.815D29 / (FREQ * FREQ * FREQ)
-
   do J = 1, NRHOX
-    ! High-n dissolved levels (n >= 4 to infinity)
-    H = FREQ3 * 6.0D0 * 2.0D0 / 2.0D0 / (RYD * HCKT(J)) &
-      * (exp(-max(ELIM - RYD / 16.0D0, ELIM - WAVENO) * HCKT(J)) &
-       - exp(-ELIM * HCKT(J)))
+    H = 1.0D-30
+    S = 0.0D0
 
-    ! Sum bound-free over all 25 levels
-    do I = 1, NLEV
-      H = H + X(I) * BOLT(I, J)
-    end do
+    levels: do
 
-    AC1(J) = H * XNFP(J, 21) * STIM(J) / RHO(J)
+      ! --- Level 13: 3p 1S (E=73975.91, g=1, threshold 16886.790) X=0 ---
+      if (WAVENO < 16886.790D0) exit levels
+
+      ! --- Level 12: 3p 1D (E=72610.72, g=5, threshold 18251.980) X=0 ---
+      if (WAVENO < 18251.980D0) exit levels
+
+      ! --- Level 11: 3p 3P (E=71374.90, g=9, threshold 19487.800) X=0 ---
+      if (WAVENO < 19487.800D0) exit levels
+
+      ! --- Level 10: 3p 3S (E=70743.95, g=3, threshold 20118.750) X=0 ---
+      if (WAVENO < 20118.750D0) exit levels
+
+      ! --- Level 9: 3p 3D (E=69722.00, g=15, threshold 21140.700) X=0 ---
+      if (WAVENO < 21140.700D0) exit levels
+
+      ! --- Level 8: 3p 1P (E=68856.33, g=3, threshold 22006.370) ---
+      if (WAVENO < 22006.370D0) exit levels
+      X = 2.1D-18 * (22006.370D0 / WAVENO)**1.5D0
+      A = X * 3.0D0 * EXP(-68856.33D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- Level 6: 3s 1P (E=61981.82, g=3, threshold 28880.880) ---
+      if (WAVENO < 28880.880D0) exit levels
+      X = 1.54D-18 * (28880.880D0 / WAVENO)**1.2D0
+      A = X * 3.0D0 * EXP(-61981.82D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- Level 5: 3s 3P (E=60373.00, g=9, threshold 30489.700) ---
+      if (WAVENO < 30489.700D0) exit levels
+      X = 0.2D-18 * (30489.700D0 / WAVENO)**1.2D0
+      A = X * 9.0D0 * EXP(-60373.00D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- Level 14: 2s2p3 3P (E=75254.93, g=9, threshold 58601.270) X=0 ---
+      !     Ionizes to 4P limit at 133856.20 cm-1
+      if (WAVENO < 58601.270D0) exit levels
+
+      ! --- Level 3: 2p2 1S (E=21648.02, g=1) ---
+      !     Ionizes to 2P_0.5 at 90820.42 -> threshold 69172.400
+      !     Luo & Pradhan background + Burke & Taylor Fano resonance
+      if (WAVENO < 69172.400D0) exit levels
+      X = 10.0D0**(-16.80D0 - (WAVENO - 69172.400D0) / 3.0D0 / RYD)
+      EPS = (WAVENO - 97700.0D0) * 2.0D0 / 2743.0D0
+      A = 68.0D-18;  B = 118.0D-18
+      X = X + (A * EPS + B) / (EPS**2 + 1.0D0)
+      X = X / 3.0D0
+      A = X * 1.0D0 * EXP(-21648.02D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      !     Also ionizes to 2P_1.5 at 90883.84 -> threshold 69235.820
+      if (WAVENO < 69235.820D0) exit levels
+      A = A * 2.0D0
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- Level 7: 2s2p3 3D (E=64088.85, g=15, threshold 69767.350) ---
+      !     Ionizes to 4P limit at 133856.20
+      if (WAVENO < 69767.350D0) exit levels
+      X = 16.0D-18 * (69767.350D0 / WAVENO)**3
+      A = X * 15.0D0 * EXP(-64088.85D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- Level 2: 2p2 1D (E=10192.66, g=5) ---
+      !     Ionizes to 2P_0.5 at 90820.42 -> threshold 80627.760
+      !     Luo & Pradhan background + two Burke & Taylor Fano resonances
+      if (WAVENO < 80627.760D0) exit levels
+      X = 10.0D0**(-16.80D0 - (WAVENO - 80627.760D0) / 3.0D0 / RYD)
+      EPS = (WAVENO - 93917.0D0) * 2.0D0 / 9230.0D0
+      A = 22.0D-18;  B = 26.0D-18
+      X = X + (A * EPS + B) / (EPS**2 + 1.0D0)
+      EPS = (WAVENO - 111130.0D0) * 2.0D0 / 2743.0D0
+      A = -10.5D-18;  B = 46.0D-18
+      X = X + (A * EPS + B) / (EPS**2 + 1.0D0)
+      X = X / 3.0D0
+      A = X * 5.0D0 * EXP(-10192.66D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      !     Also ionizes to 2P_1.5 -> threshold 80691.180
+      if (WAVENO < 80691.180D0) exit levels
+      A = A * 2.0D0
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- Level 1: 2p2 3P (ground term, 3 fine-structure components) ---
+      !     Ionizes to 2P_0.5 at 90820.42
+      !     3P_2 (E=43.42, g=5) -> threshold 90777.000
+      if (WAVENO < 90777.000D0) exit levels
+      X = 10.0D0**(-16.80D0 - (WAVENO - 90777.000D0) / 3.0D0 / RYD)
+      X = X / 3.0D0
+      A = X * 5.0D0 * EXP(-43.42D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      !     3P_1 (E=16.42, g=3) -> threshold 90804.000
+      if (WAVENO < 90804.000D0) exit levels
+      A = X * 3.0D0 * EXP(-16.42D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      !     3P_0 (E=0.00, g=1) -> threshold 90820.420
+      if (WAVENO < 90820.420D0) exit levels
+      A = X * 1.0D0 * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      !     Ionizes to 2P_1.5 at 90883.84 (cross-section x 2)
+      !     3P_2 -> threshold 90840.420
+      if (WAVENO < 90840.420D0) exit levels
+      X = X * 2.0D0
+      A = X * 5.0D0 * EXP(-43.42D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      !     3P_1 -> threshold 90867.420
+      if (WAVENO < 90867.420D0) exit levels
+      A = X * 3.0D0 * EXP(-16.42D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      !     3P_0 -> threshold 90883.840
+      if (WAVENO < 90883.840D0) exit levels
+      A = X * 1.0D0 * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! --- Level 4: 2s2p3 5S (E=33735.20, g=5, threshold 100121.000) ---
+      !     Ionizes to 4P limit at 133856.20
+      if (WAVENO < 100121.000D0) exit levels
+      X = 1.0D-18 * (100121.000D0 / WAVENO)**3
+      A = X * 5.0D0 * EXP(-33735.20D0 * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      exit levels
+    end do levels
+
+    ! Scale by C I population / rho
+    H = H * XNFP(J, 21) / RHO(J)
+    S = S * XNFP(J, 21) / RHO(J)
+
+    AC1(J) = H
+    if (H > 0.0D0) SC1(J) = S / H
+
   end do
 
   return
-
-contains
-
-  !-----------------------------------------------------------------------
-  ! Ground-term (levels 15–19) cross-sections for one fine-structure limit
-  !-----------------------------------------------------------------------
-  subroutine c1op_ground_term(elim_fs, weight)
-    real*8, intent(in) :: elim_fs, weight
-
-    ! Level 15: ¹S — Luo & Pradhan background + single Burke & Taylor resonance
-    if (WAVENO >= elim_fs - ELEV(15)) then
-      XS0 = 10.0D0**(-16.80D0 - (WAVENO - elim_fs + ELEV(15)) / 3.0D0 / RYD)
-      EPS = (WAVENO - 97700.0D0) * 2.0D0 / 2743.0D0
-      A = 68.0D-18;  B = 118.0D-18
-      XS1 = (A * EPS + B) / (EPS**2 + 1.0D0)
-      X(15) = X(15) + (XS0 + XS1) * weight
-    end if
-
-    ! Level 16: ¹D — Luo & Pradhan background + two Burke & Taylor resonances
-    if (WAVENO >= elim_fs - ELEV(16)) then
-      XD0 = 10.0D0**(-16.80D0 - (WAVENO - elim_fs + ELEV(16)) / 3.0D0 / RYD)
-      EPS = (WAVENO - 93917.0D0) * 2.0D0 / 9230.0D0
-      A = 22.0D-18;  B = 26.0D-18
-      XD1 = (A * EPS + B) / (EPS**2 + 1.0D0)
-      EPS = (WAVENO - 111130.0D0) * 2.0D0 / 2743.0D0
-      A = -10.5D-18;  B = 46.0D-18
-      XD2 = (A * EPS + B) / (EPS**2 + 1.0D0)
-      X(16) = X(16) + (XD0 + XD1 + XD2) * weight
-    end if
-
-    ! Levels 17–19: ³P₂, ³P₁, ³P₀ — Luo & Pradhan only
-    ! (sign error found by John Lester, 22 Feb 2005)
-    do I = 17, 19
-      if (WAVENO >= elim_fs - ELEV(I)) then
-        X(I) = X(I) + 10.0D0**(-16.80D0 - (WAVENO - elim_fs + ELEV(I)) / 3.0D0 / RYD) * weight
-      end if
-    end do
-
-  end subroutine c1op_ground_term
 
 END SUBROUTINE C1OP
 
@@ -8704,54 +9462,59 @@ SUBROUTINE MG1OP
   !---------------------------------------------------------------------
   X(:) = 0.0D0
 
-  ! Levels 1–5: hydrogenic (XKARZAS)
-  do I = 1, 5
-    if (WAVENO < ELIM - ELEV(I)) go to 30
-    ZEFF2 = 16.0D0 / RYD * (ELIM - ELEV(I))
-    X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
-  end do
+  levels: do
 
-  ! Level 6: 3s3d ³D — power-law fit
-  if (WAVENO < ELIM - ELEV(6)) go to 30
-  X(6) = 25.0D-18 * (THR6 / WAVENO)**2.7D0
+    ! Levels 1–5: hydrogenic (XKARZAS)
+    do I = 1, 5
+      if (WAVENO < ELIM - ELEV(I)) exit levels
+      ZEFF2 = 16.0D0 / RYD * (ELIM - ELEV(I))
+      X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
+    end do
 
-  ! Level 7: 3s4p ³P — power-law fit
-  if (WAVENO < ELIM - ELEV(7)) go to 30
-  X(7) = 33.8D-18 * (THR7 / WAVENO)**2.8D0
+    ! Level 6: 3s3d ³D — power-law fit
+    if (WAVENO < ELIM - ELEV(6)) exit levels
+    X(6) = 25.0D-18 * (THR6 / WAVENO)**2.7D0
 
-  ! Level 8: 3s3d ¹D — power-law fit
-  if (WAVENO < ELIM - ELEV(8)) go to 30
-  X(8) = 45.0D-18 * (THR8 / WAVENO)**2.7D0
+    ! Level 7: 3s4p ³P — power-law fit
+    if (WAVENO < ELIM - ELEV(7)) exit levels
+    X(7) = 33.8D-18 * (THR7 / WAVENO)**2.8D0
 
-  ! Level 9: 3s4s ¹S — power-law fit
-  if (WAVENO < ELIM - ELEV(9)) go to 30
-  X(9) = 0.43D-18 * (THR9 / WAVENO)**2.6D0
+    ! Level 8: 3s3d ¹D — power-law fit
+    if (WAVENO < ELIM - ELEV(8)) exit levels
+    X(8) = 45.0D-18 * (THR8 / WAVENO)**2.7D0
 
-  ! Level 10: 3s4s ³S — power-law fit
-  if (WAVENO < ELIM - ELEV(10)) go to 30
-  X(10) = 2.1D-18 * (THR10 / WAVENO)**2.6D0
+    ! Level 9: 3s4s ¹S — power-law fit
+    if (WAVENO < ELIM - ELEV(9)) exit levels
+    X(9) = 0.43D-18 * (THR9 / WAVENO)**2.6D0
 
-  ! Level 11: 3s3p ¹P — two-term power-law
-  if (WAVENO < ELIM - ELEV(11)) go to 30
-  RATIO = THR11 / WAVENO
-  X(11) = 16.0D-18 * RATIO**2.1D0 - 7.8D-18 * RATIO**9.5D0
+    ! Level 10: 3s4s ³S — power-law fit
+    if (WAVENO < ELIM - ELEV(10)) exit levels
+    X(10) = 2.1D-18 * (THR10 / WAVENO)**2.6D0
 
-  ! Levels 12–14: 3s3p ³P₂,₁,₀ — power-law with floor
-  do I = 12, 14
-    if (WAVENO < ELIM - ELEV(I)) go to 30
-    RATIO = THR12 / WAVENO
-    X(I) = max(20.0D-18 * RATIO**2.7D0, 40.0D-18 * RATIO**14.0D0)
-  end do
+    ! Level 11: 3s3p ¹P — two-term power-law
+    if (WAVENO < ELIM - ELEV(11)) exit levels
+    RATIO = THR11 / WAVENO
+    X(11) = 16.0D-18 * RATIO**2.1D0 - 7.8D-18 * RATIO**9.5D0
 
-  ! Level 15: 3s² ¹S ground state — steep power-law
-  ! (Castelli index correction 25 Sep 2002: test on level 15, not 13)
-  if (WAVENO < ELIM - ELEV(15)) go to 30
-  X(15) = 1.1D-18 * ((ELIM - ELEV(15)) / WAVENO)**10.0D0
+    ! Levels 12–14: 3s3p ³P₂,₁,₀ — power-law with floor
+    do I = 12, 14
+      if (WAVENO < ELIM - ELEV(I)) exit levels
+      RATIO = THR12 / WAVENO
+      X(I) = max(20.0D-18 * RATIO**2.7D0, 40.0D-18 * RATIO**14.0D0)
+    end do
+
+    ! Level 15: 3s² ¹S ground state — steep power-law
+    ! (Castelli index correction 25 Sep 2002: test on level 15, not 13)
+    if (WAVENO < ELIM - ELEV(15)) exit levels
+    X(15) = 1.1D-18 * ((ELIM - ELEV(15)) / WAVENO)**10.0D0
+
+    exit levels
+  end do levels
 
   !---------------------------------------------------------------------
   ! Assemble opacity over depth: levels + dissolved high-n contribution
   !---------------------------------------------------------------------
-   30 FREQ3 = 2.815D29 / (FREQ * FREQ * FREQ)
+  FREQ3 = 2.815D29 / (FREQ * FREQ * FREQ)
 
   do J = 1, NRHOX
     ! High-n dissolved levels (n >= 5 to infinity), GFACTOR = 2
@@ -8770,33 +9533,131 @@ SUBROUTINE MG1OP
 
 END SUBROUTINE MG1OP
 
-!=======================================================================
-! AL1OP: Al I bound-free opacity
-!=======================================================================
+!==========================================================================
+! SUBROUTINE AL1OP
+!
+! Al I bound-free photoionization opacity.
+!
+! Full multi-level version matching atlas7lib.for.  Computes opacity
+! from 10 energy levels of neutral aluminum, all ionizing to the
+! Al II 3s² ¹S ground state (ELIM = 48278.37 cm⁻¹):
+!
+!   Level 1 (BAL1 idx 9): 4f ²F   E=41319.377  g=14  threshold  6958.993
+!   Level 2 (BAL1 idx 8): 5p ²P   E=40275.903  g= 6  threshold  8002.467
+!   Level 3 (BAL1 idx 7): 4d ²D   E=38932.139  g=10  threshold  9346.231
+!   Level 4 (BAL1 idx 6): 5s ²S   E=37689.413  g= 2  threshold 10588.957
+!   Level 5 (BAL1 idx 5): 4p ²P   E=32960.363  g= 6  threshold 15318.007
+!   Level 6 (BAL1 idx 4): 3d ²D   E=32436.241  g=10  threshold 15842.129
+!   Level 7 (BAL1 idx 2): 4s ²S   E=25347.756  g= 2  threshold 22930.614
+!   Level 8 (BAL1 idx 1): 3p ²P₃/₂ E=  112.061 g= 4  threshold 48166.309
+!   Level 9 (BAL1 idx 1): 3p ²P₁/₂ E=    0.000 g= 2  threshold 48278.370
+!   Level 10(BAL1 idx 3): P2 ⁴P   E=29097.110  g=12  threshold 55903.260
+!
+! In LTE (all departure coefficients = 1), the stimulated emission
+! correction simplifies to STIM(J) = 1 - exp(-hν/kT).
+!
+! Note: Level 1 (4f ²F) has cross-section X=0 in the Kurucz data,
+! so it contributes nothing.  It is retained for structural fidelity.
+!==========================================================================
 
-FUNCTION AL1OP(J)
+SUBROUTINE AL1OP
 
   implicit none
-  integer, intent(in) :: J
-  real*8 :: AL1OP
 
-  ! Al I bound-free cross-section times partition function
-  ! 3s^2 3p ground configuration, two fine-structure levels:
-  !   2P_1/2 at 0 cm^-1 (g=2), 2P_3/2 at 112.061 cm^-1 (g=4)
-  real*8, parameter :: ELIM = 48278.37D0  ! ionization limit (cm^-1)
+  integer, parameter :: NLEV = 10
+
+  ! Threshold wavenumbers (cm⁻¹) for each level
+  real*8, parameter :: THR(NLEV) = (/ &
+     6958.993D0,  8002.467D0,  9346.231D0, 10588.957D0, 15318.007D0, &
+    15842.129D0, 22930.614D0, 48166.309D0, 48278.370D0, 55903.260D0 /)
+
+  ! Level energies (cm⁻¹)
+  real*8, parameter :: ELEV(NLEV) = (/ &
+    41319.377D0, 40275.903D0, 38932.139D0, 37689.413D0, 32960.363D0, &
+    32436.241D0, 25347.756D0,   112.061D0,     0.000D0, 29097.110D0 /)
+
+  ! Statistical weights
+  real*8, parameter :: GLEV(NLEV) = (/ &
+    14.0D0,  6.0D0, 10.0D0,  2.0D0,  6.0D0, &
+    10.0D0,  2.0D0,  4.0D0,  2.0D0, 12.0D0 /)
+
+  real*8  :: H, S, A, X
+  integer :: J, N
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING AL1OP'
 
-  AL1OP = 0.0D0
-  ! 3s2 3p 2P_3/2 threshold
-  if (WAVENO < (ELIM - 112.061D0)) return
-  AL1OP = 6.5D-17 * ((ELIM - 112.061D0) / WAVENO)**5 * 4.0D0
-  ! 3s2 3p 2P_1/2 threshold
-  if (WAVENO < ELIM) return
-  AL1OP = AL1OP + 6.5D-17 * (ELIM / WAVENO)**5 * 2.0D0
+  do J = 1, NRHOX
+    H = 1.0D-30
+    S = 0.0D0
+
+    levels: do
+      ! Level 1: 4f ²F (X=0, no contribution — retained for fidelity)
+      if (WAVENO < THR(1)) exit levels
+      ! X = 0, so A = 0, skip
+
+      ! Level 2: 5p ²P
+      if (WAVENO < THR(2)) exit levels
+      X = 50.0D-18 * (THR(2) / WAVENO)**3
+      A = X * GLEV(2) * EXP(-ELEV(2) * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! Level 3: 4d ²D
+      if (WAVENO < THR(3)) exit levels
+      X = 50.0D-18 * (THR(3) / WAVENO)**3
+      A = X * GLEV(3) * EXP(-ELEV(3) * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! Level 4: 5s ²S
+      if (WAVENO < THR(4)) exit levels
+      X = 56.7D-18 * (THR(4) / WAVENO)**1.9D0
+      A = X * GLEV(4) * EXP(-ELEV(4) * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! Level 5: 4p ²P
+      if (WAVENO < THR(5)) exit levels
+      X = 14.5D-18 * THR(5) / WAVENO
+      A = X * GLEV(5) * EXP(-ELEV(5) * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! Level 6: 3d ²D
+      if (WAVENO < THR(6)) exit levels
+      X = 47.0D-18 * (THR(6) / WAVENO)**1.83D0
+      A = X * GLEV(6) * EXP(-ELEV(6) * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! Level 7: 4s ²S
+      if (WAVENO < THR(7)) exit levels
+      X = 10.0D-18 * (THR(7) / WAVENO)**2
+      A = X * GLEV(7) * EXP(-ELEV(7) * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! Level 8: 3p ²P₃/₂ (ground fine-structure)
+      if (WAVENO < THR(8)) exit levels
+      X = 65.0D-18 * (THR(8) / WAVENO)**5
+      A = X * GLEV(8) * EXP(-ELEV(8) * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! Level 9: 3p ²P₁/₂ (ground state) — same cross-section formula
+      if (WAVENO < THR(9)) exit levels
+      A = X * GLEV(9) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      ! Level 10: P2 ⁴P (inner-shell)
+      if (WAVENO < THR(10)) exit levels
+      X = 10.0D-18 * (THR(10) / WAVENO)**2
+      A = X * GLEV(10) * EXP(-ELEV(10) * HCKT(J)) * STIM(J)
+      H = H + A;  S = S + A * BNU(J)
+
+      exit levels
+    end do levels
+
+    if (H > 0.0D0) SAL1(J) = S / H
+    AAL1(J) = H * XNFP(J, 91) / RHO(J)
+  end do
+
   return
 
-END FUNCTION AL1OP
+END SUBROUTINE AL1OP
 
 !==========================================================================
 ! SUBROUTINE SI1OP
@@ -8889,7 +9750,7 @@ SUBROUTINE SI1OP
 
   Z = 1.0D0
   FREQ3 = 2.815D29 / FREQ / FREQ / FREQ * Z**4
-  WAVENO = FREQ / 2.99792458D10
+  WAVENO = FREQ / CLIGHT
 
   do I = 1, NLEV
     X(I) = 0.0D0
@@ -9171,37 +10032,39 @@ SUBROUTINE SI1OP
 
 END SUBROUTINE SI1OP
 
-!=======================================================================
-! FE1OP: Fe I bound-free photoionization cross-section
+!==========================================================================
+! SUBROUTINE FE1OP
 !
-! Cross-section × partition function for neutral iron. 48 levels
-! with empirical cross-section fits: Lorentzian-like profile
-! σ = 3×10⁻¹⁸ / [1 + ((ν₀+3000-ν)/ν₀/0.1)⁴] for ν > ν₀, where
-! ν₀ is the threshold wavenumber for each level. Only contributes
-! above 21000 cm⁻¹ (λ < 4762 Å).
+! Fe I bound-free photoionization opacity.
 !
-! Temperature-dependent Boltzmann factors and frequency-dependent
-! cross-sections are separately cached.
-!=======================================================================
+! Full multi-level version matching atlas7lib.for.  Sums opacity from
+! 48 energy levels of neutral iron using Fano-profile cross-sections:
+!
+!   σ(ν) = 3×10⁻¹⁸ / [1 + ((ν₀+3000-ν) / (ν₀×0.1))⁴]
+!
+! where ν₀ = WNO(i) is the threshold wavenumber for each level.
+! Only contributes above 21000 cm⁻¹ (λ < 4762 Å).
+!
+! The source function SFE1 uses a fudge factor from the Si I ground
+! state population (BSI1(J,1) in F77).  In LTE, SFE1 = BNU.
+!==========================================================================
 
-FUNCTION FE1OP(J)
+SUBROUTINE FE1OP
 
   implicit none
-  integer, intent(in) :: J
-  real*8 :: FE1OP
 
   integer, parameter :: NLEV = 48
 
   real*8, parameter :: G(48) = (/ &
-    25.D0, 35.D0, 21.D0, 15.D0, 9.D0, 35.D0, 33.D0, 21.D0, &
-    27.D0, 49.D0, 9.D0, 21.D0, 27.D0, 9.D0, 9.D0, 25.D0, &
-    33.D0, 15.D0, 35.D0, 3.D0, 5.D0, 11.D0, 15.D0, 13.D0, &
-    15.D0, 9.D0, 21.D0, 15.D0, 21.D0, 25.D0, 35.D0, 9.D0, &
-    5.D0, 45.D0, 27.D0, 21.D0, 15.D0, 21.D0, 15.D0, 25.D0, &
-    21.D0, 35.D0, 5.D0, 15.D0, 45.D0, 35.D0, 55.D0, 25.D0 /)
+    25.D0, 35.D0, 21.D0, 15.D0,  9.D0, 35.D0, 33.D0, 21.D0, &
+    27.D0, 49.D0,  9.D0, 21.D0, 27.D0,  9.D0,  9.D0, 25.D0, &
+    33.D0, 15.D0, 35.D0,  3.D0,  5.D0, 11.D0, 15.D0, 13.D0, &
+    15.D0,  9.D0, 21.D0, 15.D0, 21.D0, 25.D0, 35.D0,  9.D0, &
+     5.D0, 45.D0, 27.D0, 21.D0, 15.D0, 21.D0, 15.D0, 25.D0, &
+    21.D0, 35.D0,  5.D0, 15.D0, 45.D0, 35.D0, 55.D0, 25.D0 /)
 
   real*8, parameter :: E(48) = (/ &
-    500.D0, 7500.D0, 12500.D0, 17500.D0, 19000.D0, 19500.D0, &
+      500.D0,  7500.D0, 12500.D0, 17500.D0, 19000.D0, 19500.D0, &
     19500.D0, 21000.D0, 22000.D0, 23000.D0, 23000.D0, 24000.D0, &
     24000.D0, 24500.D0, 24500.D0, 26000.D0, 26500.D0, 26500.D0, &
     27000.D0, 27500.D0, 28500.D0, 29000.D0, 29500.D0, 29500.D0, &
@@ -9220,49 +10083,38 @@ FUNCTION FE1OP(J)
     27000.D0, 54000.D0, 27500.D0, 24000.D0, 47000.D0, 23000.D0, &
     44000.D0, 42000.D0, 42000.D0, 21000.D0, 42000.D0, 42000.D0 /)
 
-  real*8, save :: BOLT(48, kw), XSECT(48)
-  real*8, save :: FREQ1 = 0.0D0
-  integer, save :: ITEMP1 = 0
-  integer :: I, K
-  real*8  :: WVNO
+  real*8  :: XSECT
+  integer :: I, J
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING FE1OP'
 
-  ! Recompute Boltzmann factors when temperature changes
-  if (ITEMP /= ITEMP1) then
-    ITEMP1 = ITEMP
-    do K = 1, NRHOX
-      do I = 1, NLEV
-        BOLT(I, K) = G(I) * exp(-E(I) * 2.99792458D10 * HKT(K))
-      end do
-    end do
-  end if
-
-  ! Recompute cross-sections when frequency changes
-  if (FREQ /= FREQ1) then
-    FREQ1 = FREQ
-    WVNO = FREQ / 2.99792458D10
-    if (WVNO >= 21000.0D0) then
-      do I = 1, NLEV
-        XSECT(I) = 0.0D0
-        if (WNO(I) < WVNO) then
-          XSECT(I) = 3.D-18 / (1.0D0 + ((WNO(I) + 3000.0D0 - WVNO) &
-                   / WNO(I) / 0.1D0)**4)
-        end if
-      end do
-    end if
-  end if
-
-  ! Sum over levels
-  FE1OP = 0.0D0
-  WVNO = FREQ / 2.99792458D10
-  if (WVNO < 21000.0D0) return
-  do I = 1, NLEV
-    FE1OP = FE1OP + XSECT(I) * BOLT(I, J)
+  ! Zero output
+  do J = 1, NRHOX
+    AFE1(J) = 0.0D0
   end do
+
+  ! No contribution below 21000 cm⁻¹
+  if (WAVENO < 21000.0D0) return
+
+  ! Sum over all 48 levels
+  do I = 1, NLEV
+    if (WNO(I) > WAVENO) cycle
+    XSECT = 3.0D-18 / (1.0D0 + ((WNO(I) + 3000.0D0 - WAVENO) &
+          / WNO(I) / 0.1D0)**4)
+    do J = 1, NRHOX
+      AFE1(J) = AFE1(J) + XSECT * G(I) * EXP(-E(I) * HCKT(J))
+    end do
+  end do
+
+  ! Apply population, stimulated emission, and density factors
+  do J = 1, NRHOX
+    AFE1(J) = AFE1(J) * STIM(J) * XNFP(J, 351) / RHO(J)
+    SFE1(J) = BNU(J)
+  end do
+
   return
 
-END FUNCTION FE1OP
+END SUBROUTINE FE1OP
 
 !=========================================================================
 ! FUNCTION CHOP(J)
@@ -9332,7 +10184,11 @@ FUNCTION CHOP(J)
 
   ! --- Load cross-section table from file on first call ---
   if (.not. CROSSCH_LOADED) then
-    open(unit=89, file=trim(DATADIR)//'crossch.dat', status='OLD', action='READ', err=901)
+    open(unit=89, file=trim(DATADIR)//'crossch.dat', status='OLD', action='READ', iostat=IT_XSEC)
+    if (IT_XSEC /= 0) then
+      write(6, '(A)') ' CHOP: ERROR opening ' // trim(DATADIR) // 'crossch.dat'
+      stop 'CHOP: crossch.dat not found'
+    end if
     read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')  ! skip header
     read(89, '(A)') ; read(89, '(A)')                     ! skip header
     do JJ = 1, 105
@@ -9340,10 +10196,6 @@ FUNCTION CHOP(J)
     end do
     close(89)
     CROSSCH_LOADED = .true.
-    go to 902
-901 write(6, '(A)') ' CHOP: ERROR opening ' // trim(DATADIR) // 'crossch.dat'
-    stop 'CHOP: crossch.dat not found'
-902 continue
   end if
 
   CHOP = 0.0D0
@@ -9459,7 +10311,11 @@ FUNCTION OHOP(J)
 
   ! --- Load cross-section table from file on first call ---
   if (.not. CROSSOH_LOADED) then
-    open(unit=89, file=trim(DATADIR)//'crossoh.dat', status='OLD', action='READ', err=901)
+    open(unit=89, file=trim(DATADIR)//'crossoh.dat', status='OLD', action='READ', iostat=IT_XSEC)
+    if (IT_XSEC /= 0) then
+      write(6, '(A)') ' OHOP: ERROR opening ' // trim(DATADIR) // 'crossoh.dat'
+      stop 'OHOP: crossoh.dat not found'
+    end if
     read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')  ! skip header
     read(89, '(A)') ; read(89, '(A)')                     ! skip header
     do JJ = 1, 130
@@ -9467,10 +10323,6 @@ FUNCTION OHOP(J)
     end do
     close(89)
     CROSSOH_LOADED = .true.
-    go to 902
-901 write(6, '(A)') ' OHOP: ERROR opening ' // trim(DATADIR) // 'crossoh.dat'
-    stop 'OHOP: crossoh.dat not found'
-902 continue
   end if
 
   OHOP = 0.0D0
@@ -9919,7 +10771,7 @@ FUNCTION O1OP(J)
   ! Recompute cross-section only when frequency changes
   if (FREQ /= FREQ1) then
     X911 = 0.0D0
-    if (FREQ >= 3.28805D15) X911 = SEATON(3.28805D15, 2.94D-18, 1.0D0, 2.66D0)
+    if (FREQ >= FREQ_RYDH) X911 = SEATON(FREQ_RYDH, 2.94D-18, 1.0D0, 2.66D0)
     FREQ1 = FREQ
   end if
 
@@ -10018,28 +10870,30 @@ SUBROUTINE MG2OP
 
   !---------------------------------------------------------------------
   ! Compute cross-sections at the current frequency
-  ! NOTE: Thresholds are not monotonic, so each level is tested
-  ! sequentially with GO TO 30 on failure (skips all remaining).
-  ! This preserves the original cascade behavior.
   !---------------------------------------------------------------------
   X(:) = 0.0D0
 
-  ! Levels 1-13: hydrogenic via XKARZAS
-  do I = 1, 13
-    if (WAVENO < ELIM - ELEV(I)) go to 30
-    ZEFF2 = NPRE(I) / RYD * (ELIM - ELEV(I))
-    X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
-  end do
+  levels: do
 
-  ! Level 14: 3s 2S ground state — non-hydrogenic power-law fit
-  if (WAVENO < ELIM - ELEV(14)) go to 30
-  RATIO = (ELIM - ELEV(14)) / WAVENO
-  X(14) = 0.14D-18 * (6.700D0 * RATIO**4 - 5.700D0 * RATIO**5)
+    ! Levels 1-13: hydrogenic via XKARZAS
+    do I = 1, 13
+      if (WAVENO < ELIM - ELEV(I)) exit levels
+      ZEFF2 = NPRE(I) / RYD * (ELIM - ELEV(I))
+      X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
+    end do
+
+    ! Level 14: 3s 2S ground state — non-hydrogenic power-law fit
+    if (WAVENO < ELIM - ELEV(14)) exit levels
+    RATIO = (ELIM - ELEV(14)) / WAVENO
+    X(14) = 0.14D-18 * (6.700D0 * RATIO**4 - 5.700D0 * RATIO**5)
+
+    exit levels
+  end do levels
 
   !---------------------------------------------------------------------
   ! Assemble opacity over depth: levels + dissolved high-n contribution
   !---------------------------------------------------------------------
-   30 FREQ3 = 2.815D29 / (FREQ * FREQ * FREQ) * Z4
+  FREQ3 = 2.815D29 / (FREQ * FREQ * FREQ) * Z4
 
   do J = 1, NRHOX
     ! Dissolved levels: n >= 8 to infinity
@@ -10191,7 +11045,7 @@ SUBROUTINE SI2OP
     ! Build temperature grid
     do K = 1, NTGRID
       TTAB = 10.0D0**(3.48D0 + K * 0.02D0)
-      HCKTTAB(K) = 6.6256D-27 * 2.99792458D10 / 1.38054D-16 / TTAB
+      HCKTTAB(K) = HCK / TTAB
       BOLT3s2(K) = exp(-ELIMLEV(1) * HCKTTAB(K))
       BOLT3s3p(K) = exp(-ELIMLEV(12) * HCKTTAB(K))
       do I = 1, 44
@@ -10202,7 +11056,7 @@ SUBROUTINE SI2OP
     ! Build opacity table: loop over wavenumber grid
     do NU = 1, NWGRID
       WNOTAB = dble(NU) * 1000.0D0
-      FREQTAB = WNOTAB * 2.99792458D10
+      FREQTAB = WNOTAB * CLIGHT
       FREQ3 = 2.815D29 / FREQTAB / FREQTAB / FREQTAB * Z**4
 
       do I = 1, 46
@@ -10381,7 +11235,7 @@ SUBROUTINE HOTOP
   integer, parameter :: NUM = 60    ! number of bound-free edges
   integer, parameter :: NPAR = 7    ! parameters per edge
 
-  real*8, parameter :: FF_COEF = 3.6919D8  ! free-free coefficient
+  ! COEFF_FF replaced by COEFF_FF from mod_constants
 
   ! --- Edge parameters (read from file on first call) ---
   ! A(1:7,I): freq0, sigma0, s, n_power, g_stat, E_exc, species_id
@@ -10437,7 +11291,7 @@ SUBROUTINE HOTOP
             * (XNF(J,26) + XNF(J,33) + XNF(J,41) + XNF(J,60) &
              + XNF(J,83) + XNF(J,110) + XNF(J,141) + XNF(J,356))
 
-    AHOT(J) = FREE * FF_COEF / (FREQ * FREQ * FREQ) * XNE(J) / sqrt(T(J))
+    AHOT(J) = FREE * COEFF_FF / (FREQ * FREQ * FREQ) * XNE(J) / sqrt(T(J))
   end do
 
   !---------------------------------------------------------------------
@@ -10491,7 +11345,7 @@ SUBROUTINE ELECOP
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING ELECOP'
   ! Thomson electron scattering: sigma_T = 0.6653e-24 cm^2
   do J = 1, NRHOX
-    SIGEL(J) = 0.6653D-24 * XNE(J) / RHO(J)
+    SIGEL(J) = SIGMA_THOMSON * XNE(J) / RHO(J)
   end do
   return
 
@@ -10539,7 +11393,7 @@ SUBROUTINE H2RAOP
   end if
 
   ! Rayleigh cross-section capped at H₂ dissociation threshold
-  W = 2.99792458D18 / min(FREQ, 2.922D15)
+  W = CLIGHT_ANG / min(FREQ, 2.922D15)
   WW = W**2
   SIG = (8.14D-13 + 1.28D-6 / WW + 1.61D0 / (WW * WW)) / (WW * WW)
   do J = 1, NRHOX
@@ -10564,40 +11418,64 @@ END SUBROUTINE H2RAOP
 ! upper levels M around the level nearest to the current frequency.
 ! Each transition uses Stark-broadened profiles from STARK(N,M,J).
 !
-! When the nearest upper level exceeds MLAST (the Stark dissolution
-! limit, where lines merge into the continuum), the contribution is
-! replaced by the Coulomb continuum cross-section via COULX.
+! Each upper level M is weighted by its occupation probability w_M
+! from the Hummer & Mihalas (1988) formalism, which smoothly
+! transitions levels from fully bound (w=1) to fully dissolved (w=0)
+! based on the Holtsmark microfield distribution.  This replaces the
+! former sharp cutoff at MLAST = 1100 / N_e^(2/15) from the
+! Inglis-Teller formula.
 !
-! MLAST(J) = 1100 / n_e^(2/15): maximum resolvable upper level.
+! The dissolved fraction (1 - w_M) of each level's opacity is handled
+! by HOP's pseudo-continuum loop (Kramers bound-free extrapolated to
+! all frequencies), not by HLINOP.  This avoids mixing continuum
+! opacity into the line opacity array (AHLINE), which would distort
+! line cores.
+!
+! Note: this is distinct from the merged-continuum tapering used in
+! SYNTHE's compute_line_opacity, which retains the empirical
+! Inglis-Teller formula with a larger coefficient (1600 vs 1100)
+! because the tapering serves a different purpose (opacity accounting
+! near series limits, not level dissolution).
 !
 ! Requires external functions: STARK(N,M,J), COULX(N,freq,Z)
+!
+! References:
+!   Hummer, D.G. & Mihalas, D. 1988, ApJ 331, 794
+!   Inglis, D.R. & Teller, E. 1939, ApJ 90, 439 (predecessor)
 !=========================================================================
 
 SUBROUTINE HLINOP
 
   implicit none
 
-  real*8, parameter :: NU_LYMAN = 3.28805D15   ! Lyman limit frequency (Hz)
+  real*8, parameter :: NU_LYMAN = FREQ_RYDH   ! Lyman limit frequency (Hz)
+
+  ! Maximum level for occupation probability computation.
+  ! Beyond this, w_n is effectively 0 for any stellar density.
+  integer, parameter :: NMAX_OCC = 80
 
   ! --- Persistent state ---
-  real*8,  save :: BOLT(kw, 4)    ! Boltzmann × population for n=1..4
-  integer, save :: MLAST(kw)      ! Stark dissolution limit per depth
+  real*8,  save :: BOLT(kw, 4)            ! Boltzmann × population for n=1..4
+  real*8,  save :: W_OCC(kw, NMAX_OCC)    ! occupation probabilities per depth
   integer, save :: ITEMP1 = 0
 
   ! --- Local variables ---
-  real*8  :: H, S, A, BHYDJM
+  real*8  :: H, S, A, BHYDJM, w_m
   integer :: J, N, M, M1, M2, MFREQ
-
-  ! --- External functions ---
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HLINOP'
 
   !---------------------------------------------------------------------
-  ! Recompute Boltzmann factors and dissolution limit when T changes
+  ! Recompute Boltzmann factors and occupation probabilities when T changes
   !---------------------------------------------------------------------
   if (ITEMP /= ITEMP1) then
     do J = 1, NRHOX
-      MLAST(J) = int(1100.0D0 / XNE(J)**0.133333333D0)
+      ! Occupation probabilities for levels 2..NMAX_OCC
+      W_OCC(J, 1) = 1.0D0
+      do N = 2, NMAX_OCC
+        W_OCC(J, N) = occupation_prob(N, XNE(J))
+      end do
+      ! Boltzmann factors for lower levels 1..4
       do N = 1, 4
         BOLT(J, N) = exp(-(13.595D0 - 13.595D0 / dble(N)**2) / TKEV(J)) &
                    * 2.0D0 * dble(N)**2 * BHYD(J, N) * XNFP(J, 1) / RHO(J)
@@ -10636,35 +11514,54 @@ SUBROUTINE HLINOP
     S = 0.0D0
 
     if (M1 > 6) then
-      ! High upper levels: check Stark dissolution limit
-      if (M1 > MLAST(J)) then
-        ! Lines dissolved into continuum — use Coulomb cross-section
-        AHLINE(J) = COULX(N, 3.28806D15 / dble(N)**2, 1.0D0) &
-                  * (1.0D0 - EHVKT(J) / BHYD(J, N)) * BOLT(J, N)
-        SHLINE(J) = BNU(J) * STIM(J) / (BHYD(J, N) - EHVKT(J))
+      ! High upper levels: check if effectively dissolved
+      if (M1 <= NMAX_OCC) then
+        if (W_OCC(J, M1) < 1.0D-3) then
+          ! Fully dissolved: no line opacity.
+          ! The continuum opacity is provided by HOP's pseudo-continuum.
+          AHLINE(J) = 0.0D0
+          SHLINE(J) = BNU(J)
+          cycle
+        end if
+      else
+        ! Beyond tabulated range: fully dissolved
+        AHLINE(J) = 0.0D0
+        SHLINE(J) = BNU(J)
         cycle
       end if
       M1 = M1 - 1
       M2 = M2 + 3
       ! Special case: add Paschen-alpha (3->4) if computing Brackett (N=4)
       if (N >= 4 .and. M1 <= 8) then
-        H = STARK(3, 4, J) * (1.0D0 - EHVKT(J) * BHYD(J, 4) / BHYD(J, 3)) * BOLT(J, 3)
+        H = STARK_MMM(3, 4, J) * (1.0D0 - EHVKT(J) * BHYD(J, 4) / BHYD(J, 3)) * BOLT(J, 3)
         S = H * BNU(J) * STIM(J) / (BHYD(J, 3) / BHYD(J, 4) - EHVKT(J))
       end if
     end if
 
-    ! Sum over upper levels in window
+    ! Sum over upper levels in window, weighted by occupation probability.
+    ! Only the surviving fraction w_m contributes as line opacity.
+    ! The dissolved fraction (1 - w_m) is handled by HOP's pseudo-continuum.
     do M = M1, M2
       BHYDJM = 1.0D0
       if (M <= 6) BHYDJM = BHYD(J, M)
-      ! Assuming FREQ approximately equals FREQ_NM
-      A = STARK(N, M, J) * (1.0D0 - EHVKT(J) * BHYDJM / BHYD(J, N)) * BOLT(J, N)
+
+      ! Occupation probability weight for upper level
+      w_m = 1.0D0
+      if (M >= 2 .and. M <= NMAX_OCC) w_m = W_OCC(J, M)
+      if (M > NMAX_OCC) w_m = 0.0D0
+
+      ! Line opacity (surviving fraction only)
+      A = w_m * STARK_MMM(N, M, J) * (1.0D0 - EHVKT(J) * BHYDJM / BHYD(J, N)) * BOLT(J, N)
       H = H + A
       S = S + A * BNU(J) * STIM(J) / (BHYD(J, N) / BHYDJM - EHVKT(J))
     end do
 
     AHLINE(J) = H
-    SHLINE(J) = S / H
+    if (H > 0.0D0) then
+      SHLINE(J) = S / H
+    else
+      SHLINE(J) = BNU(J)
+    end if
   end do
 
   return
@@ -10719,9 +11616,8 @@ FUNCTION STARK(N, M, J)
     .8163D0,  .1788D0,  .05985D0,  .03189D0,  .01762D0, &
     .01196D0, .007825D0, .005882D0, .004233D0, .003375D0 /), shape(FSTARK))
 
-  real*8, parameter :: RYD = 3.28805D15       ! Rydberg frequency (Hz)
-  real*8, parameter :: CLIGHT = 2.99792458D18 ! speed of light (A/s)
-  real*8, parameter :: PI = 3.14159265358979D0
+  real*8, parameter :: RYD = FREQ_RYDH       ! Rydberg frequency (Hz)
+  ! PI from mod_constants; CLIGHT_ANG replaces local CLIGHT (Å·Hz)
   real*8, parameter :: A0 = 0.0265384D0       ! profile normalization constant
 
   ! --- Persistent state ---
@@ -10778,14 +11674,14 @@ FUNCTION STARK(N, M, J)
   !---------------------------------------------------------------------
   FREQNM = RYD * (1.0D0 / NN - 1.0D0 / MM)
   DEL = abs(FREQ - FREQNM)
-  DBETA = CLIGHT / FREQNM**2 / F0(J) / KNM
+  DBETA = CLIGHT_ANG / FREQNM**2 / F0(J) / KNM
   BETA = DBETA * DEL
 
   !---------------------------------------------------------------------
   ! Quasistatic ion + impact electron broadening
   !---------------------------------------------------------------------
   Y1 = MM * DEL * HKT(J) / 2.0D0
-  Y2 = (PI**2 / 2.0D0 / A0 / 2.99792458D10) * DEL**2 / XNE(J)
+  Y2 = (PI**2 / 2.0D0 / A0 / CLIGHT) * DEL**2 / XNE(J)
   QSTAT = 1.5D0 + 0.5D0 * (Y1**2 - 1.384D0) / (Y1**2 + 1.384D0)
 
   IMPACT = 0.0D0
@@ -10829,6 +11725,414 @@ contains
 END FUNCTION STARK
 
 
+!=======================================================================
+! SUBROUTINE INIT_STARK_TABLES
+!
+! Read preprocessed Stehlé MMM hydrogen Stark broadening tables from
+! binary data files.  Called once at startup.
+!
+! The data files are produced by the Python preprocessor
+! (preprocess_stehle.py) from the original CDS VI/98A tables
+! (Stehlé & Hutcheon 1999) and the Brackett tables from
+! Stehlé & Fouquet (2010).
+!
+! Each file contains area-normalized Stark profiles I(Δα) for one
+! hydrogen series (Lyman, Balmer, Paschen, or Brackett) on a grid
+! of (electron density, temperature, reduced detuning Δα).
+!
+! References:
+!   Stehlé, C. & Hutcheon, R. 1999, A&AS 140, 93
+!   Stehlé, C. & Fouquet, S. 2010, Int. J. Spectrosc. 2010, 506346
+!=======================================================================
+
+SUBROUTINE INIT_STARK_TABLES
+
+  implicit none
+
+  character(len=256) :: filepath
+  character(len=*), parameter :: SERIES_FILES(4) = &
+    (/ 'stehle_lyman.bin   ', 'stehle_balmer.bin  ', &
+       'stehle_paschen.bin ', 'stehle_brackett.bin' /)
+  integer :: iseries, iu, n_lower, n_upper_min, n_upper_max
+  integer :: n_dens, n_temps, n_dalpha, n_trans, ios
+  integer :: rec_len
+
+  if (IDEBUG == 1) write(6,'(A)') ' RUNNING INIT_STARK_TABLES'
+
+  do iseries = 1, NSTARK_SERIES
+
+    ! Build file path
+    filepath = trim(DATADIR) // '/' // trim(SERIES_FILES(iseries))
+
+    ! Try to open the file
+    iu = 200 + iseries
+    open(iu, file=trim(filepath), status='old', form='unformatted', &
+         access='sequential', iostat=ios)
+    if (ios /= 0) then
+      write(6,'(A,A)') '  INIT_STARK_TABLES: file not found: ', trim(filepath)
+      STEHLE_DATA(iseries)%loaded = .false.
+      cycle
+    end if
+
+    ! Record 1: dimensions
+    read(iu) n_lower, n_upper_min, n_upper_max, n_dens, n_temps, n_dalpha
+    n_trans = n_upper_max - n_upper_min + 1
+
+    STEHLE_DATA(iseries)%n_lower     = n_lower
+    STEHLE_DATA(iseries)%n_upper_min = n_upper_min
+    STEHLE_DATA(iseries)%n_upper_max = n_upper_max
+    STEHLE_DATA(iseries)%n_transitions = n_trans
+    STEHLE_DATA(iseries)%n_dens      = n_dens
+
+    ! Record 2: density grid
+    read(iu) STEHLE_DATA(iseries)%density_grid(1:n_dens)
+
+    ! Record 3: temperature grid
+    read(iu) STEHLE_DATA(iseries)%temp_grid(1:n_temps)
+
+    ! Record 4: log Δα grid
+    read(iu) STEHLE_DATA(iseries)%log_dalpha_grid(1:n_dalpha)
+
+    ! Records 5-6: per-transition metadata
+    allocate(STEHLE_DATA(iseries)%max_dens_idx(n_trans))
+    allocate(STEHLE_DATA(iseries)%k_alpha(n_trans))
+    read(iu) STEHLE_DATA(iseries)%max_dens_idx(1:n_trans)
+    read(iu) STEHLE_DATA(iseries)%k_alpha(1:n_trans)
+
+    ! Record 7: profile array
+    allocate(STEHLE_DATA(iseries)%profiles(n_dalpha, n_temps, n_dens, n_trans))
+    read(iu) STEHLE_DATA(iseries)%profiles
+
+    close(iu)
+    STEHLE_DATA(iseries)%loaded = .true.
+
+  end do
+
+  STEHLE_TABLES_LOADED = .true.
+
+END SUBROUTINE INIT_STARK_TABLES
+
+
+!=======================================================================
+! FUNCTION hydrogen_f_value(N, M)
+!
+! Exact hydrogen oscillator strength f_{N→M} for bound-bound
+! absorption.  Uses tabulated values for low transitions and the
+! Kramers approximation with empirical correction for higher ones.
+!
+! These are the TRUE oscillator strengths (not FSTARK from the old
+! Kurucz profile code, which uses a different normalization).
+!=======================================================================
+
+FUNCTION hydrogen_f_value(N, M)
+
+  implicit none
+
+  integer, intent(in) :: N, M
+  real*8 :: hydrogen_f_value
+
+  ! Tabulated gf = g_n × f_{N→M} for hydrogen
+  ! Source: NIST Atomic Spectra Database (Wiese et al.)
+  ! g_n = 2N²
+  real*8, parameter :: GF_LYMAN(29) = (/ &
+    0.8324D0, 0.1580D0, 0.05798D0, 0.02787D0, 0.01551D0, &
+    0.009466D0, 0.006158D0, 0.004220D0, 0.003014D0, 0.002225D0, &
+    0.001688D0, 0.001312D0, 0.001038D0, 0.000835D0, 0.000681D0, &
+    0.000562D0, 0.000469D0, 0.000395D0, 0.000336D0, 0.000288D0, &
+    0.000249D0, 0.000216D0, 0.000189D0, 0.000166D0, 0.000146D0, &
+    0.000129D0, 0.000115D0, 0.000103D0, 0.000092D0 /)
+
+  real*8, parameter :: GF_BALMER(28) = (/ &
+    5.126D0, 0.9543D0, 0.3571D0, 0.1770D0, 0.1023D0, &
+    0.06497D0, 0.04394D0, 0.03104D0, 0.02270D0, 0.01708D0, &
+    0.01314D0, 0.01028D0, 0.00818D0, 0.00659D0, 0.00537D0, &
+    0.00443D0, 0.00369D0, 0.00310D0, 0.00263D0, 0.00225D0, &
+    0.00194D0, 0.00168D0, 0.00146D0, 0.00128D0, 0.00113D0, &
+    0.00100D0, 0.000889D0, 0.000793D0 /)
+
+  real*8, parameter :: GF_PASCHEN(27) = (/ &
+    15.16D0, 2.715D0, 1.001D0, 0.4937D0, 0.2850D0, &
+    0.1813D0, 0.1232D0, 0.08804D0, 0.06526D0, 0.04975D0, &
+    0.03882D0, 0.03089D0, 0.02498D0, 0.02050D0, 0.01703D0, &
+    0.01430D0, 0.01212D0, 0.01036D0, 0.00893D0, 0.00775D0, &
+    0.00677D0, 0.00595D0, 0.00526D0, 0.00467D0, 0.00416D0, &
+    0.00373D0, 0.00335D0 /)
+
+  real*8, parameter :: GF_BRACKETT(3) = (/ &
+    33.22D0, 5.731D0, 2.092D0 /)
+
+  integer :: idx
+  real*8  :: gf, xn, xm
+
+  xn = dble(N)
+  xm = dble(M)
+
+  if (M <= N) then
+    hydrogen_f_value = 0.0D0
+    return
+  end if
+
+  idx = M - N  ! for Lyman: idx = M-1; for Balmer: idx = M-2; etc.
+
+  if (N == 1 .and. idx <= 29) then
+    gf = GF_LYMAN(idx)
+  else if (N == 2 .and. idx <= 28) then
+    gf = GF_BALMER(idx)
+  else if (N == 3 .and. idx <= 27) then
+    gf = GF_PASCHEN(idx)
+  else if (N == 4 .and. idx <= 3) then
+    gf = GF_BRACKETT(idx)
+  else
+    ! Kramers approximation with empirical correction for higher n
+    ! gf ≈ 1.96 × n^2 / (m^3 × (1/n^2 - 1/m^2)^3) × correction
+    ! The correction factor accounts for the Gaunt factor
+    gf = 1.9603D0 * xn**2 / (xm**3 * (1.0D0/xn**2 - 1.0D0/xm**2)**3)
+    ! Apply empirical scale to match exact values at table boundary
+    gf = gf * 0.80D0  ! approximate average Gaunt factor
+  end if
+
+  hydrogen_f_value = gf / (2.0D0 * xn**2)
+
+END FUNCTION hydrogen_f_value
+
+
+!=======================================================================
+! FUNCTION STARK_MMM(N, M, J)
+!
+! Stark-broadened hydrogen line cross-section from Stehlé MMM tables.
+!
+! Returns the same quantity as the old STARK(N,M,J) function: the
+! line absorption cross-section σ(ν) at the current frequency FREQ
+! for the hydrogen transition N → M at depth point J.
+!
+! Uses trilinear interpolation in (log N_e, T, log Δα) on the
+! preprocessed Stehlé table grid.
+!
+! Falls back to the old analytic STARK function if:
+!   - Tables not loaded
+!   - Transition not in table range
+!   - Density or temperature outside grid
+!
+! References:
+!   Stehlé, C. & Hutcheon, R. 1999, A&AS 140, 93
+!   Stehlé, C. & Fouquet, S. 2010, Int. J. Spectrosc. 2010, 506346
+!=======================================================================
+
+FUNCTION STARK_MMM(N, M, J)
+
+  implicit none
+
+  integer, intent(in) :: N, M, J
+  real*8 :: STARK_MMM
+
+  ! Physical constants
+  real*8, parameter :: A0 = 0.0265384D0         ! π e² / (m_e c) [cm²/s]
+  real*8, parameter :: CLIGHT_ANG = 2.9979D18   ! speed of light [Å/s]
+  real*8, parameter :: RYD_ANG = 911.7633455D0  ! Rydberg wavelength [Å]
+
+  ! Local variables
+  real*8  :: xn, xm, lambda0, freq_nm, del_freq
+  real*8  :: F0, dalpha, log_dalpha, log_ne
+  real*8  :: I_dalpha, f_nm
+  real*8  :: frac_d, frac_t, frac_a
+  real*8  :: v000, v001, v010, v011, v100, v101, v110, v111
+  real*8  :: v00, v01, v10, v11, v0, v1
+  integer :: iseries, itrans, id1, id2, it1, it2, ia1, ia2
+  integer :: nd, nt
+
+  type(stark_series_t), pointer :: S
+
+  ! ---------------------------------------------------------------
+  ! Lazy initialization: load tables on first call
+  ! ---------------------------------------------------------------
+  if (.not. STEHLE_TABLES_LOADED) then
+    call INIT_STARK_TABLES
+  end if
+
+  ! ---------------------------------------------------------------
+  ! Determine which series this transition belongs to
+  ! ---------------------------------------------------------------
+  if (N < 1 .or. N > 4 .or. M <= N) then
+    STARK_MMM = STARK(N, M, J)
+    return
+  end if
+  iseries = N
+
+  ! Check if tables are loaded for this series
+  if (.not. STEHLE_TABLES_LOADED .or. .not. STEHLE_DATA(iseries)%loaded) then
+    STARK_MMM = STARK(N, M, J)
+    return
+  end if
+
+  S => STEHLE_DATA(iseries)
+
+  ! Check if this transition is in the table range
+  if (M < S%n_upper_min .or. M > S%n_upper_max) then
+    STARK_MMM = STARK(N, M, J)
+    return
+  end if
+
+  itrans = M - S%n_upper_min + 1
+
+  ! ---------------------------------------------------------------
+  ! Compute detuning in Δα units
+  ! ---------------------------------------------------------------
+  xn = dble(N)
+  xm = dble(M)
+  lambda0 = RYD_ANG * (xn * xm)**2 / ((xm - xn) * (xm + xn))
+  freq_nm = CLIGHT_ANG / lambda0
+  del_freq = abs(FREQ - freq_nm)
+
+  F0 = 1.25D-9 * XNE(J)**(2.0D0/3.0D0)
+  if (F0 <= 0.0D0) then
+    STARK_MMM = STARK(N, M, J)
+    return
+  end if
+
+  ! Δα = Δλ / F0, and Δλ = λ₀²/c × Δν (for small Δλ)
+  dalpha = lambda0**2 / CLIGHT_ANG * del_freq / F0
+
+  ! ---------------------------------------------------------------
+  ! Check bounds and find bracketing indices
+  ! ---------------------------------------------------------------
+  nd = S%n_dens
+  nt = NSTARK_TEMPS
+
+  ! Density bounds
+  log_ne = LOG10(XNE(J))
+  if (XNE(J) < S%density_grid(1) * 0.5D0 .or. &
+      XNE(J) > S%density_grid(nd) * 2.0D0) then
+    STARK_MMM = STARK(N, M, J)
+    return
+  end if
+
+  ! Check Inglis-Teller limit for this transition
+  if (XNE(J) > S%density_grid(S%max_dens_idx(itrans)) * 2.0D0) then
+    STARK_MMM = STARK(N, M, J)
+    return
+  end if
+
+  ! Temperature bounds
+  if (T(J) < S%temp_grid(1) * 0.5D0 .or. &
+      T(J) > S%temp_grid(nt) * 2.0D0) then
+    STARK_MMM = STARK(N, M, J)
+    return
+  end if
+
+  ! ---------------------------------------------------------------
+  ! Find density bracket
+  ! ---------------------------------------------------------------
+  id1 = 1
+  do id1 = 1, nd - 1
+    if (XNE(J) <= S%density_grid(id1 + 1)) exit
+  end do
+  id1 = max(1, min(nd - 1, id1))
+  id2 = id1 + 1
+  frac_d = (log_ne - LOG10(S%density_grid(id1))) / &
+           (LOG10(S%density_grid(id2)) - LOG10(S%density_grid(id1)))
+  frac_d = max(0.0D0, min(1.0D0, frac_d))
+
+  ! ---------------------------------------------------------------
+  ! Find temperature bracket
+  ! ---------------------------------------------------------------
+  it1 = 1
+  do it1 = 1, nt - 1
+    if (T(J) <= S%temp_grid(it1 + 1)) exit
+  end do
+  it1 = max(1, min(nt - 1, it1))
+  it2 = it1 + 1
+  frac_t = (T(J) - S%temp_grid(it1)) / &
+           (S%temp_grid(it2) - S%temp_grid(it1))
+  frac_t = max(0.0D0, min(1.0D0, frac_t))
+
+  ! ---------------------------------------------------------------
+  ! Find Δα bracket (in log space)
+  ! ---------------------------------------------------------------
+  if (dalpha <= 0.0D0) then
+    ! At line centre: use first grid point value
+    log_dalpha = S%log_dalpha_grid(1)
+    ia1 = 1
+    ia2 = 1
+    frac_a = 0.0D0
+  else
+    log_dalpha = LOG10(dalpha)
+    if (log_dalpha <= S%log_dalpha_grid(1)) then
+      ia1 = 1
+      ia2 = 1
+      frac_a = 0.0D0
+    else if (log_dalpha >= S%log_dalpha_grid(NSTARK_DALPHA)) then
+      ! Beyond table: use asymptotic wing K_alpha / Δα^2.5
+      f_nm = hydrogen_f_value(N, M)
+      I_dalpha = S%k_alpha(itrans) / dalpha**2.5D0
+      STARK_MMM = A0 * f_nm * I_dalpha * lambda0**2 / (CLIGHT_ANG * F0)
+      return
+    else
+      ia1 = 1
+      do ia1 = 1, NSTARK_DALPHA - 1
+        if (log_dalpha <= S%log_dalpha_grid(ia1 + 1)) exit
+      end do
+      ia1 = max(1, min(NSTARK_DALPHA - 1, ia1))
+      ia2 = ia1 + 1
+      frac_a = (log_dalpha - S%log_dalpha_grid(ia1)) / &
+               (S%log_dalpha_grid(ia2) - S%log_dalpha_grid(ia1))
+      frac_a = max(0.0D0, min(1.0D0, frac_a))
+    end if
+  end if
+
+  ! ---------------------------------------------------------------
+  ! Trilinear interpolation in (density, temperature, Δα)
+  ! Interpolate in log(I) for better accuracy in the wings
+  ! ---------------------------------------------------------------
+  v000 = S%profiles(ia1, it1, id1, itrans)
+  v001 = S%profiles(ia2, it1, id1, itrans)
+  v010 = S%profiles(ia1, it2, id1, itrans)
+  v011 = S%profiles(ia2, it2, id1, itrans)
+  v100 = S%profiles(ia1, it1, id2, itrans)
+  v101 = S%profiles(ia2, it1, id2, itrans)
+  v110 = S%profiles(ia1, it2, id2, itrans)
+  v111 = S%profiles(ia2, it2, id2, itrans)
+
+  ! Guard against zero/negative values before taking log
+  if (v000 <= 0.0D0 .or. v001 <= 0.0D0 .or. &
+      v010 <= 0.0D0 .or. v011 <= 0.0D0 .or. &
+      v100 <= 0.0D0 .or. v101 <= 0.0D0 .or. &
+      v110 <= 0.0D0 .or. v111 <= 0.0D0) then
+    ! Linear interpolation fallback if any vertex is zero
+    v00 = v000 + frac_a * (v001 - v000)
+    v01 = v010 + frac_a * (v011 - v010)
+    v10 = v100 + frac_a * (v101 - v100)
+    v11 = v110 + frac_a * (v111 - v110)
+    v0 = v00 + frac_t * (v01 - v00)
+    v1 = v10 + frac_t * (v11 - v10)
+    I_dalpha = v0 + frac_d * (v1 - v0)
+  else
+    ! Log-space interpolation for better wing accuracy
+    v000 = LOG(v000); v001 = LOG(v001)
+    v010 = LOG(v010); v011 = LOG(v011)
+    v100 = LOG(v100); v101 = LOG(v101)
+    v110 = LOG(v110); v111 = LOG(v111)
+
+    v00 = v000 + frac_a * (v001 - v000)
+    v01 = v010 + frac_a * (v011 - v010)
+    v10 = v100 + frac_a * (v101 - v100)
+    v11 = v110 + frac_a * (v111 - v110)
+    v0 = v00 + frac_t * (v01 - v00)
+    v1 = v10 + frac_t * (v11 - v10)
+    I_dalpha = EXP(v0 + frac_d * (v1 - v0))
+  end if
+
+  I_dalpha = max(I_dalpha, 0.0D0)
+
+  ! ---------------------------------------------------------------
+  ! Convert I(Δα) to cross-section
+  !   σ = (πe²/m_ec) × f_nm × I(Δα) × λ₀² / (c × F₀)
+  ! ---------------------------------------------------------------
+  f_nm = hydrogen_f_value(N, M)
+  STARK_MMM = A0 * f_nm * I_dalpha * lambda0**2 / (CLIGHT_ANG * F0)
+
+END FUNCTION STARK_MMM
+
+
 !=========================================================================
 ! SUBROUTINE LINOP1
 !
@@ -10856,10 +12160,10 @@ SUBROUTINE LINOP1
 
   implicit none
 
-  ! Named constants
-  real*8, parameter :: CEN_PREFAC4 = 0.026538D0 / 1.77245D0 / 2.99792458D17
-  real*8, parameter :: FOURPI_C_INV = 1.0D0 / (12.5664D0 * 2.99792458D17)
-  real*8, parameter :: LORENTZ_PREFAC = 0.5642D0  ! 1/sqrt(pi)
+  ! Named constants (derived from mod_constants)
+  real*8, parameter :: CEN_PREFAC4 = 0.026538D0 / SQRTPI / CLIGHT_NM
+  real*8, parameter :: FOURPI_C_INV = 1.0D0 / (FOURPI * CLIGHT_NM)
+  real*8, parameter :: LORENTZ_PREFAC = INVSQRTPI
   real*8, parameter :: ADAMP_THRESH = 0.20D0
   integer, parameter :: MAX_WING = 100
 
@@ -11115,7 +12419,7 @@ SUBROUTINE XCONOP
   ! Source function = (sigma/pi) * T^4 (Stefan-Boltzmann)
   do J = 1, NRHOX
     AXCONT(J) = ROSSTAB(T(J), P(J), VTURB(J))
-    SXCONT(J) = 5.667D-5 / 12.5664D0 * T(J)**4 * 4.0D0
+    SXCONT(J) = SIGMA_SB / FOURPI * T(J)**4 * 4.0D0
   end do
   return
 
@@ -11210,6 +12514,7 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
   real*8 :: TANGLE, D, DDDDD, OLD, SUM_VAL
   integer :: J, JJ, K, KK, L, M, MAXJ, MAXJ1, MU, N1, NM1, NMJ, MDUMMY
   integer :: IFERR, IFNEG
+  integer :: output_mode
 
   if (IDEBUG == 1) write(6, '(A)') ' RUNNING JOSH'
 
@@ -11226,277 +12531,313 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
   MAXJ = 0
 
   !---------------------------------------------------------------------
-  ! No-scattering path: S_nu = S_bar
+  ! Solve radiative transfer. Output mode depends on IFSURF:
+  !   0 → full J, H, K solution
+  !   1 → surface flux H(1) only
+  !   2 → surface intensity SURFI(mu) via piecewise parabolic
+  ! The solver block exits early when the output mode is determined.
   !---------------------------------------------------------------------
-  if (IFSCAT == 0) then
-    do J = 1, NRHOX
-      SNU(J) = SNUBAR(J)
-    end do
-    if (IFSURF == 2) go to 70
-    MAXJ = MAP1(TAUNU, SNU, NRHOX, XTAU8, XS8, NXTAU)
-    do L = 1, NXTAU
-      XS(L) = XS8(L)
-    end do
-    if (IFSURF == 1) go to 60
-    do J = 1, NRHOX
-      ALPHA(J) = 0.0D0
-    end do
-  end if
+  output_mode = 0
 
-  !---------------------------------------------------------------------
-  ! Scattering solution on 51-point grid (Lambda iteration)
-  !---------------------------------------------------------------------
-  if (TAUNU(1) > XTAU8(NXTAU)) MAXJ = 1
-  if (MAXJ == 1) go to 401
+  solver: do   ! single-pass block for structured exit
 
-  MAXJ = MAP1(TAUNU, SNUBAR, NRHOX, XTAU8, XSBAR8, NXTAU)
-  MAXJ = MAP1(TAUNU, ALPHA, NRHOX, XTAU8, XALPHA8, NXTAU)
-
-  do L = 1, NXTAU
-    ! Clamp in case of bad interpolation
-    XALPHA8(L) = max(XALPHA8(L), 0.0D0)
-    XSBAR8(L)  = max(XSBAR8(L), 1.0D-38)
-    XALPHA(L) = XALPHA8(L)
-    XSBAR(L)  = XSBAR8(L)
-    ! Extrapolate if tau grid starts above model surface
-    if (XTAU8(L) < TAUNU(1)) then
-      XSBAR8(L) = max(SNUBAR(1), 1.0D-38)
-      XALPHA8(L) = max(ALPHA(1), 0.0D0)
-      XSBAR(L) = XSBAR8(L)
-      XALPHA(L) = XALPHA8(L)
+    !-------------------------------------------------------------------
+    ! No-scattering path: S_nu = S_bar
+    !-------------------------------------------------------------------
+    if (IFSCAT == 0) then
+      do J = 1, NRHOX
+        SNU(J) = SNUBAR(J)
+      end do
+      if (IFSURF == 2) then
+        output_mode = 70
+        exit solver
+      end if
+      MAXJ = MAP1(TAUNU, SNU, NRHOX, XTAU8, XS8, NXTAU)
+      do L = 1, NXTAU
+        XS(L) = XS8(L)
+      end do
+      if (IFSURF == 1) then
+        output_mode = 60
+        exit solver
+      end if
+      do J = 1, NRHOX
+        ALPHA(J) = 0.0D0
+      end do
     end if
-    XS(L) = XSBAR(L)
-    DIAG(L) = 1.0D0 - XALPHA(L) * COEFJ(L, L)
-    if (abs(DIAG(L)) < 1.0D-30) DIAG(L) = sign(1.0D-30, DIAG(L))
-    XSBAR(L) = (1.0D0 - XALPHA(L)) * XSBAR(L)
-  end do
 
-  ! Lambda iteration: Gauss-Seidel sweeps (max MAX_ITER iterations)
-  BLOCK
-    real*8  :: WORST_ERR
-    integer :: WORST_K
-    do L = 1, MAX_ITER
-      IFERR = 0
-      WORST_ERR = 0.0D0
-      WORST_K   = 0
-      K = NXTAU + 1
-      do KK = 1, NXTAU
-        K = K - 1
-        DELXS = 0.0D0
-        do M = 1, NXTAU
-          DELXS = DELXS + COEFJ(K, M) * XS(M)
-        end do
-        DELXS = (DELXS * XALPHA(K) + XSBAR(K) - XS(K)) / DIAG(K)
-        ERRORX = abs(DELXS / XS(K))
-        if (ERRORX > 0.00001D0) IFERR = 1
-        if (ERRORX > WORST_ERR) then
-          WORST_ERR = ERRORX
-          WORST_K   = K
+    !-------------------------------------------------------------------
+    ! Scattering solution on 51-point grid (Lambda iteration)
+    !-------------------------------------------------------------------
+    if (TAUNU(1) > XTAU8(NXTAU)) MAXJ = 1
+
+    if (MAXJ /= 1) then
+      MAXJ = MAP1(TAUNU, SNUBAR, NRHOX, XTAU8, XSBAR8, NXTAU)
+      MAXJ = MAP1(TAUNU, ALPHA, NRHOX, XTAU8, XALPHA8, NXTAU)
+
+      do L = 1, NXTAU
+        ! Clamp in case of bad interpolation
+        XALPHA8(L) = max(XALPHA8(L), 0.0D0)
+        XSBAR8(L)  = max(XSBAR8(L), 1.0D-38)
+        XALPHA(L) = XALPHA8(L)
+        XSBAR(L)  = XSBAR8(L)
+        ! Extrapolate if tau grid starts above model surface
+        if (XTAU8(L) < TAUNU(1)) then
+          XSBAR8(L) = max(SNUBAR(1), 1.0D-38)
+          XALPHA8(L) = max(ALPHA(1), 0.0D0)
+          XSBAR(L) = XSBAR8(L)
+          XALPHA(L) = XALPHA8(L)
         end if
-        XS(K) = max(XS(K) + DELXS, 1.0D-37)
+        XS(L) = XSBAR(L)
+        DIAG(L) = 1.0D0 - XALPHA(L) * COEFJ(L, L)
+        if (abs(DIAG(L)) < 1.0D-30) DIAG(L) = sign(1.0D-30, DIAG(L))
+        XSBAR(L) = (1.0D0 - XALPHA(L)) * XSBAR(L)
       end do
-      if (IFERR == 0) exit
-    end do
-    if (IFERR /= 0) &
-      write(6, '(A,I4,A,1PE12.4,A,I3,A,E9.2)') &
-        ' JOSH WARNING: Lambda iter not converged in ', MAX_ITER, &
-        ' sweeps  wave=', 2.99792458D17/FREQ, '  tau_pt=', WORST_K, '  err=', WORST_ERR
-  END BLOCK
 
-  ! Post-iteration dispatch
-  if (IFSURF == 1) go to 60
-  do M = 1, NXTAU
-    XS8(M) = XS(M)
-  end do
-  if (IFSURF == 2) go to 670
-  MDUMMY = MAP1(XTAU8, XS8, NXTAU, TAUNU, SNU, MAXJ)
-  if (MAXJ == NRHOX) go to 46
-
-  !---------------------------------------------------------------------
-  ! Deep atmosphere: variable Eddington factor on physical grid
-  !---------------------------------------------------------------------
-  401 MAXJ1 = MAXJ + 1
-  if (MAXJ == 1) MAXJ1 = 1
-  do J = MAXJ1, NRHOX
-    SNU(J) = SNUBAR(J)
-  end do
-  M = max(MAXJ - 1, 1)
-  NM1 = NRHOX - M + 1
-  NMJ = NRHOX - MAXJ + 1
-
-  ! Variable Eddington iteration (max MAX_ITER iterations)
-  do L = 1, MAX_ITER
-    ERROR = 0.0D0
-    IFNEG = 0
-
-    ! Safety check: negative SNU → reset to Planck function
-    do J = M, NRHOX
-      if (SNU(J) <= 0.0D0) then
-        IFNEG = 1
-        do JJ = M, NRHOX
-          SNUBAR(JJ) = BNU(JJ)
-          SNU(JJ) = BNU(JJ)
+      ! Lambda iteration: Gauss-Seidel sweeps (max MAX_ITER iterations)
+      BLOCK
+        real*8  :: WORST_ERR
+        integer :: WORST_K
+        do L = 1, MAX_ITER
+          IFERR = 0
+          WORST_ERR = 0.0D0
+          WORST_K   = 0
+          K = NXTAU + 1
+          do KK = 1, NXTAU
+            K = K - 1
+            DELXS = 0.0D0
+            do M = 1, NXTAU
+              DELXS = DELXS + COEFJ(K, M) * XS(M)
+            end do
+            DELXS = (DELXS * XALPHA(K) + XSBAR(K) - XS(K)) / DIAG(K)
+            ERRORX = abs(DELXS / XS(K))
+            if (ERRORX > 0.00001D0) IFERR = 1
+            if (ERRORX > WORST_ERR) then
+              WORST_ERR = ERRORX
+              WORST_K   = K
+            end if
+            XS(K) = max(XS(K) + DELXS, 1.0D-37)
+          end do
+          if (IFERR == 0) exit
         end do
-        exit
+        if (IFERR /= 0) &
+          write(6, '(A,I4,A,1PE12.4,A,I3,A,E9.2)') &
+            ' JOSH WARNING: Lambda iter not converged in ', MAX_ITER, &
+            ' sweeps  wave=', CLIGHT_NM/FREQ, '  tau_pt=', WORST_K, '  err=', WORST_ERR
+      END BLOCK
+
+      ! Post-iteration dispatch
+      if (IFSURF == 1) then
+        output_mode = 60
+        exit solver
       end if
-    end do
+      do M = 1, NXTAU
+        XS8(M) = XS(M)
+      end do
+      if (IFSURF == 2) then
+        output_mode = 670
+        exit solver
+      end if
+      MDUMMY = MAP1(XTAU8, XS8, NXTAU, TAUNU, SNU, MAXJ)
+    end if  ! MAXJ /= 1
 
-    call DERIV(TAUNU(M), SNU(M), HNU(M), NM1)
+    !-------------------------------------------------------------------
+    ! Deep atmosphere: variable Eddington factor on physical grid
+    !-------------------------------------------------------------------
+    if (MAXJ /= NRHOX) then
+      MAXJ1 = MAXJ + 1
+      if (MAXJ == 1) MAXJ1 = 1
+      do J = MAXJ1, NRHOX
+        SNU(J) = SNUBAR(J)
+      end do
+      M = max(MAXJ - 1, 1)
+      NM1 = NRHOX - M + 1
+      NMJ = NRHOX - MAXJ + 1
 
-    ! Safety check: negative HNU → reset to Planck function
-    do J = M, NRHOX
-      if (HNU(J) <= 0.0D0) then
-        IFNEG = 1
-        do JJ = M, NRHOX
-          SNUBAR(JJ) = BNU(JJ)
-          SNU(JJ) = BNU(JJ)
+      ! Variable Eddington iteration (max MAX_ITER iterations)
+      do L = 1, MAX_ITER
+        ERROR = 0.0D0
+        IFNEG = 0
+
+        ! Safety check: negative SNU → reset to Planck function
+        do J = M, NRHOX
+          if (SNU(J) <= 0.0D0) then
+            IFNEG = 1
+            do JJ = M, NRHOX
+              SNUBAR(JJ) = BNU(JJ)
+              SNU(JJ) = BNU(JJ)
+            end do
+            exit
+          end if
         end do
+
         call DERIV(TAUNU(M), SNU(M), HNU(M), NM1)
-        exit
-      end if
-    end do
 
-    do J = M, NRHOX
-      HNU(J) = HNU(J) / 3.0D0
-    end do
-    call DERIV(TAUNU(MAXJ), HNU(MAXJ), JMINS(MAXJ), NMJ)
-    do J = MAXJ1, NRHOX
-      if (IFNEG == 1) JMINS(J) = 0.0D0
-      JNU(J) = JMINS(J) + SNU(J)
-      SNEW = (1.0D0 - ALPHA(J)) * SNUBAR(J) + ALPHA(J) * JNU(J)
-      ERROR = abs(SNEW - SNU(J)) / SNEW + ERROR
-      SNU(J) = SNEW
-    end do
-    if (ERROR < 0.00001D0) exit
-  end do
-  if (ERROR >= 0.00001D0) &
-    write(6, '(A,I4,A,1PE10.3,A,0PF10.3)') ' JOSH WARNING: Eddington iteration did not converge in ', &
-      MAX_ITER, ' sweeps, err=', ERROR, '  wave=', 2.99792458D17/FREQ
+        ! Safety check: negative HNU → reset to Planck function
+        do J = M, NRHOX
+          if (HNU(J) <= 0.0D0) then
+            IFNEG = 1
+            do JJ = M, NRHOX
+              SNUBAR(JJ) = BNU(JJ)
+              SNU(JJ) = BNU(JJ)
+            end do
+            call DERIV(TAUNU(M), SNU(M), HNU(M), NM1)
+            exit
+          end if
+        end do
 
-  !---------------------------------------------------------------------
-  ! Post-solution dispatch
-  !---------------------------------------------------------------------
-  46 if (IFSURF == 2) go to 70
-  if (MAXJ == 1) then
-    KNU(1) = JNU(1) / 3.0D0
-    return
-  end if
-
-  !---------------------------------------------------------------------
-  ! Compute J, H, K from 51-point operator matrices
-  !---------------------------------------------------------------------
-  do L = 1, NXTAU
-    XJS(L) = -XS(L)
-    do M = 1, NXTAU
-      XJS(L) = XJS(L) + COEFJ(L, M) * XS(M)
-    end do
-    XJS8(L) = XJS(L)
-    XH(L) = 0.0D0
-    do M = 1, NXTAU
-      XH(L) = XH(L) + COEFH(L, M) * XS(M)
-    end do
-    XH8(L) = XH(L)
-  end do
-  MDUMMY = MAP1(XTAU8, XJS8, NXTAU, TAUNU, JMINS, MAXJ)
-  MDUMMY = MAP1(XTAU8, XH8, NXTAU, TAUNU, HNU, MAXJ)
-  XK = 0.0D0
-  do M = 1, NXTAU
-    XK = XK + CK_J(M) * XS(M)
-  end do
-  KNU(1) = XK
-  do J = 1, MAXJ
-    SNU(J)  = max(SNU(J), 1.0D-38)
-    JNU(J) = max(JMINS(J) + SNU(J), 1.0D-38)
-  end do
-  return
-
-  !---------------------------------------------------------------------
-  ! Surface flux: H(1) = sum of CH_J weights times source function
-  !---------------------------------------------------------------------
-  60 XH(1) = 0.0D0
-  do M = 1, NXTAU
-    XH(1) = XH(1) + CH_J(M) * XS(M)
-  end do
-  HNU(1) = XH(1)
-  return
-
-  !---------------------------------------------------------------------
-  ! Surface intensity from 51-point grid (piecewise parabolic)
-  !---------------------------------------------------------------------
-  670 call PARCOE(XS8, XTAU8, A, B, C, NXTAU)
-  N1 = NXTAU - 1
-  do J = 1, NXTAU
-    CTWO(J) = C(J) * 2.0D0
-    B2CT(J) = B(J) + CTWO(J) * XTAU8(J)
-  end do
-  do J = 1, N1
-    B2CT1(J) = B(J) + CTWO(J) * XTAU8(J+1)
-  end do
-  ! Compute and cache exp(-tau/mu) if not yet done
-  if (EXTAU(1,1) == 0.0D0) then
-    do MU = 1, NMU
-      do J = 1, NXTAU
-        TANGLE = XTAU8(J) / ANGLE(MU)
-        if (TANGLE < 300.0D0) EXTAU(J, MU) = exp(-TANGLE)
+        do J = M, NRHOX
+          HNU(J) = HNU(J) / 3.0D0
+        end do
+        call DERIV(TAUNU(MAXJ), HNU(MAXJ), JMINS(MAXJ), NMJ)
+        do J = MAXJ1, NRHOX
+          if (IFNEG == 1) JMINS(J) = 0.0D0
+          JNU(J) = JMINS(J) + SNU(J)
+          SNEW = (1.0D0 - ALPHA(J)) * SNUBAR(J) + ALPHA(J) * JNU(J)
+          ERROR = abs(SNEW - SNU(J)) / SNEW + ERROR
+          SNU(J) = SNEW
+        end do
+        if (ERROR < 0.00001D0) exit
       end do
+      if (ERROR >= 0.00001D0) &
+        write(6, '(A,I4,A,1PE10.3,A,0PF10.3)') ' JOSH WARNING: Eddington iteration did not converge in ', &
+          MAX_ITER, ' sweeps, err=', ERROR, '  wave=', CLIGHT_NM/FREQ
+    end if  ! MAXJ /= NRHOX
+
+    !-------------------------------------------------------------------
+    ! Post-solution dispatch
+    !-------------------------------------------------------------------
+    if (IFSURF == 2) then
+      output_mode = 70
+      exit solver
+    end if
+    if (MAXJ == 1) then
+      KNU(1) = JNU(1) / 3.0D0
+      return
+    end if
+
+    ! Compute J, H, K from 51-point operator matrices
+    do L = 1, NXTAU
+      XJS(L) = -XS(L)
+      do M = 1, NXTAU
+        XJS(L) = XJS(L) + COEFJ(L, M) * XS(M)
+      end do
+      XJS8(L) = XJS(L)
+      XH(L) = 0.0D0
+      do M = 1, NXTAU
+        XH(L) = XH(L) + COEFH(L, M) * XS(M)
+      end do
+      XH8(L) = XH(L)
     end do
-  end if
-  do MU = 1, NMU
-    SURFI(MU) = 0.0D0
-    do J = 1, N1
-      if (EXTAU(J, MU) == 0.0D0) exit
-      SURFI(MU) = SURFI(MU) &
-        + EXTAU(J, MU) * (XS8(J) + (B2CT(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU)) &
-        - EXTAU(J+1, MU) * (XS8(J+1) + (B2CT1(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU))
+    MDUMMY = MAP1(XTAU8, XJS8, NXTAU, TAUNU, JMINS, MAXJ)
+    MDUMMY = MAP1(XTAU8, XH8, NXTAU, TAUNU, HNU, MAXJ)
+    XK = 0.0D0
+    do M = 1, NXTAU
+      XK = XK + CK_J(M) * XS(M)
     end do
-    SURFI(MU) = SURFI(MU) &
-      + EXTAU(NXTAU, MU) * (XS8(NXTAU) + (B2CT(NXTAU) + CTWO(NXTAU)*ANGLE(MU)) * ANGLE(MU))
-  end do
-  return
+    KNU(1) = XK
+    do J = 1, MAXJ
+      SNU(J)  = max(SNU(J), 1.0D-38)
+      JNU(J) = max(JMINS(J) + SNU(J), 1.0D-38)
+    end do
+    return
+
+  end do solver
 
   !---------------------------------------------------------------------
-  ! Surface intensity from physical grid (piecewise parabolic)
+  ! Output mode dispatch (reached via EXIT solver)
   !---------------------------------------------------------------------
-  70 call PARCOE(SNU, TAUNU, A, B, C, NRHOX)
-  N1 = NRHOX - 1
-  do J = 1, NRHOX
-    CTWO(J) = C(J) * 2.0D0
-    B2CT(J) = B(J) + CTWO(J) * TAUNU(J)
-  end do
-  do J = 1, N1
-    B2CT1(J) = B(J) + CTWO(J) * TAUNU(J+1)
-  end do
-  do MU = 1, NMU
-    OLD = 1.0D0
-    SUM_VAL = 0.0D0
-    do J = 1, N1
-      TANGLE = TAUNU(J+1) / ANGLE(MU)
-      EXNEW = exp(-TANGLE)
-      D = TANGLE - TAUNU(J) / ANGLE(MU)
-      if (D > 0.03D0) then
-        SUM_VAL = SUM_VAL &
-          + OLD * (SNU(J) + (B2CT(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU)) &
-          - EXNEW * (SNU(J+1) + (B2CT1(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU))
-        if (TANGLE >= 300.0D0) then
-          SURFI(MU) = SUM_VAL
-          go to 75
-        end if
-      else
-        ! Small optical depth increment: Taylor expansion for stability
-        DDDDD = 1.0D0
-        if (D > 0.001D0) &
-          DDDDD = ((((D/9.0D0 + 1.0D0)*D/8.0D0 + 1.0D0)*D/7.0D0 + 1.0D0) &
-                    *D/6.0D0 + 1.0D0)*D/5.0D0 + 1.0D0
-        SUM_VAL = SUM_VAL + EXNEW * (SNU(J) + (SNU(J) + B2CT(J)*ANGLE(MU) &
-          + (SNU(J) + (B2CT(J) + CTWO(J)*ANGLE(MU))*ANGLE(MU)) &
-          * (DDDDD*D/4.0D0 + 1.0D0)*D/3.0D0)*D/2.0D0) * D
-      end if
-      OLD = EXNEW
+  select case (output_mode)
+
+  case (60)
+    ! Surface flux: H(1) = sum of CH_J weights times source function
+    XH(1) = 0.0D0
+    do M = 1, NXTAU
+      XH(1) = XH(1) + CH_J(M) * XS(M)
     end do
-    SURFI(MU) = SUM_VAL &
-      + OLD * (SNU(NRHOX) + (B2CT(NRHOX) + CTWO(NRHOX)*ANGLE(MU)) * ANGLE(MU))
-    75 continue
-  end do
+    HNU(1) = XH(1)
+
+  case (670)
+    ! Surface intensity from 51-point grid (piecewise parabolic)
+    call PARCOE(XS8, XTAU8, A, B, C, NXTAU)
+    N1 = NXTAU - 1
+    do J = 1, NXTAU
+      CTWO(J) = C(J) * 2.0D0
+      B2CT(J) = B(J) + CTWO(J) * XTAU8(J)
+    end do
+    do J = 1, N1
+      B2CT1(J) = B(J) + CTWO(J) * XTAU8(J+1)
+    end do
+    ! Compute and cache exp(-tau/mu) if not yet done
+    if (EXTAU(1,1) == 0.0D0) then
+      do MU = 1, NMU
+        do J = 1, NXTAU
+          TANGLE = XTAU8(J) / ANGLE(MU)
+          if (TANGLE < 300.0D0) EXTAU(J, MU) = exp(-TANGLE)
+        end do
+      end do
+    end if
+    do MU = 1, NMU
+      SURFI(MU) = 0.0D0
+      do J = 1, N1
+        if (EXTAU(J, MU) == 0.0D0) exit
+        SURFI(MU) = SURFI(MU) &
+          + EXTAU(J, MU) * (XS8(J) + (B2CT(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU)) &
+          - EXTAU(J+1, MU) * (XS8(J+1) + (B2CT1(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU))
+      end do
+      SURFI(MU) = SURFI(MU) &
+        + EXTAU(NXTAU, MU) * (XS8(NXTAU) + (B2CT(NXTAU) + CTWO(NXTAU)*ANGLE(MU)) * ANGLE(MU))
+    end do
+
+  case (70)
+    ! Surface intensity from physical grid (piecewise parabolic)
+    call PARCOE(SNU, TAUNU, A, B, C, NRHOX)
+    N1 = NRHOX - 1
+    do J = 1, NRHOX
+      CTWO(J) = C(J) * 2.0D0
+      B2CT(J) = B(J) + CTWO(J) * TAUNU(J)
+    end do
+    do J = 1, N1
+      B2CT1(J) = B(J) + CTWO(J) * TAUNU(J+1)
+    end do
+    do MU = 1, NMU
+      OLD = 1.0D0
+      SUM_VAL = 0.0D0
+      BLOCK
+        logical :: tangle_done
+        tangle_done = .false.
+        do J = 1, N1
+          TANGLE = TAUNU(J+1) / ANGLE(MU)
+          EXNEW = exp(-TANGLE)
+          D = TANGLE - TAUNU(J) / ANGLE(MU)
+          if (D > 0.03D0) then
+            SUM_VAL = SUM_VAL &
+              + OLD * (SNU(J) + (B2CT(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU)) &
+              - EXNEW * (SNU(J+1) + (B2CT1(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU))
+            if (TANGLE >= 300.0D0) then
+              SURFI(MU) = SUM_VAL
+              tangle_done = .true.
+              exit
+            end if
+          else
+            ! Small optical depth increment: Taylor expansion for stability
+            DDDDD = 1.0D0
+            if (D > 0.001D0) &
+              DDDDD = ((((D/9.0D0 + 1.0D0)*D/8.0D0 + 1.0D0)*D/7.0D0 + 1.0D0) &
+                        *D/6.0D0 + 1.0D0)*D/5.0D0 + 1.0D0
+            SUM_VAL = SUM_VAL + EXNEW * (SNU(J) + (SNU(J) + B2CT(J)*ANGLE(MU) &
+              + (SNU(J) + (B2CT(J) + CTWO(J)*ANGLE(MU))*ANGLE(MU)) &
+              * (DDDDD*D/4.0D0 + 1.0D0)*D/3.0D0)*D/2.0D0) * D
+          end if
+          OLD = EXNEW
+        end do
+        if (.not. tangle_done) then
+          SURFI(MU) = SUM_VAL &
+            + OLD * (SNU(NRHOX) + (B2CT(NRHOX) + CTWO(NRHOX)*ANGLE(MU)) * ANGLE(MU))
+        end if
+      END BLOCK
+    end do
+
+  end select
   return
 
 END SUBROUTINE JOSH
@@ -11840,7 +13181,7 @@ SUBROUTINE KAPCONT
   do NU = 1, NWAVE
     WAVE = WAVETAB(NU)
     IWAVETAB(NU) = int(log(WAVE) / RATIOLG + 0.5D0)
-    FREQ = 2.99792458D17 / WAVETAB(NU)
+    FREQ = CLIGHT_NM / WAVETAB(NU)
     WAVENO = 1.0D7 / WAVETAB(NU)
     FREQLG = log(FREQ)
 
@@ -11851,7 +13192,7 @@ SUBROUTINE KAPCONT
       SCONT(J) = 0.0D0
       EHVKT(J) = exp(-FREQ * HKT(J))
       STIM(J) = 1.0D0 - EHVKT(J)
-      BNU(J) = 1.47439D-2 * FREQ15**3 * EHVKT(J) / STIM(J)
+      BNU(J) = BNU_PREFAC * FREQ15**3 * EHVKT(J) / STIM(J)
     end do
 
     ! Compute continuous opacity
@@ -11927,7 +13268,7 @@ SUBROUTINE SELECTLINES
   integer, parameter :: MAX_LINES = 500000000  ! max lines per database
 
   ! Line-center opacity prefactor: pi*e^2/(m_e*c*sqrt(pi)) in CGS
-  real*8, parameter :: CEN_PREFAC = 0.026538D0 / 1.77245D0
+  real*8, parameter :: CEN_PREFAC = 0.026538D0 / SQRTPI
 
   ! Molecular species codes (for DIATOMICS database lookup)
   integer, parameter :: MOLCODES(NMOL) = (/ &
@@ -12011,7 +13352,7 @@ SUBROUTINE SELECTLINES
 
     ! Advance wavelength bin to match line position
     do while (IWL >= IWAVETAB(NU))
-      FREQ = 2.99792458D17 / WAVETAB(NU)
+      FREQ = CLIGHT_NM / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -12057,7 +13398,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = 2.99792458D17 / WAVETAB(NU)
+      FREQ = CLIGHT_NM / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -12099,7 +13440,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = 2.99792458D17 / WAVETAB(NU)
+      FREQ = CLIGHT_NM / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -12141,7 +13482,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = 2.99792458D17 / WAVETAB(NU)
+      FREQ = CLIGHT_NM / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -12206,7 +13547,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = 2.99792458D17 / WAVETAB(NU)
+      FREQ = CLIGHT_NM / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -12257,7 +13598,7 @@ SUBROUTINE SELECTLINES
     read(51, end=1881) IWL, IELO, IGFLOG
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = 2.99792458D17 / WAVETAB(NU)
+      FREQ = CLIGHT_NM / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       ! Radiation damping from frequency
       GAMMAR = 2.474D-22 * FREQ**2 * 0.001
@@ -12321,7 +13662,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = 2.99792458D17 / WAVETAB(NU)
+      FREQ = CLIGHT_NM / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -12671,7 +14012,7 @@ SUBROUTINE XLINOP
   real*4  :: ELO4, GF4, GAMMAR4, GAMMAS4, GAMMAW4
   integer*4 :: IFJ(kw+1)
   integer :: TYPE, NLAST
-  integer :: LINE, J, K, N, NU, IW, I, IV, NUCONT
+  integer :: LINE, J, K, N, NU, IW, I, IV, NUCONT, IOS_RD
   integer :: NBLO, NBUP, NCON, NELIONX, LIM
 
   if (IDEBUG == 1) write(6, '(A)') ' RUNNING XLINOP'
@@ -12711,7 +14052,7 @@ SUBROUTINE XLINOP
     EH(9) = 108324.720D0
     EH(10) = 108581.988D0
     do N = 11, 100
-      EH(N) = 109678.764D0 - 109677.576D0 / dble(N)**2
+      EH(N) = ELIM_HI - RYDBERG_H / dble(N)**2
     end do
 
     ! Hydrogen Boltzmann factors × number density
@@ -12732,8 +14073,9 @@ SUBROUTINE XLINOP
   IFJ(1) = 0    ! NOTE: was uninitialized in original code
 
   do LINE = 1, 500000
-    read(19, end=901) WLVAC, ELO4, GF4, NBLO, NBUP, NELION, TYPE, &
+    read(19, iostat=IOS_RD) WLVAC, ELO4, GF4, NBLO, NBUP, NELION, TYPE, &
                       NCON, NELIONX, GAMMAR4, GAMMAS4, GAMMAW4, IWL, LIM
+    if (IOS_RD /= 0) return   ! end-of-file or read error
     ELO = dble(ELO4)
     GF  = dble(GF4)
     GAMMAR = dble(GAMMAR4)
@@ -12745,7 +14087,7 @@ SUBROUTINE XLINOP
     ASHORE = GAMMAS
     BSHORE = GAMMAW
 
-    if (WLVAC > WAVESET(NUHI)) go to 901
+    if (WLVAC > WAVESET(NUHI)) return
     WLVAC4 = WLVAC
 
     ! Advance continuous opacity bin
@@ -12761,7 +14103,7 @@ SUBROUTINE XLINOP
     ! Advance frequency grid
     do while (WLVAC >= WAVESET(NU))
       NU = NU + 1
-      if (NU >= NUMNU) go to 901
+      if (NU >= NUMNU) return
     end do
 
     !-----------------------------------------------------------------
@@ -12935,7 +14277,7 @@ SUBROUTINE XLINOP
 
     case (1)
       ! AUTOIONIZING LINE — Fano profile, all depths
-      FRELIN = 2.99792458D17 / WLVAC
+      FRELIN = CLIGHT_NM / WLVAC
       do J = 1, NRHOX
         CENTER = BSHORE * G * XNFP(J, NELION) / RHO(J)
         if (CENTER < TABCONT(J, NUCONT)) cycle
@@ -12943,7 +14285,7 @@ SUBROUTINE XLINOP
         if (CENTER < TABCONT(J, NUCONT)) cycle
         ! Red wing
         do IW = NU, min(NU + MAX_WING, NUMNU)
-          EPSIL = 2.0D0 * (2.99792458D17 / WAVESET(IW) - FRELIN) / GAMMAR
+          EPSIL = 2.0D0 * (CLIGHT_NM / WAVESET(IW) - FRELIN) / GAMMAR
           CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0D0) / BSHORE
           XLINES(J, IW) = XLINES(J, IW) + CV
           if (CV < TABCONT(J, NUCONT)) exit
@@ -12952,7 +14294,7 @@ SUBROUTINE XLINOP
         do I = 1, MAX_WING
           IW = NU - I
           if (IW <= 0) exit
-          EPSIL = 2.0D0 * (2.99792458D17 / WAVESET(IW) - FRELIN) / GAMMAR
+          EPSIL = 2.0D0 * (CLIGHT_NM / WAVESET(IW) - FRELIN) / GAMMAR
           CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0D0) / BSHORE
           XLINES(J, IW) = XLINES(J, IW) + CV
           if (CV < TABCONT(J, NUCONT)) exit
@@ -12981,7 +14323,7 @@ SUBROUTINE XLINOP
     end select
   end do  ! LINE
 
-  901 return
+  return
 
 END SUBROUTINE XLINOP
 
@@ -13315,7 +14657,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     0.0008912D0, 0.02507D0,  0.223D0,  1.02D0 /), (/4,3/))
   real*8, parameter :: Y1WTM(2,2) = reshape((/ &
     1.D18, 1.D17, 1.D16, 1.D14 /), (/2,2/))
-  real*8, parameter :: RYDH = 3.2880515D15
+  ! RYDH (hydrogen Rydberg frequency) now FREQ_RYDH from mod_constants
 
   ! --- Fine structure for alpha lines (Δn=1) in freq × 10⁻⁷ ---
   real*8, parameter :: STALPH(34) = (/ &
@@ -13494,9 +14836,9 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     if (MMN <= 3) Y1WHT = 1.D14
     if (MMN <= 2 .and. N <= 2) Y1WHT = Y1WTM(N, MMN)
 
-    FREQNM = RYDH * GNM
-    DBETA = 2.99792458D18 / FREQNM**2 / XKNM
-    WAVENM = 2.99792458D18 / FREQNM
+    FREQNM = FREQ_RYDH * GNM
+    DBETA = CLIGHT_ANG / FREQNM**2 / XKNM
+    WAVENM = CLIGHT_ANG / FREQNM
     C1CON = XKNM / WAVENM * GNM * XM2MN2
     C2CON = (XKNM / WAVENM)**2
 
@@ -13505,7 +14847,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
 !     IF(N.NE.1)RADAMP=RADAMP+1.389E9/XN**4.53/(1.+5./XN2/XN)
     RADAMP = dble(ASUM(N)) + dble(ASUM(M))
     if (N == 1) RADAMP = dble(ASUMLYMAN(M))
-    RADAMP = RADAMP / 12.5664D0
+    RADAMP = RADAMP / FOURPI
     RADAMP = RADAMP / FREQNM
 
     ! Resonance broadening
@@ -13556,7 +14898,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
   ! ==================================================================
   DELstark = -10.0D0 * DELW / WAVENM * FREQNM
   WL = WAVENM + DELW * 10.0D0
-  FREQ4 = 2.99792458D18 / WL
+  FREQ4 = CLIGHT_ANG / WL
   DEL = abs(FREQ4 - FREQNM)
   WL = WL / 10.0D0   ! convert to nm
 
@@ -13611,18 +14953,18 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
       HWLOR = HWRES + HWVDW + HWRAD
       HHW = FREQNM * HWLOR
 
-      if (FREQ4 > (82259.105D0 - 4000.0D0) * 2.99792458D10) then
+      if (FREQ4 > (82259.105D0 - 4000.0D0) * CLIGHT) then
         ! Near center: enhanced resonance Lorentzian
         ! error found by John Lester 31jul2009
-        HPROFRES = HWRES * FREQNM / 3.14159D0 / (DEL**2 + HHW**2) &
-                 * 1.77245D0 * DOP
+        HPROFRES = HWRES * FREQNM / PI / (DEL**2 + HHW**2) &
+                 * SQRTPI * DOP
       else
         ! Far red wing: Allard & Koester (1992) H₂ satellite
         CUTOFF = 0.0D0
-        if (FREQ4 >= 50000.0D0 * 2.99792458D10) then
+        if (FREQ4 >= 50000.0D0 * CLIGHT) then
           ! Tabulated at 200 cm⁻¹ spacing
-          SPACING = 200.0D0 * 2.99792458D10
-          FREQ22000 = (82259.105D0 - 22000.0D0) * 2.99792458D10
+          SPACING = 200.0D0 * CLIGHT
+          FREQ22000 = (82259.105D0 - 22000.0D0) * CLIGHT
           if (FREQ4 < FREQ22000) then
             CUTOFF = dble(CUTOFFH2(2) - CUTOFFH2(1)) / SPACING &
                    * (FREQ4 - FREQ22000) + dble(CUTOFFH2(1))
@@ -13634,22 +14976,22 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
           end if
           XNFP4(J) = XNFP(J, 1)
           CUTOFF = (10.0D0**(CUTOFF - 14.0D0)) * XNFP4(J) * 2.0D0 &
-                 / 2.99792458D10
+                 / CLIGHT
         end if
-        HPROFRES = CUTOFF * 1.77245D0 * DOP
+        HPROFRES = CUTOFF * SQRTPI * DOP
       end if
 
       ! Radiative damping (cut off below Lyman edge to avoid double-counting
       ! with Rayleigh scattering in HRAYOP)
-      HPROFRAD = HWRAD * FREQNM / 3.14159D0 / (DEL**2 + HHW**2) &
-               * 1.77245D0 * DOP
+      HPROFRAD = HWRAD * FREQNM / PI / (DEL**2 + HHW**2) &
+               * SQRTPI * DOP
 !     CORRECTION TO LORENTZ PROFILE   ALLER P.164   NOT USED
 !     HPROFRAD=HPROFRAD*4.*FREQ**2/(FREQ**2+FREQNM**2)
       if (FREQ4 <= 2.463D15) HPROFRAD = 0.0D0
 
       ! Van der Waals (cut off below 60000 cm⁻¹ from line center)
-      HPROFVDW = HWVDW * FREQNM / 3.14159D0 / (DEL**2 + HHW**2) &
-               * 1.77245D0 * DOP
+      HPROFVDW = HWVDW * FREQNM / PI / (DEL**2 + HHW**2) &
+               * SQRTPI * DOP
       if (FREQ4 < 1.8D15) HPROFVDW = 0.0D0
 
       HPROFLOR = HPROFRES + HPROFRAD + HPROFVDW
@@ -13658,7 +15000,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     else
       ! === Non-Lyman-alpha: simple combined Lorentzian ===
       HHW = FREQNM * HWLOR
-      HPROFLOR = HHW / 3.14159D0 / (DEL**2 + HHW**2) * 1.77245D0 * DOP
+      HPROFLOR = HHW / PI / (DEL**2 + HHW**2) * SQRTPI * DOP
       HPROF4 = HPROF4 + HPROFLOR
     end if
 
@@ -13698,18 +15040,18 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     CUTOFF = 0.0D0
 
     ! H₂⁺ quasi-molecular satellite (Allard 1997)
-    if (FREQ4 >= (82259.105D0 - 20000.0D0) * 2.99792458D10) then
-      if (FREQ4 > (82259.105D0 - 4000.0D0) * 2.99792458D10) then
+    if (FREQ4 >= (82259.105D0 - 20000.0D0) * CLIGHT) then
+      if (FREQ4 > (82259.105D0 - 4000.0D0) * CLIGHT) then
         ! Near center: use ratio method
-        BETA4000 = 4000.0D0 * 2.99792458D10 / FO(J) * DBETA
+        BETA4000 = 4000.0D0 * CLIGHT / FO(J) * DBETA
         PRQSP4000 = STARK_PROFILE(BETA4000, PP(J), N, M) * 0.5D0 / FO(J) * DBETA
-        CUTOFF4000 = (10.0D0**(-11.07D0 - 14.0D0)) / 2.99792458D10 * XNF(J, 2)
+        CUTOFF4000 = (10.0D0**(-11.07D0 - 14.0D0)) / CLIGHT * XNF(J, 2)
         HPROF4 = HPROF4 + CUTOFF4000 / PRQSP4000 * PRQS / FO(J) * DBETA &
-               * 1.77245D0 * DOP
+               * SQRTPI * DOP
       else
         ! Interpolate H₂⁺ cutoff table (100 cm⁻¹ spacing)
-        FREQ15000 = (82259.105D0 - 15000.0D0) * 2.99792458D10
-        SPACING = 100.0D0 * 2.99792458D10
+        FREQ15000 = (82259.105D0 - 15000.0D0) * CLIGHT
+        SPACING = 100.0D0 * CLIGHT
         if (FREQ4 < FREQ15000) then
           CUTOFF = dble(CUTOFFH2PLUS(2) - CUTOFFH2PLUS(1)) / SPACING &
                  * (FREQ4 - FREQ15000) + dble(CUTOFFH2PLUS(1))
@@ -13719,20 +15061,20 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
           CUTOFF = dble(CUTOFFH2PLUS(ICUT+2) - CUTOFFH2PLUS(ICUT+1)) &
                  / SPACING * (FREQ4 - CUTFREQ) + dble(CUTOFFH2PLUS(ICUT+1))
         end if
-        CUTOFF = (10.0D0**(CUTOFF - 14.0D0)) / 2.99792458D10 * XNF(J, 2)
-        HPROF4 = HPROF4 + CUTOFF * 1.77245D0 * DOP
+        CUTOFF = (10.0D0**(CUTOFF - 14.0D0)) / CLIGHT * XNF(J, 2)
+        HPROF4 = HPROF4 + CUTOFF * SQRTPI * DOP
       end if
     end if
   end if
 
   ! Final Stark assembly
   F = 0.0D0
-  if (GAM > 0.0D0) F = GAM / 3.14159D0 / (GAM**2 + BETA**2)
+  if (GAM > 0.0D0) F = GAM / PI / (GAM**2 + BETA**2)
   P1 = (0.9D0 * Y1)**2
   FNS = (P1 + 0.03D0 * sqrt(Y1)) / (P1 + 1.0D0)
   ! Same normalization as Voigt function
   HPROF4 = HPROF4 + (PRQS * (1.0D0 + FNS) + F) / FO(J) * DBETA &
-         * 1.77245D0 * DOP
+         * SQRTPI * DOP
   return
 
 END FUNCTION HPROF4
@@ -14073,22 +15415,23 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
   LOW = 1
   if (POTLOW >= POTLO(1)) then
     do LOW = 2, NPOT
-      if (POTLOW < POTLO(LOW)) go to 35
+      if (POTLOW < POTLO(LOW)) exit
     end do
-    LOW = NPOT
+    if (LOW > NPOT) LOW = NPOT
   end if
 
-  ! Single-bin interpolation (POTLOW below first bin or above last)
-  PF = F * PFTAB(LOW, IT, ION, IELEM) &
-     + (1.0D0 - F) * PFTAB(LOW, IT-1, ION, IELEM)
-  return
-
-  ! Two-bin interpolation in potential lowering
-35 P = (log10(POTLOW) - POTLOLOG(LOW-1)) / 0.30103D0
-  PF = P * (F * PFTAB(LOW, IT, ION, IELEM) &
-          + (1.0D0 - F) * PFTAB(LOW, IT-1, ION, IELEM)) &
-     + (1.0D0 - P) * (F * PFTAB(LOW-1, IT, ION, IELEM) &
-          + (1.0D0 - F) * PFTAB(LOW-1, IT-1, ION, IELEM))
+  if (LOW > 1 .and. POTLOW >= POTLO(1) .and. POTLOW < POTLO(LOW)) then
+    ! Two-bin interpolation in potential lowering
+    P = (log10(POTLOW) - POTLOLOG(LOW-1)) / 0.30103D0
+    PF = P * (F * PFTAB(LOW, IT, ION, IELEM) &
+            + (1.0D0 - F) * PFTAB(LOW, IT-1, ION, IELEM)) &
+       + (1.0D0 - P) * (F * PFTAB(LOW-1, IT, ION, IELEM) &
+            + (1.0D0 - F) * PFTAB(LOW-1, IT-1, ION, IELEM))
+  else
+    ! Single-bin interpolation (POTLOW below first bin or above last)
+    PF = F * PFTAB(LOW, IT, ION, IELEM) &
+       + (1.0D0 - F) * PFTAB(LOW, IT-1, ION, IELEM)
+  end if
 
 END SUBROUTINE PFIRON
 
@@ -14112,7 +15455,7 @@ FUNCTION PFGROUND(NELION, T)
   real*8               :: PFGROUND
 
   ! Local constants
-  real*8, parameter :: HCK = 6.6256D-27 * 2.99792458D10 / 1.38054D-16
+  ! HCK now from mod_constants (updated to CODATA 2018)
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING PFGROUND'
 
@@ -14765,24 +16108,20 @@ FUNCTION EQUILH2(T)
 
   ! External function
 
-  ! Physical constants (CGS)
-  real*8, parameter :: h_planck = 6.6256D-27    ! Planck constant [erg·s]
-  real*8, parameter :: k_boltz  = 1.38054D-16   ! Boltzmann constant [erg/K]
-  real*8, parameter :: c_light  = 2.997925D10   ! speed of light [cm/s]
-  real*8, parameter :: m_H      = 1.008d0 * 1.660D-24  ! H atom mass [g]
-  real*8, parameter :: pi       = 3.14159265358979d0
+  ! Physical constants from mod_constants; only local spectroscopic data here
+  real*8, parameter :: m_H  = 1.008d0 * AMU        ! H atom mass [g]
 
   ! H2 dissociation energy
-  real*8, parameter :: D0_cm = 36118.11d0       ! D0(H2) [cm^-1]
-  real*8, parameter :: D0_over_kT_coeff = D0_cm * h_planck * c_light / k_boltz
-  !                                     = 51966.324 K  (D0/k)
+  real*8, parameter :: D0_cm = 36118.11d0           ! D0(H2) [cm^-1]
+  real*8, parameter :: D0_over_kT_coeff = D0_cm * HCK
+  !                                     = 51967.8 K  (D0/k)
 
   ! Translational partition function prefactor (T-independent part)
-  ! = 2^1.5 / 4 / (2*pi*m_H2*k/h^2)^1.5
-  ! where m_H2 = m_H (reduced mass for equal-mass dissociation products
-  ! cancels to give atomic H mass in the Saha-like expression)
+  ! = 2^1.5 / 4 / (2*pi*m_H*k/h^2)^1.5
+  ! where m_H appears because the reduced mass for equal-mass dissociation
+  ! products cancels to give the atomic H mass in the Saha-like expression.
   real*8, parameter :: trans_prefactor = 2.d0**1.5d0 / 4.d0 &
-    / (2.d0 * pi * m_H * k_boltz / h_planck**2)**1.5d0
+    / (2.d0 * PI * m_H * KBOL / HPLANCK**2)**1.5d0
 
   real*8 :: Q_H2
 
@@ -14793,6 +16132,104 @@ FUNCTION EQUILH2(T)
   EQUILH2 = Q_H2 * trans_prefactor / T**1.5d0 * EXP(D0_over_kT_coeff / T)
 
 END FUNCTION EQUILH2
+
+
+!=======================================================================
+! FUNCTION holtsmark_Q(beta)
+!
+! Holtsmark cumulative microfield distribution Q(beta).
+!
+! Returns the probability that the electric microfield strength
+! F < beta * F_0, where F_0 is the Holtsmark normal field strength.
+! Uses linear interpolation on the pre-tabulated Q_HOLTSMARK grid
+! (uniform in log10(beta), stored in mod_constants).
+!
+! For beta < 0.01: returns 0 (field always below critical → bound)
+! For beta > 50:   returns 1 (field always below critical → bound)
+!
+! Note on sign convention: large beta_crit means the critical field
+! is much larger than the typical field, so Q ~ 1 and the level
+! survives (is bound).  Small beta_crit means the level is dissolved.
+!
+! Reference: Holtsmark, J. 1919, Ann. Phys. 363, 577
+!=======================================================================
+
+FUNCTION holtsmark_Q(beta)
+
+  implicit none
+
+  real*8, intent(in) :: beta
+  real*8 :: holtsmark_Q
+
+  real*8  :: log_beta, idx_f, frac
+  integer :: idx
+
+  if (beta <= 0.01D0) then
+    holtsmark_Q = 0.0D0
+    return
+  end if
+  if (beta >= 50.0D0) then
+    holtsmark_Q = 1.0D0
+    return
+  end if
+
+  log_beta = LOG10(beta)
+  idx_f = (log_beta - LOG_BETA_MIN) / LOG_BETA_STEP
+  idx = INT(idx_f)
+  idx = MAX(0, MIN(NQ_HOLTSMARK - 2, idx))
+  frac = idx_f - DBLE(idx)
+
+  holtsmark_Q = Q_HOLTSMARK(idx + 1) &
+              + frac * (Q_HOLTSMARK(idx + 2) - Q_HOLTSMARK(idx + 1))
+
+END FUNCTION holtsmark_Q
+
+
+!=======================================================================
+! FUNCTION occupation_prob(n, xne)
+!
+! Occupation probability for hydrogen level n in the Hummer & Mihalas
+! (1988) formalism.
+!
+! Returns w_n = Q(beta_crit), where:
+!   beta_crit = BETA_COEFF_HM88 / (n^5 * N_e^(2/3))
+!   Q = Holtsmark cumulative microfield distribution
+!
+! w_n = 1 means the level is fully bound (low density or low n).
+! w_n = 0 means the level is fully dissolved (high density or high n).
+!
+! For hydrogen lines, the line opacity should be multiplied by w_n
+! for the upper level.  The "missing" opacity (1 - w_n) appears as
+! pseudo-continuum opacity (handled separately in HOP).
+!
+! Arguments:
+!   n   — principal quantum number (integer, >= 1)
+!   xne — electron number density [cm^-3]
+!
+! References:
+!   Hummer, D.G. & Mihalas, D. 1988, ApJ 331, 794
+!   Nayfonov, A. et al. 1999, ApJ 526, 451
+!=======================================================================
+
+FUNCTION occupation_prob(n, xne)
+
+  implicit none
+
+  integer, intent(in) :: n
+  real*8,  intent(in) :: xne
+  real*8 :: occupation_prob
+
+  real*8 :: beta
+
+  if (n <= 1 .or. xne <= 0.0D0) then
+    occupation_prob = 1.0D0
+    return
+  end if
+
+  beta = BETA_COEFF_HM88 / (DBLE(n)**5 * xne**(2.0D0/3.0D0))
+  occupation_prob = holtsmark_Q(beta)
+
+END FUNCTION occupation_prob
 
 
 end module mod_atlas_data
