@@ -529,7 +529,12 @@ module mod_atlas_data
   ! --- Cool-star continuous opacities (C I, Mg I, Al I, Si I, Fe I) ---
   ! COMMON /ACOOL/
   real*8  :: AC1(kw), AMG1(kw), AAL1(kw), ASI1(kw), AFE1(kw)
-  real*8  :: SAL1(kw), SFE1(kw), SHE2(kw), SC1(kw)   ! source functions for Al I, Fe I, He II, C I
+  ! Per-species source functions: computed by C1OP/AL1OP/FE1OP/HE2OP
+  ! but NOT consumed by KAPP, which follows the atlas12.for convention
+  ! of weighting all metal/He continua by BNU.  Kept for potential
+  ! future per-species source function treatment (e.g. NLTE departure
+  ! coefficient hooks).
+  real*8  :: SAL1(kw), SFE1(kw), SHE2(kw), SC1(kw)
 
   ! --- Lukewarm opacities (C II, N I, O I, Mg II, Si II, Ca II) ---
   ! COMMON /ALUKE/
@@ -712,11 +717,6 @@ module mod_atlas_data
   ! --- Ionization potentials ---
   ! COMMON /POTION/
   real*8  :: POTION(999), POTIONSUM(999)
-
-  ! --- Partial redistribution parameters ---
-  ! COMMON /PRD/
-  real*8  :: PRDDOP, PRDPOW, SIGPRD(kw)
-  integer :: ITPRD, NITPRD, NUPRD, LINPRD
 
   ! --- Total pressure ---
   ! COMMON /PTOTAL/
@@ -7076,32 +7076,44 @@ SUBROUTINE KAPP
   if (IFOP(14) == 1) call HLINOP
   if (IFOP(19) == 1) call XCONOP
 
-  ! Assemble totals: true absorption, source function, and scattering
-  ! Matches the F77 atlas7lib.for KAPP assembly exactly.
-  ! Note: ACOOL (from COOLOP) includes CH, OH, and H2 CIA terms that the
-  ! F77 KAPP does not include in ACONT.  We use the individual metal
-  ! opacity arrays (AC1, AMG1, AAL1, ASI1, AFE1) directly instead.
+  ! Assemble totals: true absorption, source function, and scattering.
+  !
+  ! The continuum source function follows the F77 atlas12.for KAPP
+  ! treatment: only hydrogen (SHYD), H-minus (SHMIN), and the auxiliary
+  ! continuum (SXCONT) carry distinct source functions.  All other
+  ! continuum opacity sources (HE I, HE II, the metals C/Mg/Al/Si/Fe,
+  ! H2+, He-minus, LUKE/WARM, and HOT) are bundled into the "A" term
+  ! and weighted by BNU(J).  This is the LTE limit and matches what
+  ! atlas12.for has always done.
+  !
+  ! The atlas7lib.for KAPP carries an elaborate per-species source-
+  ! function formula (SHE1, SHE2, SC1, SMG1, SSI1, SAL1, SFE1), but no
+  ! F77 program in the SYNTHE/ATLAS12 pipeline ever consumed it: the
+  ! F77 SPECTRV unconditionally sets SCONT(J) = BNU(J) at every
+  ! wavelength point and never calls KAPP.  The F90 SYNTHE driver
+  ! preserves this behaviour via the contabs_sv tabulation path.
+  ! Therefore the only consumer of KAPP's SCONT in this codebase is
+  ! the ATLAS12 driver, and the atlas12.for treatment is the correct
+  ! reference.
+  !
+  ! Note on the absorption sum: ACONT here uses the individual metal
+  ! opacity arrays (AC1, AMG1, AAL1, ASI1, AFE1) directly rather than
+  ! the lumped ACOOL bundle from atlas12.for, because the F90 broke
+  ! the metal continua out into separate routines during translation.
+  ! The numerical sum is identical -- just a regrouping.
   do J = 1, NRHOX
-    ! Continuum absorption: A = minor sources emitting at BNU
-    A = AH2P(J) + AHEMIN(J) + ALUKE(J) + AHOT(J)
-    ACONT(J) = A + AHYD(J) + AHMIN(J) + AXCONT(J) &
-             + AHE1(J) + AHE2(J) &
-             + AC1(J) + AMG1(J) + AAL1(J) + ASI1(J) + AFE1(J)
+    ! Sources weighted by BNU in the source function
+    A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) + ALUKE(J) + AHOT(J) &
+      + AC1(J)  + AMG1(J) + AAL1(J) + ASI1(J)   + AFE1(J)
 
-    ! Source function
-    ! TODO: The F77 KAPP weights each source by its individual source
-    ! function (SHE1, SHE2, SC1, SMG1, SAL1, SSI1, SFE1).  The F90
-    ! code currently lacks SMG1, SSI1, SHE1 — those routines don't
-    ! compute source functions yet.  For the SYNTHE path this doesn't
-    ! matter because SPECTRV overwrites SCONT = BNU before JOSH.
+    ! Total continuum absorption
+    ACONT(J) = A + AHYD(J) + AHMIN(J) + AXCONT(J)
+
+    ! Continuum source function (atlas12.for form)
     SCONT(J) = BNU(J)
     if (ACONT(J) > 0.0D0) then
       SCONT(J) = (A * BNU(J) + AHYD(J) * SHYD(J) &
-               + AHMIN(J) * SHMIN(J) + AXCONT(J) * SXCONT(J) &
-               + AHE1(J) * BNU(J) + AHE2(J) * SHE2(J) &
-               + AC1(J) * SC1(J) + AMG1(J) * BNU(J) &
-               + AAL1(J) * SAL1(J) + ASI1(J) * BNU(J) &
-               + AFE1(J) * SFE1(J)) / ACONT(J)
+               + AHMIN(J) * SHMIN(J) + AXCONT(J) * SXCONT(J)) / ACONT(J)
     end if
 
     ! Line absorption and source function
@@ -7158,16 +7170,22 @@ SUBROUTINE HOP
 
   implicit none
 
-  ! Maximum level for pseudo-continuum computation
-  integer, parameter :: NMAX_PSEUDO = 30
+  ! Maximum hydrogen level included in HOP.  The explicit-level loop runs
+  ! n=1..15 (with full Karzas-Latter cross sections); a high-n extension
+  ! loop covers n=16..NMAX_HLEVELS using XKARZAS's hydrogenic rescaling
+  ! from the n=15 table; and the dissolved-fraction pseudo-continuum
+  ! covers n=7..NMAX_HLEVELS.  All three loops share the same upper bound
+  ! so the bookkeeping stays consistent.
+  integer, parameter :: NMAX_HLEVELS = 30
 
   real*8  :: X            ! bound-free cross-section from XKARZAS
   real*8  :: A            ! single-level opacity contribution
   real*8  :: H, S         ! running sums for opacity and source function
   real*8  :: w_n          ! occupation probability for current level
-  real*8  :: E_n          ! excitation energy for pseudo-continuum level [cm^-1]
+  real*8  :: E_n          ! excitation energy for the current level [cm^-1]
+  real*8  :: thresh_n     ! ionization threshold of the current level [cm^-1]
   real*8  :: FREQ3_INV    ! 1 / FREQ^3 (precomputed for pseudo-continuum)
-  integer :: J, I_PC
+  integer :: J, I_PC, n_hi
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HOP'
 
@@ -7304,6 +7322,39 @@ SUBROUTINE HOP
     end do levels
 
     ! ------------------------------------------------------------------
+    ! High-n explicit bound-free extension: levels 16 to NMAX_HLEVELS.
+    !
+    ! These levels are above the principal-quantum-number range covered
+    ! by the explicit Karzas-Latter table (n <= 15), but XKARZAS handles
+    ! n > 15 by rescaling the n=15 tabulation using the hydrogenic
+    ! frequency scaling.  At low and moderate density (where w_n ~ 1
+    ! for these levels), this loop adds the LTE bound-free contribution
+    ! from levels 16-30 that would otherwise be missing entirely.
+    !
+    ! In the original F77 atlas12.for, this contribution was included
+    ! via an analytic Boltzmann integral over n=9..infinity using pure
+    ! Kramers cross sections (the "EXLIM/BOLTEX" term).  The F90 was
+    ! restructured to use explicit Karzas-Latter levels through n=15
+    ! plus the dissolved-fraction pseudo-continuum, which is more
+    ! accurate for n=9..15 but inadvertently dropped the n>=16 LTE
+    ! tail.  This loop restores that contribution.
+    !
+    ! Each level is weighted by w_n; the dissolved fraction (1-w_n) is
+    ! handled by the pseudo-continuum loop below.
+    ! ------------------------------------------------------------------
+    do n_hi = 16, NMAX_HLEVELS
+      thresh_n = ELIM_HI / dble(n_hi)**2
+      if (WAVENO < thresh_n) cycle              ! below this level's threshold
+      w_n = occupation_prob(n_hi, XNE(J))
+      if (w_n < 1.0D-6) cycle                   ! fully dissolved -- skip
+      X = XKARZAS(FREQ, 1.0D0, n_hi, n_hi)
+      E_n = ELIM_HI - RYDBERG_H / dble(n_hi)**2
+      A = w_n * X * 2.0D0 * dble(n_hi)**2 * EXP(-E_n * HCKT(J)) * STIM(J)
+      H = H + A
+      S = S + A * BNU(J)
+    end do
+
+    ! ------------------------------------------------------------------
     ! Pseudo-continuum from dissolved hydrogen levels.
     !
     ! For each level n where the occupation probability w_n < 1, the
@@ -7326,7 +7377,7 @@ SUBROUTINE HOP
     !   Tremblay, P.-E. & Bergeron, P. 2009, ApJ 696, 1755
     ! ------------------------------------------------------------------
     FREQ3_INV = 1.0D0 / (FREQ * FREQ * FREQ)
-    do I_PC = 7, NMAX_PSEUDO
+    do I_PC = 7, NMAX_HLEVELS
       w_n = occupation_prob(I_PC, XNE(J))
       if (1.0D0 - w_n < 1.0D-6) cycle   ! fully bound, no dissolved fraction
       E_n = ELIM_HI - RYDBERG_H / dble(I_PC)**2
@@ -8207,7 +8258,7 @@ SUBROUTINE HRAYOP
    24.0D0, 28.0D0, 32.0D0, 36.0D0, 40.0D0, 44.0D0, 48.0D0, 50.0D0 /)
 
   ! Local variables
-  real*8  :: XSECT, G, FRAC
+  real*8  :: XSECT, G
   integer :: I, J, IDUM
 
   ! Frequency step sizes for each range
@@ -9091,7 +9142,86 @@ SUBROUTINE HEMIOP
 END SUBROUTINE HEMIOP
 
 !=======================================================================
-! HERAOP
+! HERAOP: He I Rayleigh scattering opacity
+!
+! Rayleigh scattering by ground-state neutral helium.  Cross-section
+! is a two-parameter dispersion-corrected Rayleigh formula:
+!
+!   σ(λ) = (5.484e-14 / λ⁴) * [1 + (2.44e5 + 5.94e10/(λ²-2.90e5)) / λ²]²
+!
+! with λ in Å and σ in cm².  The formula has two distinct pieces:
+!
+! Leading (long-wavelength) term:
+!   At λ → ∞, the bracketed dispersion factor → 1 and the cross section
+!   reduces to 5.484e-14 / λ⁴.  This coefficient is exactly the textbook
+!   low-frequency Rayleigh limit
+!
+!       σ(ω→0) = (8π/3)(ω/c)⁴ α²    =    (128 π⁵ / 3) α² / λ⁴
+!
+!   evaluated with the He ground-state static dipole polarizability
+!   α_He = 0.20494e-24 cm³ (≈ 1.3832 a₀³).  Plugging in this α value
+!   reproduces 5.484e-14 to 4 significant figures.  So the long-
+!   wavelength behaviour is correct by construction and tied to the
+!   fundamental polarizability of helium.
+!
+! Dispersion correction (short-wavelength factor):
+!   The bracketed factor [α(ω)/α(0)]² accounts for the frequency
+!   dependence of the helium polarizability as the photon energy
+!   approaches the first excited bound states.  The two fitted
+!   constants (2.44e5 and 5.94e10 Å², plus the pole at 2.90e5 Å²) are
+!   NOT sums over physical He line positions: the pole at λ²=2.90e5 Å²
+!   corresponds to λ ≈ 538 Å, which is between but not at the
+!   He I 1s²→1snp resonances (584 Å, 537 Å, 522 Å, ...).  It behaves
+!   like an effective oscillator-strength-weighted resonance wavelength.
+!   The coefficients almost certainly trace to a compact fit of the
+!   form used by Dalgarno in the early 1960s (Cauchy-moment expansion
+!   of α(ω) from oscillator-strength sums, fitted to a two-pole Padé
+!   form), but the precise source of these four numbers is not cited
+!   in the original F77 Kurucz code and has not been identified.  The
+!   most likely origin is Dalgarno (1962), "Spectral Reflectivity of
+!   the Earth's Atmosphere III: The Scattering of Light by Atomic
+!   Systems," Geophysical Corporation of America Report, which is
+!   cited by later work (e.g. Rohrmann 2018 MNRAS 473, 457) as the
+!   standard astrophysical He Rayleigh reference of that era but is
+!   a technical report rather than a journal article.
+!
+! Validity and accuracy:
+!   The leading 1/λ⁴ term is exact in the long-wavelength limit.  The
+!   size of the dispersion correction itself (i.e., how much [α(ω)/α(0)]²
+!   differs from unity) is about 2% at 5000 Å, 6% at 3000 Å, 13% at
+!   2000 Å, and grows rapidly in the FUV as the 584 Å resonance is
+!   approached.  The error of the fit relative to a modern calculation
+!   (e.g. Rohrmann 2018) has not been quantified here but is expected
+!   to be at the sub-percent level in the visible/near-IR and to grow
+!   toward the UV.  He Rayleigh is a negligible opacity source in FGK
+!   stars regardless of formula choice; it matters only in the UV of
+!   A/B stars and in He-rich chemically peculiar stars.
+!
+! Frequency cap:
+!   The evaluated frequency is capped at 5.15e15 Hz (λ ≈ 582 Å) to
+!   prevent evaluation blueward of the He I 584 Å resonance, where
+!   the Kurucz dispersion factor would go singular (the denominator
+!   λ²-2.90e5 changes sign) and where the Rayleigh picture is no
+!   longer physically valid anyway (real bound-bound absorption
+!   dominates).  For ν > 5.15e15 Hz the cross section is frozen at
+!   its λ = 582 Å value.
+!
+! Future work:
+!   If increased precision in the FUV becomes necessary — e.g. for
+!   detailed atmosphere modelling of He-rich CP stars, sdB stars, or
+!   cool helium-atmosphere white dwarfs where He Rayleigh can be a
+!   non-negligible opacity source — the current two-parameter fit
+!   should be replaced with Rohrmann (2018, MNRAS 473, 457).  That
+!   work evaluates the He polarizability using a comprehensive
+!   oscillator-strength distribution (including doubly excited states
+!   and the photoionization continuum), tabulates the full Rayleigh
+!   cross section including the first two physical resonances, and
+!   provides analytical fits valid for λ > 505 Å.  For warmer-gas
+!   applications, Sneep & Ubachs (2005, JQSRT 92, 293) and Thalman
+!   et al. (2014, JQSRT 147, 171) provide refractive-index-based
+!   cross sections calibrated to modern lab measurements; these are
+!   accurate in the visible/near-UV but do not extend into the FUV
+!   resonance region.
 !=======================================================================
 
 SUBROUTINE HERAOP
@@ -9100,11 +9230,20 @@ SUBROUTINE HERAOP
   integer :: J
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING HERAOP'
-  ! He I Rayleigh scattering, capped at He I ionization threshold
-  W = CLIGHT_ANG / min(FREQ, 5.15D15)
-  WW = W**2
+
+  ! Wavelength in Å, capped just redward of the He I 584 Å resonance
+  ! to prevent the dispersion denominator from going singular.
+  W  = CLIGHT_ANG / min(FREQ, 5.15D15)
+  WW = W**2                                   ! λ² [Å²]
+
+  ! σ(λ) = (5.484e-14 / λ⁴) * [α(ω)/α(0)]²
+  !   Leading coefficient 5.484e-14 = (128π⁵/3) * α_He(static)²
+  !   Bracketed factor is the fitted two-pole dispersion correction.
   SIG = 5.484D-14 / WW / WW * (1.0D0 + (2.44D5 + 5.94D10 &
       / (WW - 2.90D5)) / WW)**2
+
+  ! Apply to each depth point using neutral He number density
+  ! (XNFP(J,3) is N(He I)); /RHO converts to mass opacity [cm²/g].
   do J = 1, NRHOX
     SIGHE(J) = SIG * XNFP(J, 3) / RHO(J)
   end do
@@ -9582,7 +9721,7 @@ SUBROUTINE AL1OP
     10.0D0,  2.0D0,  4.0D0,  2.0D0, 12.0D0 /)
 
   real*8  :: H, S, A, X
-  integer :: J, N
+  integer :: J
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING AL1OP'
 
@@ -11354,14 +11493,66 @@ END SUBROUTINE ELECOP
 !=======================================================================
 ! H2RAOP: H₂ Rayleigh scattering opacity
 !
-! Rayleigh scattering by molecular hydrogen. Cross-section follows
-! a λ⁻⁴ law with higher-order corrections (σ ∝ 1/λ⁴ + 1/λ⁶ + 1/λ⁸),
-! capped at the H₂ dissociation threshold (λ = 1026 Å, ν = 2.922e15 Hz).
+! Reference:
+!   Dalgarno, A. & Williams, D. W. 1962, ApJ 136, 690,
+!   "Rayleigh Scattering by Molecular Hydrogen."
 !
-! H₂ number density XNH2 is computed from chemical equilibrium via
-! EQUILH2 and cached when the temperature structure changes.
+! The Dalgarno & Williams (1962) cross-section for Rayleigh scattering
+! by ground-state molecular hydrogen is a three-term expansion in
+! inverse powers of wavelength:
 !
-! Note: /RHO(J) correction added by K. Bischof, 14 Sep 2004.
+!   σ(H₂) = (8.14e-13 / λ⁴) + (1.28e-6 / λ⁶) + (1.61 / λ⁸)     [cm²]
+!
+! with λ in Ångströms.  The leading 1/λ⁴ term is the standard Rayleigh
+! low-frequency limit from the static polarizability; the 1/λ⁶ and
+! 1/λ⁸ terms are dispersion corrections that become important in the
+! blue/UV as the photon energy approaches the lowest H₂ electronic
+! transitions.  The formula is a closed-form fit to a Kramers-Heisenberg
+! sum over H₂ excited electronic states, evaluated at frequencies well
+! below the Lyman and Werner band systems (~1110 Å and below).
+!
+! Validity regime:
+!   The Dalgarno & Williams formula is accurate for λ >> 1110 Å, i.e.
+!   well into the red of the H₂ Lyman/Werner electronic bands, where
+!   the Rayleigh approximation (elastic scattering with the photon
+!   energy far from any resonance) is clean.  Approaching the Lyman
+!   bands from the red, real bound-bound and bound-free absorption
+!   takes over and this pure-Rayleigh expression is no longer valid.
+!   To prevent extrapolation into that regime, we cap the evaluated
+!   frequency at 2.922e15 Hz (λ ≈ 1026 Å), which places the cutoff
+!   just blueward of the visible/near-UV region where the formula is
+!   reliable and just redward of the onset of H₂ electronic bands.
+!   For ν > 2.922e15 Hz the cross section is frozen at its λ = 1026 Å
+!   value.  In stellar atmosphere calculations this regime is of no
+!   practical concern: the H₂ number density is negligible in layers
+!   where FUV photons dominate.
+!
+! H₂ number density:
+!   XNH2(J) is recomputed from chemical equilibrium via EQUILH2(T(J))
+!   whenever ITEMP changes, and cached otherwise.  The formation
+!   expression is
+!
+!      XNH2 = [2 * N(H I) * b(H I,n=1)]² * K_eq(T)
+!
+!   where N(H I) comes from XNFP(J,1), b(H I,n=1) = BHYD(J,1) is the
+!   NLTE departure coefficient of the ground state (unity in LTE), the
+!   factor of 2 converts proton number density to atomic H nucleus
+!   density, and K_eq(T) = EQUILH2(T) is the H₂/H equilibrium constant.
+!   Above T = 20,000 K the molecule is fully dissociated and XNH2 is
+!   set to zero to avoid spurious contributions.
+!
+!   (The commented-out blocks below preserve two earlier inline
+!   polynomial fits for the equilibrium constant that were superseded
+!   by the external EQUILH2 function during modernization; they are
+!   kept as a historical record of the F77 expressions.)
+!
+! Scaling:
+!   SIGH2(J) = σ(λ) * XNH2(J) / RHO(J)
+!
+!   where the /RHO(J) factor converts number density to a per-unit-mass
+!   opacity (cm²/g), matching the units convention of the other SIG*
+!   arrays.  The /RHO(J) correction was added by K. Bischof on
+!   14 Sep 2004; the original F77 omitted it (bug).
 !=======================================================================
 
 SUBROUTINE H2RAOP
@@ -11374,12 +11565,17 @@ SUBROUTINE H2RAOP
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING H2RAOP'
 
-  ! Recompute H₂ number density when temperature changes
+  ! Recompute H₂ number density when the temperature structure changes.
+  ! XNH2 is a function of T(J) only (through EQUILH2) and the H I ground
+  ! state population, so it is cached between calls at the same ITEMP.
   if (ITEMP /= ITEMP1) then
     ITEMP1 = ITEMP
     do J = 1, NRHOX
       XNH2(J) = 0.0D0
       if (T(J) <= 20000.0D0) then
+        ! Historical F77 inline polynomial fits for ln(K_eq(T)),
+        ! superseded by EQUILH2(T) during modernization.  Preserved
+        ! here only as a reference to the original expressions.
 !C  11 XNH2(J)=(XNFP(J,1)*2.*BHYD(J,1))**2*EXP(4.477/TKEV(J)-4.6628E1+
 !C    1(1.8031D-3+(-5.0239D-7+(8.1424D-11-5.0501D-15*T(J))*T(J))*T(J))*
 !C    2T(J)-1.5*TLOG(J))/RHO(J)
@@ -11392,13 +11588,20 @@ SUBROUTINE H2RAOP
     end do
   end if
 
-  ! Rayleigh cross-section capped at H₂ dissociation threshold
-  W = CLIGHT_ANG / min(FREQ, 2.922D15)
-  WW = W**2
+  ! Evaluate the Dalgarno & Williams (1962) cross-section.  Cap the
+  ! frequency at 2.922e15 Hz (λ ≈ 1026 Å) to prevent extrapolation
+  ! into the H₂ Lyman/Werner band region where the Rayleigh
+  ! approximation breaks down.
+  W  = CLIGHT_ANG / min(FREQ, 2.922D15)   ! wavelength [Å], capped
+  WW = W**2                                ! λ² [Å²]
+
+  ! σ(λ) = (8.14e-13 + 1.28e-6/λ² + 1.61/λ⁴) / λ⁴   [cm²]
+  ! Rewritten with WW to share the λ² computation between terms.
   SIG = (8.14D-13 + 1.28D-6 / WW + 1.61D0 / (WW * WW)) / (WW * WW)
+
+  ! Apply to each depth point.  The /RHO(J) factor converts from
+  ! cross-section-times-number-density [cm⁻¹] to mass opacity [cm²/g].
   do J = 1, NRHOX
-!  21 SIGH2(J)=SIG*XNH2(J)
-!     error found by k. bischof 14sep2004
     SIGH2(J) = SIG * XNH2(J) / RHO(J)
   end do
   return
@@ -11755,7 +11958,6 @@ SUBROUTINE INIT_STARK_TABLES
        'stehle_paschen.bin ', 'stehle_brackett.bin' /)
   integer :: iseries, iu, n_lower, n_upper_min, n_upper_max
   integer :: n_dens, n_temps, n_dalpha, n_trans, ios
-  integer :: rec_len
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING INIT_STARK_TABLES'
 
@@ -11998,17 +12200,29 @@ FUNCTION STARK_MMM(N, M, J)
   nd = S%n_dens
   nt = NSTARK_TEMPS
 
-  ! Density bounds
+  ! Density bounds.
+  ! Below the tabulated grid: lines are well-defined but the table doesn't
+  ! reach this density; fall back to the analytic profile.
+  ! Above the tabulated grid: we are past the Inglis-Teller limit for every
+  ! transition in this series, so the upper level has dissolved into the
+  ! continuum and there is no bound-bound opacity to add. The dissolved
+  ! oscillator strength is accounted for on the b-f side via the
+  ! Hummer-Mihalas occupation probability formalism in HOP.
   log_ne = LOG10(XNE(J))
-  if (XNE(J) < S%density_grid(1) * 0.5D0 .or. &
-      XNE(J) > S%density_grid(nd) * 2.0D0) then
+  if (XNE(J) < S%density_grid(1)) then
     STARK_MMM = STARK(N, M, J)
     return
   end if
+  if (XNE(J) > S%density_grid(nd)) then
+    STARK_MMM = 0.0D0
+    return
+  end if
 
-  ! Check Inglis-Teller limit for this transition
-  if (XNE(J) > S%density_grid(S%max_dens_idx(itrans)) * 2.0D0) then
-    STARK_MMM = STARK(N, M, J)
+  ! Per-transition Inglis-Teller limit: the upper level m has dissolved
+  ! at this density for this specific transition. Return zero opacity;
+  ! the f-strength has moved to the pseudo-continuum (handled in HOP).
+  if (XNE(J) > S%density_grid(S%max_dens_idx(itrans))) then
+    STARK_MMM = 0.0D0
     return
   end if
 

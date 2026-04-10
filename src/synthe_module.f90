@@ -13,14 +13,16 @@ MODULE synthe_module
 !  SECTIONS (in order)
 !  -------------------
 !   1. Module-level shared data (replaces all COMMON blocks)
-!   2. Utility routines: voigt_profile, air_to_vac,
-!      vac_to_air, interp_quadratic, trapz_integrate, parabolic_coeffs
+!   2. Utility routines: voigt_profile, vac_to_air,
+!      interp_quadratic, trapz_integrate, parabolic_coeffs
 !   3. Hydrogen oscillator strengths: hydrogen_oscillator_strength
 !   4. Hydrogen line profiles: hydrogen_line_profile,
 !      stark_quasistatic_profile, expint1
-!   5. He I line profiles: he1_generic_profile, he1_4471_profile,
-!      he1_4026_profile, he1_4387_profile, he1_4921_profile,
-!      he1_griem_profile, he1_dimitri_profile, read_he1_stark_tables
+!   5. He I line profiles [PORT INCOMPLETE -- not currently called;
+!      see banner above he1_generic_profile]: he1_generic_profile,
+!      he1_4471_profile, he1_4026_profile, he1_4387_profile,
+!      he1_4921_profile, he1_griem_profile, he1_dimitri_profile,
+!      read_he1_stark_tables
 !   6. Line opacity: compute_line_opacity
 !   7. Atmosphere setup: run_xnfpelsyn (replaces standalone xnfpelsyn;
 !      accesses mod_atlas_data via USE with renamed imports)
@@ -294,10 +296,6 @@ MODULE synthe_module
   !  fscat_sv(kw)   : scattering fraction per depth
   !  surf_sv(20)    : pure-continuum surface flux/intensity per angle quadrature
   !                   point (set by first JOSH call, used in residual computation)
-  !
-  !  SPECTRV scalar run parameters (filled from unit 25):
-  !  rhoxj_sv, r1_sv, r101_sv, ph1_sv, pc1_sv, psi1_sv : see spectrv comments
-  !  slope_sv, origin_sv : ASCII plot scale factors
   ! ====================================================================
 
   INTEGER, PARAMETER :: medge = 377   ! max continuum edge points (matches spectrv)
@@ -314,10 +312,6 @@ MODULE synthe_module
   REAL(8), SAVE :: bfudge_sv(kw)
   REAL(8), SAVE :: fscat_sv(kw)
   REAL(8), SAVE :: surf_sv(20)
-
-  REAL(8), SAVE :: rhoxj_sv, r1_sv, r101_sv
-  REAL(8), SAVE :: ph1_sv, pc1_sv, psi1_sv
-  REAL(8), SAVE :: slope_sv, origin_sv
 
   ! Ground-state Boltzmann populations for bfudge computation.
   ! These replicate the old COMMON B-array ground-state values that
@@ -437,44 +431,6 @@ CONTAINS
 
   END FUNCTION voigt_profile
 
-
-! ============================================================================
-!  air_to_vac -- convert air wavelength to vacuum wavelength (both in nm).
-!
-!  Uses the Peck & Reeder (1972, JOSA 62, 958) dispersion formula for
-!  standard dry air at 15 C, 101.325 kPa, 0.045% CO2 by volume.
-!  This is the IAU standard (Morton 2000, ApJS 130, 403; Ciddor 1996,
-!  Appl. Opt. 35, 1566).  Iterated three times for self-consistency
-!  (the formula requires vacuum wavenumber as input).
-!
-!  Replaces the previous Edlen (1966) coefficients.
-! ============================================================================
-  FUNCTION air_to_vac(w) RESULT(result)
-    REAL(8), INTENT(IN) :: w       ! air wavelength (nm)
-    REAL(8)             :: result
-    REAL(8)             :: waven, wnew
-
-    ! Peck & Reeder (1972) refractivity coefficients, converted to
-    ! wavenumber in cm^-1 (waven = 1e7/lambda_nm).
-    REAL(8), PARAMETER :: N0  = 1.0000834254D0
-    REAL(8), PARAMETER :: NA  = 2406147.D0, CA = 1.30D10
-    REAL(8), PARAMETER :: NB  =   15998.D0, CB = 3.89D9
-
-    ! First iteration (use air wavenumber as approximation)
-    waven = 1.D7 / w
-    wnew  = w * (N0 + NA/(CA - waven**2) + NB/(CB - waven**2))
-
-    ! Second iteration
-    waven = 1.D7 / wnew
-    wnew  = w * (N0 + NA/(CA - waven**2) + NB/(CB - waven**2))
-
-    ! Third iteration (final)
-    waven  = 1.D7 / wnew
-    result = w * (N0 + NA/(CA - waven**2) + NB/(CB - waven**2))
-
-  END FUNCTION air_to_vac
-
-
 ! ============================================================================
 !  vac_to_air -- convert vacuum wavelength to air wavelength (both in nm).
 !
@@ -495,8 +451,6 @@ CONTAINS
     result = w / (N0 + NA/(CA - waven**2) + NB/(CB - waven**2))
 
   END FUNCTION vac_to_air
-
-
 
 ! ============================================================================
 !  trapz_integrate -- compute the definite integral of a piecewise-quadratic fit to f(x).
@@ -528,7 +482,6 @@ CONTAINS
     END DO
 
   END SUBROUTINE trapz_integrate
-
 
 ! ============================================================================
 !  parabolic_coeffs -- compute piecewise-quadratic polynomial coefficients for trapz_integrate.
@@ -637,7 +590,6 @@ CONTAINS
 
   END FUNCTION hydrogen_oscillator_strength
 
-
 ! ============================================================================
 !  expint1 -- evaluation of the exponential integral E_1(x) for x >= 0.
 !
@@ -677,7 +629,6 @@ CONTAINS
     ! x > 30: E_1(x) ~ 3e-15 or smaller -- return 0
 
   END FUNCTION expint1
-
 
 ! ============================================================================
 !  stark_quasistatic_profile -- quasistatic Stark profile S(beta, p) for hydrogen lines.
@@ -800,7 +751,7 @@ CONTAINS
 
     INTEGER :: indx, im, ip, jm, jp, j, mmn
     REAL(4) :: b2, sb, wtpp, wtpm, wtbp, wtbm
-    REAL(4) :: cbp, cbm, corr, pr1, pr2, wt, ent
+    REAL(4) :: cbp, cbm, corr, pr1, pr2, wt
     REAL(4) :: prop_im_jm, prop_ip_jm, prop_im_jp, prop_ip_jp
     REAL(4) :: c_val, d_val
 
@@ -1008,12 +959,12 @@ CONTAINS
     INTEGER, SAVE :: itemp1 = 0, n1 = 0, m1 = 0
     INTEGER       :: k, i, ifins, ipos, nwid, ifcore, icut, mmn
     REAL(4)       :: xn, xm, xn2, xm2, xmn2, xm2mn2, gnm, xknm
-    REAL(4)       :: y1num, y1wht, freqnm, dbeta, wavenm
+    REAL(4)       :: y1num, y1wht
     REAL(4)       :: c1con, c2con, radamp, resont, vdw, hwvdw
-    REAL(4)       :: stark, wl4, freq, del
-    REAL(4)       :: hwstk, hwlor, hwdop, hwres, hwrad, hfwid, dop
+    REAL(4)       :: stark
+    REAL(4)       :: hwstk, hwlor, hwdop, hwres, hwrad
     REAL(4)       :: finest(14), finswt(14)
-    REAL(4)       :: hprofres, hprofvdw, hprofrad, hproflor, hhw, top
+    REAL(4)       :: hprofres, hprofvdw, hprofrad, top
     REAL(4)       :: wty1, y1scal, c1_loc, c2_loc, g1, gnot
     REAL(4)       :: beta_val, y1, y2, gam, prqs, f, p1, fns
     REAL(4)       :: cutoff_val, cutfreq, spacing
@@ -1023,10 +974,25 @@ CONTAINS
     REAL(4), SAVE :: y1b(kw), y1s(kw), c1d(kw), c2d(kw)
     REAL(4), SAVE :: t3nhe(kw), t3nh2(kw)
     REAL(4), SAVE :: radamp_s, resont_s, vdw_s, stark_s
-    REAL(4), SAVE :: c1con_s, c2con_s, dbeta_s, wavenm_s, freqnm_s
+    REAL(4), SAVE :: c1con_s, c2con_s
     REAL(4), SAVE :: y1num_s, y1wht_s
     INTEGER, SAVE :: ifins_s
     REAL(4), SAVE :: finest_s(14), finswt_s(14)
+
+    ! Coordinate-chain variables promoted from REAL*4 to REAL*8.
+    !
+    ! The F77 HPROF4 used REAL*4 throughout, including the wavelength-to-
+    ! frequency conversion.  At λ ~ 37000 Å, REAL*4 gives ~0.01 Å
+    ! precision, producing ~4% jitter in the Doppler core position of
+    ! high-n Balmer lines.  This created visible raggedness and asymmetry
+    ! in line cores — an artifact present in all F77 SYNTHE output.
+    ! Promoting the coordinate chain to REAL*8 eliminates the jitter
+    ! while leaving the profile physics (tables, broadening formulae)
+    ! at their original REAL*4 precision.
+    REAL(8)       :: freqnm, dbeta, wavenm        ! line-centre coords
+    REAL(8)       :: wl4, freq, del                ! per-call coords
+    REAL(8)       :: hfwid, dop, hhw               ! widths in Hz
+    REAL(8), SAVE :: dbeta_s, wavenm_s, freqnm_s  ! cached line-centre coords
     REAL(4)       :: xne16, t4, t43
 
     ! Cached convolved Stark⊗Doppler profile
@@ -1160,9 +1126,9 @@ CONTAINS
       END IF
 
       ! Line centre frequency, frequency-to-beta conversion, wavelength
-      freqnm_s = FREQ_RYDH * gnm
-      dbeta_s = REAL(CLIGHT_ANG,4) / freqnm_s**2 / xknm
-      wavenm_s = REAL(CLIGHT_ANG,4) / freqnm_s
+      freqnm_s = FREQ_RYDH * DBLE(gnm)
+      dbeta_s = CLIGHT_ANG / freqnm_s**2 / DBLE(xknm)
+      wavenm_s = CLIGHT_ANG / freqnm_s
 
       ! Electron impact broadening constants (K-P path):
       ! c1con scales the first-order (dipole) interaction
@@ -1237,9 +1203,9 @@ CONTAINS
     finest(1:ifins) = finest_s(1:ifins)
     finswt(1:ifins) = finswt_s(1:ifins)
 
-    wl4 = REAL(wavenm + delw*10.0)   ! wavelength [Angstrom]
-    freq = REAL(CLIGHT_ANG,4) / wl4   ! frequency [Hz]
-    del = ABS(freq - freqnm)           ! frequency offset from line centre
+    wl4 = wavenm + DBLE(delw)*10.0D0   ! wavelength [Angstrom], REAL*8
+    freq = CLIGHT_ANG / wl4            ! frequency [Hz], REAL*8
+    del = ABS(freq - freqnm)           ! frequency offset from line centre, REAL*8
 
     ! Broadening half-widths [Hz / freqnm, i.e., fractional]:
     hwstk = stark * fo(j)              ! Stark (from K-P xknm parameter)
@@ -1248,7 +1214,7 @@ CONTAINS
     hwres = resont * XNFPH(j,1) * 2.0 ! resonance (self-broadening by H I)
     hwlor = hwres + hwvdw + hwrad      ! total Lorentzian half-width
     hwdop = dopph(j)                   ! Doppler (thermal + microturbulence)
-    dop = freqnm * hwdop               ! Doppler half-width [Hz]
+    dop = freqnm * DBLE(hwdop)         ! Doppler half-width [Hz], REAL*8
 
     ! =================================================================
     ! Check if Stehlé tables are available
@@ -1267,6 +1233,27 @@ CONTAINS
         IF (XNE(j) >= STEHLE_DATA(n)%density_grid(1) .AND. &
             XNE(j) <= STEHLE_DATA(n)%density_grid(STEHLE_DATA(n)%n_dens)) THEN
           use_stehle = .true.
+          ! Per-transition Inglis-Teller cutoff: the published Stehle
+          ! profiles for each (n,m) transition are tabulated only up
+          ! to the transition's own I-T density.  Beyond that density
+          ! the table cells are zero (or near-zero) because the upper
+          ! level has dissolved.  If we naively interpolate through
+          ! those zeros the line opacity vanishes.
+          !
+          ! On the ATLAS12 side (STARK_MMM) we return zero here and
+          ! let HOP's HHL94 pseudo-continuum loop pick up the dissolved
+          ! oscillator strength.  SYNTHE has no equivalent compensating
+          ! mechanism (its continuum opacity table is fixed by the
+          ! upstream XNFPELSYN call), so returning zero would simply
+          ! lose the line entirely.  Instead we fall back to the
+          ! analytic Kurucz-Peterson quasistatic profile, which has
+          ! no per-transition cutoff and produces a smoothly broadened
+          ! and weakened profile beyond the I-T limit.  This matches
+          ! the F77 SYNTHE behaviour (which used K-P everywhere).
+          IF (XNE(j) > STEHLE_DATA(n)%density_grid( &
+                       STEHLE_DATA(n)%max_dens_idx(m - STEHLE_DATA(n)%n_upper_min + 1))) THEN
+            use_stehle = .false.
+          END IF
         END IF
       END IF
     END IF
@@ -1806,9 +1793,56 @@ CONTAINS
 ! ============================================================================
 !  he1_generic_profile -- dispatcher for He I line profiles.
 !
+!  ##########################################################################
+!  ##  PORT INCOMPLETE -- FUTURE WORK                                      ##
+!  ##                                                                      ##
+!  ##  This dispatcher and its entire subtree (he1_4471_profile,           ##
+!  ##  he1_4026_profile, he1_4387_profile, he1_4921_profile,               ##
+!  ##  he1_dimitri_profile, he1_griem_profile, he1_isolated_profile,       ##
+!  ##  he1_stark_widths, read_he1_stark_tables, trapz_integrate, and       ##
+!  ##  parabolic_coeffs) are NOT currently called from anywhere in the     ##
+!  ##  modernized code.                                                    ##
+!  ##                                                                      ##
+!  ##  The corresponding stub is in compute_line_opacity, in the SELECT    ##
+!  ##  CASE on itype, where He I lines (TYPE <= -3) currently fall         ##
+!  ##  through to the plain Voigt metal-line branch (label 200).  This     ##
+!  ##  is a deliberate deferral, NOT a refactor casualty: the existing     ##
+!  ##  routines below were translated structurally from the F77 SYNTHE     ##
+!  ##  source but have not been wired up, validated, or compared against   ##
+!  ##  the F77 reference.                                                  ##
+!  ##                                                                      ##
+!  ##  Consequence: He I line wings are currently broadened only by        ##
+!  ##  thermal Doppler, radiative damping, and the static gammas value     ##
+!  ##  from the line list -- no electron Stark broadening, no              ##
+!  ##  fine-structure splitting in the line core, and no forbidden         ##
+!  ##  satellites.  This is acceptable for cool stars where He I is        ##
+!  ##  weak.  It is NOT acceptable for B and O stars, where He I 4471,     ##
+!  ##  4922, 4026 and 4387 are key diagnostics whose wing shapes depend    ##
+!  ##  strongly on Stark broadening.  The He I 4471 line in particular     ##
+!  ##  has an asymmetric red wing (the 2p3P -- 4f3F forbidden satellite    ##
+!  ##  at ~4470 A) that the current Voigt-only treatment cannot            ##
+!  ##  reproduce at all.                                                   ##
+!  ##                                                                      ##
+!  ##  To activate this dispatcher: replace the                            ##
+!  ##      CASE (:-3)                                                      ##
+!  ##        GOTO 200          ! He I not yet implemented                  ##
+!  ##  branch in compute_line_opacity with a call to he1_generic_profile   ##
+!  ##  and integrate the returned profile into the kappa accumulator the   ##
+!  ##  same way the Voigt branch does at label 200.  Validate against a    ##
+!  ##  B-star (e.g. Teff=22000, log g=4.0) synthesis over 4460-4480 A      ##
+!  ##  and compare to the F77 SYNTHE reference output.                     ##
+!  ##                                                                      ##
+!  ##  Note that even if wired up, the forbidden satellite of He I 4471    ##
+!  ##  remains absent: the FORB1/FORB2 oscillator-strength arrays in       ##
+!  ##  he1_4471_profile are zero-initialized (a hook left by Kurucz that   ##
+!  ##  was never populated).  Adding the forbidden satellite requires      ##
+!  ##  modern data, e.g. Beauchamp et al. 1997 or Tremblay & Bergeron      ##
+!  ##  tables, and is a separate item beyond wiring up the dispatcher.     ##
+!  ##########################################################################
+!
 !  Selects the appropriate detailed broadening function based on line
-!  wavelength (encoded as an integer nm value).  Falls back to he1_griem_profile
-!  for lines not explicitly handled.
+!  wavelength (encoded as an integer nm value).  Falls back to
+!  he1_griem_profile for lines not explicitly handled.
 !
 !  Arguments:
 !    J       -- atmospheric depth index
@@ -1876,13 +1910,23 @@ CONTAINS
     REAL(4), PARAMETER :: WS(4)   = [ 0.001460, 0.001269, 0.001079, 0.000898 ]
     REAL(4), PARAMETER :: DS(4)   = [ 0.036, -0.005, -0.026, -0.034 ]
     REAL(4), PARAMETER :: ALFS(4) = [ 0.107,  0.119,  0.134,  0.154 ]
+    !
+    ! Forbidden-component placeholder.  The He I 4471 line has a famous
+    ! forbidden satellite at ~4470 Å (the 2p^3P -- 4f^3F transition) that
+    ! produces an asymmetric red wing.  Kurucz left FORB1/FORB2/DLF1 hooks
+    ! in place for it but never populated FORB1 and FORB2 with non-zero
+    ! oscillator strengths, so the IF (FORB1(1) > 0.0) branch below is
+    ! always skipped.  The arrays, the dummy arguments forb1/forb2 in
+    ! he1_isolated_profile, and the f1/f2 computation inside that helper
+    ! are all preserved as a hook for future implementation -- see
+    ! Beauchamp et al. 1997 or Tremblay & Bergeron tables for modern data.
     REAL(4), PARAMETER :: FORB1(4)= [ 0., 0., 0., 0. ]
     REAL(4), PARAMETER :: FORB2(4)= [ 0., 0., 0., 0. ]
     REAL(4), PARAMETER :: TS(4)   = [ 5.0E3, 1.0E4, 2.0E4, 4.0E4 ]
     REAL(4), PARAMETER :: DEN     = 1.0E13
-    ! Fine structure splittings (nm)
+    ! Fine structure splittings (nm) -- DLF1 is forbidden-line offset; only
+    ! used inside the dead FORB1(1) > 0 branch below (placeholder).
     REAL(4), PARAMETER :: DLF1   = -0.150
-    REAL(4), PARAMETER :: DLF2   =  0.0
     ! Fine structure positions for the 2p3P -> 4d3D blend (nm offsets from WL)
     REAL(4), PARAMETER :: FS1 = -0.0184, FS2 = 0.0013, FS3 = 0.0010, &
                            FS4 = -0.0029, FS5 = -0.0025
@@ -1892,45 +1936,48 @@ CONTAINS
 
     result   = 0.0
     sentinel = 0.0
-    CALL he1_isolated_profile(j, wave, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
-                             TS, DEN, DLF1, DLF2, 1.0E13, 1, sentinel)
+    CALL he1_isolated_profile(j, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
+                             TS, DEN, 1.0E13, sentinel)
     IF (sentinel < 0.0) THEN
       CALL read_he1_stark_tables(1, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
       result = SQRTPI * phihe * dopwl * 10.0
       RETURN
     END IF
     ! Apply fine structure splitting
-    CALL he1_stark_widths(j, wave, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
+    CALL he1_stark_widths(j, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
     wwd    = wave - wl - dtot
     result = voigt_profile(ABS(wwd - FS1)/dopwl, a_damp) * FW1 + &
              voigt_profile(ABS(wwd + FS2)/dopwl, a_damp) * FW2 + &
              voigt_profile(ABS(wwd + FS3)/dopwl, a_damp) * FW3 + &
              voigt_profile(ABS(wwd + FS4)/dopwl, a_damp) * FW4 + &
              voigt_profile(ABS(wwd + FS5)/dopwl, a_damp) * FW5
+    ! Forbidden-component placeholder (see comment above on FORB1/FORB2).
+    ! Currently dead because FORB1(1) = 0; preserved as a hook for future
+    ! implementation of the He I 4471 forbidden satellite at ~4470 Å.
     IF (FORB1(1) > 0.0) THEN
       v      = ABS((wave - wl) - DLF1) / dopwl
-      result = result + FORB1(1) * voigt_profile(v, a_damp)  ! FORB1 is 0 per DATA
+      result = result + FORB1(1) * voigt_profile(v, a_damp)
     END IF
 
   END FUNCTION he1_4471_profile
 
 
 ! ============================================================================
-!  Shared helper: compute Stark width and shift for isolated He I lines.
+!  he1_isolated_profile: compute Stark width and shift for isolated He I lines.
 !
 !  Returns result < 0 as a sentinel when XNE(J) exceeds the density
 !  threshold DENHI (meaning read_he1_stark_tables should be used instead).
 ! ============================================================================
-  SUBROUTINE he1_isolated_profile(j, wave, wl, dopwl, ws, ds, alfs, forb1, forb2, &
-                                  ts, den, dlf1, dlf2, denhi, line_flag, result)
-    INTEGER, INTENT(IN)  :: j, line_flag
-    REAL(4), INTENT(IN)  :: wave, wl, dopwl
+  SUBROUTINE he1_isolated_profile(j, wl, dopwl, ws, ds, alfs, forb1, forb2, &
+                                  ts, den, denhi, result)
+    INTEGER, INTENT(IN)  :: j
+    REAL(4), INTENT(IN)  :: wl, dopwl
     REAL(4), INTENT(IN)  :: ws(4), ds(4), alfs(4), forb1(4), forb2(4)
-    REAL(4), INTENT(IN)  :: ts(4), den, dlf1, dlf2, denhi
+    REAL(4), INTENT(IN)  :: ts(4), den, denhi
     REAL(4), INTENT(OUT) :: result
 
     REAL(4) :: e, temp, x, xx, w_damp, d_ratio, alf
-    REAL(4) :: f1, f2, xnfhp, xnfhep, vm1, rhom, sigma, wtot, dtot, a_damp, v
+    REAL(4) :: f1, f2, xnfhp, xnfhep, vm1, rhom, sigma, wtot, dtot, a_damp
     INTEGER :: it
 
     e      = XNE(j)
@@ -1974,9 +2021,9 @@ CONTAINS
   END SUBROUTINE he1_isolated_profile
 
   ! Recompute widths for fine-structure application
-  SUBROUTINE he1_stark_widths(j, wave, wl, ws, ds, alfs, ts, den, wtot, dtot, a_damp)
+  SUBROUTINE he1_stark_widths(j, wl, ws, ds, alfs, ts, den, wtot, dtot, a_damp)
     INTEGER, INTENT(IN)  :: j
-    REAL(4), INTENT(IN)  :: wave, wl, ws(4), ds(4), alfs(4), ts(4), den
+    REAL(4), INTENT(IN)  :: wl, ws(4), ds(4), alfs(4), ts(4), den
     REAL(4), INTENT(OUT) :: wtot, dtot, a_damp
     REAL(4) :: e, temp, x, xx, w_d, d_r, alf, xnfhp, vm1, rhom, sigma, dopwl_loc
     INTEGER :: it
@@ -2018,20 +2065,20 @@ CONTAINS
     REAL(4), PARAMETER :: FORB1(4)= [ 0., 0., 0., 0. ]
     REAL(4), PARAMETER :: FORB2(4)= [ 0., 0., 0., 0. ]
     REAL(4), PARAMETER :: TS(4)   = [ 5.0E3, 1.0E4, 2.0E4, 4.0E4 ]
-    REAL(4), PARAMETER :: DEN = 1.0E16, DLF1 = -0.080, DLF2 = 0.0
+    REAL(4), PARAMETER :: DEN = 1.0E16
     REAL(4), PARAMETER :: FS1=-0.0148, FS2=0.0012, FS3=0.0011, FS4=-0.0025, FS5=-0.0023
     REAL(4), PARAMETER :: FW1=1.0/9.0, FW2=1.0/12.0, FW3=0.25, FW4=1.0/180.0, FW5=11.0/20.0
     REAL(4) :: phihe, wtot, dtot, a_damp, wwd, sentinel
 
     result = 0.0
-    CALL he1_isolated_profile(j, wave, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
-                             TS, DEN, DLF1, DLF2, 1.0E14, 2, sentinel)
+    CALL he1_isolated_profile(j, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
+                             TS, DEN, 1.0E14, sentinel)
     IF (sentinel < 0.0) THEN
       CALL read_he1_stark_tables(2, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
       result = SQRTPI * phihe * dopwl * 10.0
       RETURN
     END IF
-    CALL he1_stark_widths(j, wave, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
+    CALL he1_stark_widths(j, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
     wwd    = wave - wl - dtot
     result = voigt_profile(ABS(wwd-FS1)/dopwl, a_damp)*FW1 + &
              voigt_profile(ABS(wwd+FS2)/dopwl, a_damp)*FW2 + &
@@ -2050,18 +2097,18 @@ CONTAINS
     REAL(4), PARAMETER :: FORB1(4)= [ 0., 0., 0., 0. ]
     REAL(4), PARAMETER :: FORB2(4)= [ 0., 0., 0., 0. ]
     REAL(4), PARAMETER :: TS(4)   = [ 5.0E3, 1.0E4, 2.0E4, 4.0E4 ]
-    REAL(4), PARAMETER :: DEN = 1.0E16, DLF1 = -0.080, DLF2 = 0.0
+    REAL(4), PARAMETER :: DEN = 1.0E16
     REAL(4) :: phihe, wtot, dtot, a_damp, sentinel
 
     result = 0.0
-    CALL he1_isolated_profile(j, wave, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
-                             TS, DEN, DLF1, DLF2, 1.0E14, 3, sentinel)
+    CALL he1_isolated_profile(j, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
+                             TS, DEN, 1.0E14, sentinel)
     IF (sentinel < 0.0) THEN
       CALL read_he1_stark_tables(3, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
       result = SQRTPI * phihe * dopwl * 10.0
       RETURN
     END IF
-    CALL he1_stark_widths(j, wave, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
+    CALL he1_stark_widths(j, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
     result = voigt_profile(ABS(wave - wl - dtot)/dopwl, a_damp)
   END FUNCTION he1_4387_profile
 
@@ -2075,19 +2122,18 @@ CONTAINS
     REAL(4), PARAMETER :: FORB1(4)= [ 0., 0., 0., 0. ]
     REAL(4), PARAMETER :: FORB2(4)= [ 0., 0., 0., 0. ]
     REAL(4), PARAMETER :: TS(4)   = [ 5.0E3, 1.0E4, 2.0E4, 4.0E4 ]
-    REAL(4), PARAMETER :: DEN = 1.0E13, DLF1 = -0.150, DLF2 = 0.0
-    REAL(4), PARAMETER :: FS1 = 0.0
+    REAL(4), PARAMETER :: DEN = 1.0E13
     REAL(4) :: phihe, wtot, dtot, a_damp, wwd, sentinel
 
     result = 0.0
-    CALL he1_isolated_profile(j, wave, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
-                             TS, DEN, DLF1, DLF2, 1.0E13, 4, sentinel)
+    CALL he1_isolated_profile(j, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
+                             TS, DEN, 1.0E13, sentinel)
     IF (sentinel < 0.0) THEN
       CALL read_he1_stark_tables(4, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
       result = SQRTPI * phihe * dopwl * 10.0
       RETURN
     END IF
-    CALL he1_stark_widths(j, wave, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
+    CALL he1_stark_widths(j, wl, WS, DS, ALFS, TS, DEN, wtot, dtot, a_damp)
     wwd    = wave - wl - dtot
     result = voigt_profile(ABS(wwd)/dopwl, a_damp)
     ! FORB1 = 0 so no forbidden component needed
@@ -2558,14 +2604,12 @@ CONTAINS
     REAL(4), SAVE :: dlam(204,4)
     REAL(4), SAVE :: phihp(4,7,142), phihep(4,7,142)
     REAL(4), SAVE :: phi4026(4,8,196), phi4387(4,8,204)
-    REAL(4), SAVE :: phi4921(4,7,142)
-    INTEGER, SAVE :: itemp1_bcs = 0
     INTEGER, SAVE :: jsave = 0
     REAL(4), SAVE :: philam(204)
     LOGICAL, SAVE :: initialised = .FALSE.
 
     CHARACTER(LEN=8) :: title1, title2
-    INTEGER :: il, ne, it, ip, i
+    INTEGER :: il, ne, it, i
     REAL(4) :: at, bt, wt_t, ap, bp, wt_p, c1w1w, c1ww, cw1w, cww
     REAL(4) :: fne, dwl, phi_tmp(8), xxh, xxhe, phinorm, dl, a, b
     INTEGER :: it_loc, ip_loc
@@ -2713,18 +2757,55 @@ CONTAINS
 
 
 ! ============================================================================
-!  compute_line_opacity -- add NLTE line opacities (from TAPE19/unit 19) to BUFFER for
-!            depth point J.
+!  compute_line_opacity -- add line opacities for the "complex profile" line
+!            list (unit 19) to BUFFER at depth point J.
 !
-!  This handles five line types dispatched on the integer TYPE field:
-!    TYPE =  0   normal metal line (voigt_profile profile)
-!    TYPE =  3   PRD line          (treated as TYPE=0)
-!    TYPE = -1   hydrogen line (H I)
-!    TYPE = -2   deuterium line    (treated as H I with heavier Doppler width)
-!    TYPE =  1   autoionizing (Shore) line
-!    TYPE =  2   coronal line      (skipped)
-!    TYPE < -2   He I line
-!  Any other TYPE >= 4 is treated as a merged-continuum edge.
+!  WHAT THIS ROUTINE IS FOR
+!  ------------------------
+!  SYNTHE splits its input lines into two pools, processed by two very
+!  different code paths:
+!
+!    Pool A (this routine): the unit-19 list -- a few hundred to a few
+!      thousand lines that need full physics: hydrogen Stark profiles,
+!      He I Stark profiles, autoionizing Shore profiles, merged-continuum
+!      edges, and any "normal" lines whose populations have been corrected
+!      with NLTE departure coefficients by an upstream preprocessor (RNLTE).
+!
+!    Pool B (inline loop in synthe.f90 around line 644, reading unit 12):
+!      the LTE atomic + molecular metal line list -- typically tens of
+!      millions of lines, processed with a streamlined kappa = gf*xnfdop*
+!      exp(-elo*hckt) computation and Voigt profile only.
+!
+!  In standard SYNTHE workflows the unit-19 pool is dominated by NLTE
+!  lines (which is why it has historically been called "the NLTE line
+!  list" and the parameter here is named N19 with the comment "number of
+!  NLTE lines"), but nothing inside this routine actually does anything
+!  NLTE-specific.  The departure coefficients, when present, have been
+!  folded into the GF value upstream by RNLTE -- by the time the line
+!  reaches this routine, the kappa computation is identical to the LTE
+!  branch.  What distinguishes Pool A from Pool B is the *profile
+!  machinery*, not the population physics.  In particular, hydrogen and
+!  He I lines flow through Pool A even when no NLTE departures are
+!  applied to them, because Pool A is where the Stark broadening lives.
+!
+!  LINE TYPE DISPATCH
+!  ------------------
+!  Each unit-19 record carries an integer TYPE field that selects the
+!  profile branch:
+!    TYPE =  0   normal metal line             -> Voigt profile
+!    TYPE =  3   PRD-flagged line              -> treated as TYPE = 0
+!                  (the partial-redistribution machinery is not
+!                  implemented; see notes on PRDDOP/PRDPOW removal)
+!    TYPE = -1   hydrogen (H I)                -> full Stark + quasistatic
+!    TYPE = -2   deuterium (D I)               -> H I path with heavier
+!                                                  Doppler width
+!    TYPE =  1   autoionizing                  -> Shore (q,w) profile
+!    TYPE =  2   coronal line                  -> skipped (CYCLE)
+!    TYPE <= -3  He I line                     -> currently treated as
+!                                                  TYPE = 0 (full He I
+!                                                  Stark not yet ported)
+!    TYPE >= 4   merged-continuum edge         -> hydrogenic series-limit
+!                                                  blanket opacity
 !
 !  F77 EQUIVALENCE aliases resolved as local variables:
 !    CGF   = GF   (oscillator strength, also G)
@@ -2735,10 +2816,14 @@ CONTAINS
 !
 !  Arguments:
 !    J        -- current depth index (1..NRHOX)
-!    N19      -- number of NLTE lines on unit 19
+!    N19      -- number of records on unit 19 (the "complex profile" pool)
 !    CUTOFF   -- minimum kappa/continuum ratio to include a line
 !    VELSHIFT -- radial velocity shift for this depth (km/s), REAL(4)
-!    IFVAC    -- 1 = wavelengths already in vacuum, 0 = convert air->vacuum
+!    IFVAC    -- output wavelength convention.  Internal calculations are
+!                always in vacuum (line lists on units 12/14/19/20 are in
+!                vacuum by upstream convention).  IFVAC = 1 leaves output
+!                wavelengths in vacuum; IFVAC = 0 converts vacuum -> air on
+!                output via vac_to_air().
 !    LINOUT   -- >= 0: write (ILINE, KAPCEN) records to unit 15
 ! ============================================================================
   SUBROUTINE compute_line_opacity(j, n19, cutoff, velshift, ifvac, linout)
@@ -2753,7 +2838,7 @@ CONTAINS
     REAL(4)  :: adamp, dopwl, vvoigt, epsil, frelin, freq
     REAL(4)  :: xsectg, tail, dnbuff
     REAL(4)  :: edgeblue
-    REAL(4)  :: v2, nelem_r
+    REAL(4)  :: v2
     REAL(4)  :: hfac(kw), hefac(kw), h2fac(kw)
     REAL(4)  :: alpha_bao            ! Barklem-Anstee-O'Mara exponent
     INTEGER  :: iline, ncon, nelionx, itype, nlast_loc
@@ -2769,7 +2854,7 @@ CONTAINS
     REAL(4)  :: cgf_loc, ashore_loc, bshore_loc, xsect_loc
     REAL(4)  :: gammar_loc, gammas_loc, gammaw_loc
     REAL(4)  :: elo_loc, gf_loc
-    REAL(4)  :: nstark, ndopp, nmerge, inglis  ! declared REAL in F77
+    REAL(4)  :: nmerge, inglis  ! declared REAL in F77
 
     ! ----- saved between calls -----
     INTEGER, SAVE :: itemp1 = 0
@@ -2896,10 +2981,19 @@ CONTAINS
         ! aggressively and suppress hydrogen line strengths.
         !
         ! Reference: Inglis, D.R. & Teller, E. 1939, ApJ 90, 439
+        !
+        ! NOTE: nmerge is intentionally treated as a REAL value when
+        ! squared, matching the F77 atlas12 / synthe behaviour where
+        ! NMERGE was declared REAL.  An earlier F90 version had
+        ! DBLE(INT(nmerge))**2 here, which truncated nmerge to an
+        ! integer before squaring; this introduced a small but
+        ! systematic shift in EMERGE (and hence in the merged-continuum
+        ! tapering wavelengths), reducing opacity in the merged region
+        ! just redward of the Balmer/other series limits.
         inglis = 1600.0 / xne(k)**(2.0/15.0)
         nmerge = inglis - 1.5
-        emerge(k)     = 109737.312D0 / DBLE(INT(nmerge))**2
-        emergeh_loc(k)= RYDBERG_H / DBLE(INT(nmerge))**2
+        emerge(k)     = 109737.312D0 / DBLE(nmerge)**2
+        emergeh_loc(k)= RYDBERG_H / DBLE(nmerge)**2
       END DO
       itemp1 = itemp
     END IF
@@ -2943,6 +3037,15 @@ CONTAINS
         CASE (3)
           GOTO 200                 ! PRD -- treat as normal
         CASE (:-3)
+          ! ------------------------------------------------------------
+          ! He I line (line list TYPE <= -3).  PORT INCOMPLETE: stubbed
+          ! out as a plain metal-line Voigt profile.  The full He I
+          ! Stark broadening machinery (he1_generic_profile and its
+          ! 11-routine subtree, lines ~1755-2700 of this file) was
+          ! translated from F77 SYNTHE but is not yet wired up here.
+          ! See the PORT INCOMPLETE banner above he1_generic_profile
+          ! for the activation recipe and validation plan.
+          ! ------------------------------------------------------------
           GOTO 200                 ! He I not yet implemented -- treat as normal
         CASE DEFAULT
           ! TYPE >= 4: merged continuum edge
@@ -3183,7 +3286,7 @@ CONTAINS
         IF (wl_loc < wbegin) CYCLE line_loop
       END IF
       ! Blue wing  (613 block)
-613   bluecut  = 1.0D7 / (ELIM_HI - RYDBERG_H/(DBLE(nbup)+0.8D0)**2 - ehyd(nblo))
+      bluecut  = 1.0D7 / (ELIM_HI - RYDBERG_H/(DBLE(nbup)+0.8D0)**2 - ehyd(nblo))
       IF (ifvac == 0) bluecut = vac_to_air(bluecut)
       bluecut  = bluecut * dopratio
       wlplus1  = 1.0D7 / (ehyd(nbup+1) - ehyd(nblo))
@@ -3257,13 +3360,11 @@ CONTAINS
 
   END SUBROUTINE compute_line_opacity
 
+  ! ============================================================================
+  ! journal_append - Append one (iline, kapcen) pair to the in-memory
+  !                  line-center journal
+  ! ============================================================================
 
-  ! ============================================================================
-  !  SUBROUTINE journal_append(il, kc)
-  !
-  !  Append one (iline, kapcen) pair to the in-memory line-centre journal.
-  !  Grows the arrays by doubling when full.
-  ! ============================================================================
   SUBROUTINE journal_append(il, kc)
     INTEGER, INTENT(IN) :: il
     REAL(4), INTENT(IN) :: kc
@@ -3286,8 +3387,11 @@ CONTAINS
     journal_iline(journal_count)  = il
     journal_kapcen(journal_count) = kc
   END SUBROUTINE journal_append
+
+  ! ============================================================================
   !
-  !  F90 translation of the XNFPELSYN program (Kurucz).
+  !  run_xnfpelsyn:
+  !
   !  Replaces the standalone xnfpelsyn executable and the fort.10 file it
   !  produced.  Must be called once before the SYNTHE depth loop.
   !
@@ -3336,16 +3440,13 @@ CONTAINS
     ! Population output arrays (local; filled by COMPUTE_ONE_POP)
     REAL(8) :: xnfh_x(kw), xnfhe_x(kw,2)
     REAL(8) :: xnfph_x(kw,2), xnfphe_x(kw,3)
-    REAL(8) :: xnfpb_x(kw,1), xnfpc_x(kw,2), xnfpo_x(kw,1)
-    REAL(8) :: xnfpna_x(kw,1), xnfpmg_x(kw,2), xnfpal_x(kw,2)
-    REAL(8) :: xnfpsi_x(kw,2), xnfpk_x(kw,1), xnfpca_x(kw,2)
-    REAL(8) :: xnfpfe_x(kw,1)
-    REAL(8) :: xnfpch_x(kw), xnfpoh_x(kw)
+    REAL(8) :: xnfpc_x(kw,2), xnfpo_x(kw,1)
+    REAL(8) :: xnfpsi_x(kw,2)
 
     !  Local variables
     ! ------------------------------------------------------------------
-    INTEGER  :: i, j, nu, in_e, last1, nelem, ion, nsteps_x
-    REAL(8)  :: edge, sav, freq15_x, wave_x, waveno_lc, stepwt_x
+    INTEGER  :: i, j, nu, in_e, last1, nelem, ion
+    REAL(8)  :: edge, sav, freq15_x
     REAL(8)  :: eq, rco
     REAL(8)  :: a_sort(me)              ! sortable wavelength absolute values
     REAL(8)  :: xnfh2_lc(kw)           ! local H2 number density
@@ -3406,7 +3507,7 @@ CONTAINS
     MAXPOW   = 99
     LAST     = 81
     NUMCOL   = 1
-    itemp_a    = 0
+    itemp_a  = 0
     ! IFPRES=0 during Sections 1-3 and 6-7: prevents COMPUTE_ONE_POP
     ! from triggering NMOLEC internally.  The explicit NMOLEC(1) call
     ! below (when IFMOL=1) handles molecular equilibrium, and
@@ -3415,8 +3516,8 @@ CONTAINS
     ! KAPP recalculates Boltzmann level populations at each frequency,
     ! then restored to 0 before the Section 6 COMPUTE_ONE_POP calls.
     IFPRES = 0
-    ITER     = 1
-    NUMITS   = 1
+    ITER   = 1
+    NUMITS = 1
 
     ! ------------------------------------------------------------------
     !  SECTION 1.  READ EDGE FREQUENCY GRID FROM UNIT 17
@@ -3799,6 +3900,4 @@ CONTAINS
 
   END SUBROUTINE run_xnfpelsyn
 
-
-  ! ==========================================================================
 END MODULE synthe_module

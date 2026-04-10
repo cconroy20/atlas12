@@ -29,7 +29,6 @@
 !   33   output: wavelength / flux / continuum / optical-depth table
 !   19   input : NLTE line data from RNLTE
 !   20   input : additional NLTE line data
-!   25   input : spectrv.input run parameters (rhoxj, r1, r101, fudge exponents)
 !   93   input : run parameters from SYNBEG (unformatted, deleted after read)
 !
 !  ASCII spectrum output format (<model>.spec):
@@ -45,6 +44,7 @@
 !   10   -- was: fort.10 model atmosphere file         (now: module arrays)
 !    7   -- was: binary spectrum for PLOTSY              (now: <model>.spec)
 !   14*  -- was: direct-access opacity matrix scratch  (now: in-memory arrays)
+!   25   -- was: spectrv.input run parameters         (now: hardcoded PARAMETERs)
 !   28   -- was: XNFPEL diagnostic dump               (removed)
 !   29   -- was: opacity spectrum diagnostic           (removed)
 !   (syntoascanga post-processing step eliminated; ASCII output now inline)
@@ -61,14 +61,14 @@ PROGRAM SYNTHE
     ! flag to broadcast if synthe is running
     IFSYNTHE, & 
     ! Renamed imports (collide with synthe_module or local names)
-    bhyd_a => BHYD, hckt_a => HCKT, hkt_a => HKT, itemp_a => ITEMP, &
-    nrhox_a => NRHOX, rhox_a => RHOX, vturb_a => VTURB, &
+    hkt_a => HKT, itemp_a => ITEMP, &
+    nrhox_a => NRHOX, rhox_a => RHOX, &
     ahline_a => AHLINE, shline_a => SHLINE, &
     teff_a => TEFF, glog_a => GLOG, title_atlas => TITLE, &
     ! Direct imports (no name collision)
-    ACONT, ALINE, ANGLE, AXLINE, BNU, DELTAW, EHVKT, FREQ, FREQLG, &
+    ACONT, ALINE, AXLINE, BNU, DELTAW, EHVKT, FREQ, FREQLG, &
     HNU, IFPRES, IFSCAT, IFSURF, NMU, NUHI, NULO, NUMNU, &
-    PRDDOP, PRDPOW, SCONT, SIGMAC, SIGMAL, SIGPRD, SLINE, STIM, &
+    SCONT, SIGMAC, SIGMAL, SLINE, STIM, &
     SURFI, SXLINE, TAUNU
   IMPLICIT NONE
 
@@ -124,6 +124,76 @@ PROGRAM SYNTHE
   INTEGER, PARAMETER :: maxlin_p  = MAXLIN
 
   ! ==========================================================================
+  !  SOURCE-FUNCTION FUDGE PARAMETERS
+  !
+  !  These four numbers were historically read from the file 'spectrv.input'
+  !  in the F77 SYNTHE/SPECTRV pipeline.  In every standard distribution
+  !  the file shipped with all values set to zero, and they have been
+  !  hardcoded here as PARAMETERs to eliminate the unnecessary file I/O.
+  !  If you ever need to experiment with them, edit the values below and
+  !  recompile.
+  !
+  !  ----------------------------------------------------------------------
+  !  LINE_SCAT_RHOX_SCALE  -- column-mass scale (g/cm²) for the empirical
+  !  line-scattering treatment that mimics NLTE source-function divergence
+  !  in the upper photosphere.
+  !
+  !  Background.  In strict LTE, line opacity is treated as pure thermal
+  !  absorption coupled to S = B_ν.  In real stars, the line source
+  !  function in the upper atmosphere drops below B_ν because the line
+  !  photons scatter (and J_ν < B_ν there) rather than thermalizing.
+  !  Solving this rigorously requires multilevel NLTE statistical
+  !  equilibrium; SYNTHE does not.  Instead, Kurucz provided a hack:
+  !  smoothly reassign a fraction of the line opacity from the absorption
+  !  channel into the coherent-scattering channel as one moves up in the
+  !  atmosphere, with the fraction controlled by a single column-mass
+  !  scale height.  Per depth point j, with column mass rhox(j):
+  !
+  !      f_scat(j) = exp( -rhox(j) / LINE_SCAT_RHOX_SCALE )
+  !
+  !  with f_scat=0 forced when LINE_SCAT_RHOX_SCALE = 0.  Then for every
+  !  line at every wavelength:
+  !
+  !      ALINE(j)  = alpha_line(j) * (1 - f_scat(j))   ! absorption (S=B*fudge)
+  !      SIGMAL(j) = alpha_line(j) *      f_scat(j)    ! scattering (S=J)
+  !
+  !  Deep in the photosphere rhox >> scale, f_scat → 0, all line opacity is
+  !  thermal absorption (LTE).  High up rhox << scale, f_scat → 1, all
+  !  line opacity becomes coherent scattering and the source function is
+  !  driven toward J_ν, deepening the line cores in the way real
+  !  scattering-dominated transitions do.  A typical "on" value would be
+  !  ~0.1-1.0 g/cm² (roughly the column mass at the temperature minimum
+  !  of a solar-type star), but the standard distribution ships with this
+  !  set to zero, leaving SYNTHE in pure-LTE mode for line cores.  Modern
+  !  workflows that actually need accurate cores of NLTE-sensitive species
+  !  use precomputed departure-coefficient grids (or RH for chromospheric
+  !  resonance lines) instead of relying on this fudge.
+  !
+  !  ----------------------------------------------------------------------
+  !  PH1, PC1, PSI1  -- exponents for an ad-hoc NLTE source-function
+  !  correction applied as a multiplicative fudge to the LTE line source
+  !  function.  Per depth point j, with ground-state Boltzmann populations
+  !  of H I, C I, C II, Si I, and Si II (computed in PFSAHA and stored in
+  !  bhyd_gs/bc1_gs/bc2_gs/bsi1_gs/bsi2_gs):
+  !
+  !      bfudge(j) = bhyd_gs(j)**PH1
+  !                * (bc1_gs(j)/bc2_gs(j))**PC1
+  !                * (bsi1_gs(j)/bsi2_gs(j))**PSI1
+  !
+  !      SLINE(j) = BNU(j) * STIM(j) / (bfudge(j) - EHVKT(j))
+  !
+  !  This is the photospheric analogue of using H, C, and Si departure
+  !  coefficients as proxies for the dominant electron-donor non-LTE state
+  !  in the line-forming layers.  All zeros means bfudge=1, recovering the
+  !  pure-LTE source function.  This is the standard configuration; the
+  !  exponents are nonzero only in tuning experiments.
+  ! ==========================================================================
+  REAL(8), PARAMETER :: LINE_SCAT_RHOX_SCALE = 0.0D0
+  REAL(8), PARAMETER :: PH1                  = 0.0D0
+  REAL(8), PARAMETER :: PC1                  = 0.0D0
+  REAL(8), PARAMETER :: PSI1                 = 0.0D0
+
+  ! ==========================================================================
   !  SYNTHE LOCAL ARRAYS
   ! ==========================================================================
   INTEGER(4) :: line_flag(maxlin_p)
@@ -152,21 +222,13 @@ PROGRAM SYNTHE
   REAL(8)   :: idmol(mm), momass(mm)   ! mm=mw-39=100 molecules
 
   ! --- REAL*8 atmosphere read buffers ---
-  REAL(8)   :: qt(kw_p), qtkev(kw_p), qtk(kw_p), qhkt(kw_p)
-  REAL(8)   :: qtlog(kw_p), qhckt(kw_p)
-  REAL(8)   :: qp(kw_p), qxne(kw_p), qxnatom(kw_p), qrho(kw_p)
-  REAL(8)   :: qrhox(kw_p), qvturb(kw_p)
-  REAL(8)   :: qxnfh(kw_p), qxnfhe(kw_p,2), qxnfh2(kw_p)
   REAL(8)   :: qdopple(mw6_p), qxnfpel(mw6_p)
   REAL(8)   :: qablog(1131)
-  REAL(8)   :: qcongf
 
   REAL(8)   :: ablog(3, 377)
 
   REAL(4)   :: asynth(kw_p), alinec(kw_p)
-  REAL(4)   :: asyncont(kw_p), alinecont(kw_p)
   INTEGER   :: mlinej(kw_p)
-  INTEGER   :: iftp(kw_p), abmin_arr(kw_p)
 
   REAL(4)   :: hfac(kw_p), hefac(kw_p), h2fac(kw_p)
 
@@ -176,15 +238,15 @@ PROGRAM SYNTHE
   ! ==========================================================================
   !  SYNTHE SCALAR WORK VARIABLES
   ! ==========================================================================
-  INTEGER   :: i, j, l, n, nu, iedge, nbuff_i, ib
+  INTEGER   :: i, j, l, nu, iedge, nbuff_i
   INTEGER   :: n12, nlines, iline, ilines, n191
   INTEGER   :: n9, ncen
   INTEGER   :: nvshift
-  INTEGER   :: minred, maxred, maxblue, minblue_i, ibuff, istep
+  INTEGER   :: maxred, maxblue, minblue_i, istep
   INTEGER   :: n10dop, nstep, n1, maxstep
   INTEGER   :: nbuff_s, congf_nel
   INTEGER   :: maxline, i9, nelem_i
-  REAL(4)   :: kappa0_s, kapmin_s, kapcen_s, kappa_s
+  REAL(4)   :: kappa0_s, kapmin_s, kapcen_s
   REAL(4)   :: adamp_s
   REAL(4)   :: congf_s, alpha_s, v2_s
   REAL(4)   :: gamrf, gamsf, gamwf
@@ -197,31 +259,16 @@ PROGRAM SYNTHE
   !  SPECTRV LOCAL VARIABLES
   ! ==========================================================================
 
-  ! Continuum opacity read buffers (unit 10 SPECTRV pass)
-  REAL(8)   :: qcontabs(3 * (medge-1))
-  REAL(8)   :: qcontscat(3 * (medge-1))
-
-  ! Spectrum synthesis output
-  REAL(8)   :: q(41)
-
-  ! ASCII plot array
-  CHARACTER(LEN=1) :: aplot(101)
-
   ! Command-line model filename and derived outputs
   CHARACTER(LEN=512) :: model_file, spec_file, linform_file, mol_file
-
-  ! SPECTRV run parameters
-  REAL(8)   :: rhoxj, r1, r101, ph1, pc1, psi1
-  REAL(8)   :: slope, origin
 
   ! Wavelength loop variables (SPECTRV half)
   REAL(8)   :: wave_sv   ! current synthesis wavelength (nm)
   REAL(8)   :: wavold    ! previous line-centre wavelength (for bracket reset)
-  REAL(8)   :: slinec    ! line source function contribution
   REAL(8)   :: resid     ! residual intensity
 
   ! Integer loop/index variables (SPECTRV half)
-  INTEGER   :: mu, iresid, iplot, nlines_rd, n910
+  INTEGER   :: n910
   INTEGER   :: iedge_sv  ! continuum edge bracket for SPECTRV (separate from SYNTHE's iedge)
 
   ! Flags
@@ -231,7 +278,6 @@ PROGRAM SYNTHE
   CHARACTER(256) :: envval
   INTEGER        :: envlen, envstat
   INTEGER        :: dotpos
-  INTEGER        :: ios25
   INTEGER(8)     :: itmp
   INTEGER        :: jptr, k9
   REAL(8), ALLOCATABLE :: lindat8_arr(:,:)
@@ -351,23 +397,11 @@ nlines_in = 100
   !  These steps are done once, before the depth/opacity loop.
   !  READIN populates the mod_atlas_data atmosphere state, then
   !  run_xnfpelsyn computes continuum opacities and ion populations.
+  !
+  !  The source-function fudge parameters (LINE_SCAT_RHOX_SCALE, PH1, PC1,
+  !  PSI1) used to be read here from 'spectrv.input', but they're now
+  !  hardcoded as PARAMETERs near the top of this file (see comments there).
   ! ==========================================================================
-
-  ! --- Read run parameters from spectrv.input ---
-  OPEN(UNIT=25, FILE=trim(DATADIR)//'spectrv.input', STATUS='OLD', &
-       ACTION='READ', IOSTAT=ios25)
-  IF (ios25 /= 0) THEN
-    WRITE(6,'(A,A)') ' ERROR: cannot open ', trim(DATADIR)//'spectrv.input'
-    STOP 1
-  END IF
-  READ(25, '(8F10.5)') rhoxj, r1, r101, ph1, pc1, psi1, PRDDOP, PRDPOW
-  CLOSE(UNIT=25)
-  slope  = 100.0D0 / (r101 - r1)
-  origin = 1.5D0 - r1 * slope
-  ! Store in module so process_wavelength_point / process_linecen_record can use them
-  rhoxj_sv  = rhoxj;  r1_sv  = r1;  r101_sv = r101
-  ph1_sv    = ph1;    pc1_sv = pc1; psi1_sv = psi1
-  slope_sv  = slope;  origin_sv = origin
 
   ! --- Run READIN then run_xnfpelsyn ---
   ! IFPRES is set by READIN from the model cards (e.g. "PRESSURE OFF").
@@ -456,13 +490,16 @@ nlines_in = 100
   END DO
 
   ! --- SPECTRV Section 4: depth-dependent work arrays ---
+  ! See the parameter declarations near the top of this file for the
+  ! physical meaning of LINE_SCAT_RHOX_SCALE, PH1, PC1, PSI1.
   DO j = 1, nrhox
     bone(j)   = 1.0D0
-    bfudge_sv(j) = bhyd_gs(j)**ph1 * (bc1_gs(j)/bc2_gs(j))**pc1 * &
-                   (bsi1_gs(j)/bsi2_gs(j))**psi1
+    bfudge_sv(j) = bhyd_gs(j)**PH1 * (bc1_gs(j)/bc2_gs(j))**PC1 * &
+                   (bsi1_gs(j)/bsi2_gs(j))**PSI1
     fscat_sv(j)  = 0.0D0
-    IF (rhoxj /= 0.0D0 .AND. rhox_a(j)/rhoxj < 100.0D0) &
-      fscat_sv(j) = EXP(-rhox_a(j) / rhoxj)
+    IF (LINE_SCAT_RHOX_SCALE /= 0.0D0 .AND. &
+        rhox_a(j)/LINE_SCAT_RHOX_SCALE < 100.0D0) &
+      fscat_sv(j) = EXP(-rhox_a(j) / LINE_SCAT_RHOX_SCALE)
   END DO
 
   ! --- SPECTRV Section 5: populate /TRASH/ and wavelength grid (replaces unit-9 header read) ---
@@ -508,8 +545,6 @@ nlines_in = 100
   wlend_loc   = wbegin * ratio**(NUHI - 1)
   nmu2_loc    = NMU * 2
 
-  ! Initialise SPECTRV ASCII plot array and edge bracket
-  aplot   = ' '
   iedge_sv = 1
 
   ! Initialise JOSH operator matrices (COEFJ, COEFH).
@@ -915,7 +950,6 @@ CONTAINS
       EHVKT(jj)  = EXP(-FREQ * hkt_a(jj))
       STIM(jj)   = 1.0D0 - EHVKT(jj)
       BNU(jj)    = PLANCK_PREFACTOR * freq15**3 * EHVKT(jj) / STIM(jj)
-      SIGPRD(jj) = 0.0D0
       ALINE(jj)  = 0.0D0
       SIGMAL(jj) = 0.0D0
       SLINE(jj)  = BNU(jj)
@@ -942,8 +976,8 @@ CONTAINS
     REAL(8),  INTENT(IN) :: wave_in
     REAL(4),  INTENT(IN) :: asyn(kw)
 
-    REAL(8) :: wave_nm, q_loc(41), slinec_loc
-    INTEGER :: jj, mu_loc, iresid_loc, iplot_loc, ii
+    REAL(8) :: wave_nm, q_loc(41)
+    INTEGER :: jj, mu_loc
 
     ! wave_in is in nm (from the SYNTHE wavelength grid)
     wave_nm = wave_in
@@ -1004,7 +1038,7 @@ CONTAINS
     REAL(4), INTENT(IN) :: alin(kw)
 
     REAL(8) :: wave_nm, freq_loc, slinec_loc, concen_loc, center_loc
-    INTEGER :: jj, mu_loc
+    INTEGER :: jj
 
     ! Copy into local arrays and unpack named scalars
     lindat8_c = ld8
