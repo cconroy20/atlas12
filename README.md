@@ -40,7 +40,7 @@ and continuum flux at each point.
 | `atlas12_modules.f90` | 14,789 | Shared modules, all subroutines (EOS, opacity, transfer, etc.) |
 | `atlas12c.f90` | 623 | ATLAS12 main program (iteration driver) |
 | `synthe_module.f90` | 3,498 | SYNTHE shared data and procedures (line profiles, abundances) |
-| `synthe_spectrv.f90` | 1,105 | SYNTHE main program (spectral synthesis driver) |
+| `synthe.f90` | 1,105 | SYNTHE main program (spectral synthesis driver) |
 
 ## Building
 
