@@ -11704,7 +11704,7 @@ SUBROUTINE HLINOP
   !---------------------------------------------------------------------
   ! Upper level nearest to current frequency
   !---------------------------------------------------------------------
-  MFREQ = int(sqrt(NU_LYMAN / (NU_LYMAN / dble(N)**2 - FREQ)))
+  MFREQ = nint(sqrt(NU_LYMAN / (NU_LYMAN / dble(N)**2 - FREQ)))
 
   !---------------------------------------------------------------------
   ! Sum Stark-broadened line opacity over depth

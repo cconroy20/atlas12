@@ -338,7 +338,8 @@ PROGRAM SYNTHE
        wlbeg, wlend, resolu, ratio, ratiolg, cutoff, linout
   CLOSE(UNIT=93, STATUS='DELETE')
 
-nlines_in = 100
+  
+  !nlines_in = 100
  
   
   ixwlbeg = INT(LOG(wlbeg) / ratiolg)

@@ -843,28 +843,74 @@ CONTAINS
 
 
 ! ============================================================================
-!  hydrogen_line_profile -- hydrogen line profile with Stark⊗Doppler convolution.
+!  hydrogen_line_profile -- hydrogen line Stark+Doppler profile.
 !
-!  When Stehlé MMM tables are available:
-!    1. Extract pure Stark profile I(Δα) at (Ne, T) of depth J
-!    2. Convolve with Gaussian of full Doppler width (thermal + microturbulence)
-!    3. Cache the convolved profile per (n, m, j) for reuse across wavelengths
-!    4. Evaluate convolved profile at the requested frequency offset
-!    5. Add Lorentzian damping wings (resonance + vdW + radiation) via MAX
-!    6. Add Lyα quasi-molecular satellites where applicable
+!  Returns the normalised profile φ(ν) × √π × Δν_D for the hydrogen
+!  transition n→m at atmospheric depth j, evaluated at wavelength
+!  offset delw (nm) from the line centre stored in the line list.
 !
-!  When tables are not available:
-!    Falls back to original Peterson/Kurucz analytic profiles unchanged.
+!  Two code paths are available, selected by USE_KP_HYDROGEN below:
+!
+!  STEHLÉ PATH (default, USE_KP_HYDROGEN=.FALSE.):
+!    Uses pre-tabulated Stehlé & Hutcheon (1999) / Stehlé & Fouquet
+!    (2010) MMM profiles I(Δα; Ne, T), convolved numerically with a
+!    Voigt kernel (Doppler + Lorentzian damping) per depth point.
+!    The convolved profile is cached per (n, m, j) and reused across
+!    all wavelengths for that line at that depth.
+!
+!    Density handling:
+!      ne < density_grid(1)          — clamp to grid minimum (ne=1e10);
+!                                       profile is Doppler-dominated here.
+!      density_grid(1) ≤ ne ≤ ne_IT — normal bilinear interpolation.
+!      ne > ne_IT (Inglis-Teller)    — clamp to ne_IT; profile is very
+!                                       broad and merging with pseudo-
+!                                       continuum; K-P fallback avoided
+!                                       because its nwid/hfwid regime
+!                                       switch causes core artifacts.
+!      ne > density_grid(n_dens)     — K-P fallback (transition outside
+!                                       overall table range).
+!
+!    After profile evaluation, Lyα quasi-molecular satellite opacities
+!    (H₂ blue wing, H₂⁺ red wing) are added where applicable.
+!
+!  K-P PATH (USE_KP_HYDROGEN=.TRUE.):
+!    Original Peterson/Kurucz analytic VCS profiles, unchanged from
+!    the F77 HPROF4 implementation.  Three mechanisms (Doppler, Lorentz,
+!    Stark) are handled by a regime-switching approach: only the dominant
+!    mechanism contributes inside a core boundary hfwid, all three
+!    outside.  This is the F77-compatible baseline.
+!
+!    Note: the K-P regime switch causes visible core artifacts in high
+!    Balmer lines (H8 and above) for depths near the nwid=1↔3 transition
+!    density (~6×10¹¹ cm⁻³ for H18).  The Stehlé path does not have
+!    this problem.
+!
+!  Arguments:
+!    n     -- lower principal quantum number
+!    m     -- upper principal quantum number
+!    j     -- atmospheric depth index
+!    delw  -- wavelength offset from line centre [nm]; delw = wave - wl_loc
+!    dopph -- Doppler width per depth [fractional: Δν/ν]
 !
 !  References:
 !    Stehlé, C. & Hutcheon, R. 1999, A&AS 140, 93
 !    Stehlé, C. & Fouquet, S. 2010, Int. J. Spectrosc. 2010, 506346
+!    Vidal, C.R., Cooper, J. & Smith, E.W. 1973, ApJS 25, 37 (VCS)
 ! ============================================================================
   FUNCTION hydrogen_line_profile(n, m, j, delw, dopph) RESULT(result)
     INTEGER,  INTENT(IN) :: n, m, j
     REAL(8),  INTENT(IN) :: delw
     REAL(4),  INTENT(IN) :: dopph(kw)
     REAL(4)              :: result
+
+    ! ---------------------------------------------------------------
+    ! Profile path selector.
+    ! Set USE_KP_HYDROGEN = .TRUE. to use the original F77-compatible
+    ! Peterson/Kurucz analytic profiles for all lines.  The default
+    ! (.FALSE.) uses Stehlé MMM tables where available, which produces
+    ! smoother, more physically accurate profiles for high Balmer lines.
+    ! ---------------------------------------------------------------
+    LOGICAL, PARAMETER :: USE_KP_HYDROGEN = .FALSE.
 
     ! Lyman alpha H2+ quasi-molecular cutoff table
     REAL(4), PARAMETER :: CUTOFFH2PLUS(111) = [ &
@@ -1224,35 +1270,37 @@ CONTAINS
     END IF
 
     use_stehle = .false.
-    IF (STEHLE_TABLES_LOADED .AND. n >= 1 .AND. n <= 4) THEN
+    IF (.NOT. USE_KP_HYDROGEN .AND. STEHLE_TABLES_LOADED &
+        .AND. n >= 1 .AND. n <= 4) THEN
       IF (STEHLE_DATA(n)%loaded .AND. m >= STEHLE_DATA(n)%n_upper_min &
           .AND. m <= STEHLE_DATA(n)%n_upper_max) THEN
-        ! Check density bounds: only use tables when Ne is within the grid.
-        ! Below the grid, the 1/F0 conversion factor diverges and the
-        ! extrapolated profile values are unreliable.
-        IF (XNE(j) >= STEHLE_DATA(n)%density_grid(1) .AND. &
-            XNE(j) <= STEHLE_DATA(n)%density_grid(STEHLE_DATA(n)%n_dens)) THEN
+        ! Use tables when Ne is within or below the grid.
+        ! Below the grid, frac_d clamps to 0.0 so the lowest density
+        ! grid point (ne=1e10) is used — at ne < 1e10 Stark broadening
+        ! is negligible and the profile is dominated by the Doppler
+        ! convolution, which the Stehle path handles smoothly.  This
+        ! avoids falling back to K-P for the 8 shallowest solar layers
+        ! which caused a discontinuity in the emergent profile at the
+        ! K-P nwid/hfwid boundary (~0.12 A from line center for H18).
+        IF (XNE(j) <= STEHLE_DATA(n)%density_grid(STEHLE_DATA(n)%n_dens)) THEN
           use_stehle = .true.
-          ! Per-transition Inglis-Teller cutoff: the published Stehle
-          ! profiles for each (n,m) transition are tabulated only up
-          ! to the transition's own I-T density.  Beyond that density
-          ! the table cells are zero (or near-zero) because the upper
-          ! level has dissolved.  If we naively interpolate through
-          ! those zeros the line opacity vanishes.
-          !
-          ! On the ATLAS12 side (STARK_MMM) we return zero here and
-          ! let HOP's HHL94 pseudo-continuum loop pick up the dissolved
-          ! oscillator strength.  SYNTHE has no equivalent compensating
-          ! mechanism (its continuum opacity table is fixed by the
-          ! upstream XNFPELSYN call), so returning zero would simply
-          ! lose the line entirely.  Instead we fall back to the
-          ! analytic Kurucz-Peterson quasistatic profile, which has
-          ! no per-transition cutoff and produces a smoothly broadened
-          ! and weakened profile beyond the I-T limit.  This matches
-          ! the F77 SYNTHE behaviour (which used K-P everywhere).
+          ! Per-transition Inglis-Teller cutoff: the Stehle table is
+          ! only tabulated up to the transition's own I-T density.
+          ! Beyond that the upper level is dissolving into the continuum
+          ! and the profile is merging with the pseudo-continuum.
+          ! Rather than falling back to K-P (which has a nwid/hfwid
+          ! discontinuity that produces core artifacts) or returning
+          ! zero (which loses real opacity), clamp frac_d to the IT
+          ! grid point so the Stehle path continues with a smoothly
+          ! broadened profile at the highest tabulated density.  This
+          ! gives a physically reasonable smooth transition into the
+          ! merged pseudo-continuum region.
           IF (XNE(j) > STEHLE_DATA(n)%density_grid( &
                        STEHLE_DATA(n)%max_dens_idx(m - STEHLE_DATA(n)%n_upper_min + 1))) THEN
-            use_stehle = .false.
+            ! use_stehle remains .true.; the density interpolation will
+            ! clamp to max_dens_idx via frac_d clamping below.
+            ! Nothing to do here — fall through to Stehle path.
+            CONTINUE
           END IF
         END IF
       END IF
@@ -1260,7 +1308,15 @@ CONTAINS
 
     IF (use_stehle) THEN
       ! ===============================================================
-      ! STEHLÉ PATH: Stark ⊗ Doppler convolution
+      ! STEHLÉ PATH: Stark ⊗ Doppler convolution.
+      !
+      ! The electron density used for table interpolation is capped at
+      ! the per-transition Inglis-Teller limit (S%density_grid(max_dens_idx)).
+      ! This applies both to the profile interpolation (frac_d via ne_cap)
+      ! and to the Holtsmark field F0_loc, keeping the dalpha scale
+      ! consistent.  Layers above the IT limit receive the broadest
+      ! tabulated profile — very wide Stark wings merging smoothly into
+      ! the pseudo-continuum — rather than a K-P fallback.
       ! ===============================================================
 
       ! --- Build convolved profile if not cached for this (n,m,j) ---
@@ -1270,13 +1326,14 @@ CONTAINS
         xn8 = DBLE(n)
         xm8 = DBLE(m)
         lambda0 = 911.7633455D0 * (xn8*xm8)**2 / ((xm8-xn8)*(xm8+xn8))
-        F0_loc = 1.25D-9 * XNE(j)**(2.0D0/3.0D0)
-        conv_F0 = F0_loc
-        conv_lambda0 = lambda0
-
         iseries = n
         S => STEHLE_DATA(iseries)
         itrans = m - S%n_upper_min + 1
+        ! Cap ne at IT density for F0 — keeps dalpha scale consistent
+        ! with the capped density interpolation above.
+        F0_loc = 1.25D-9 * MIN(XNE(j), S%density_grid(S%max_dens_idx(itrans)))**(2.0D0/3.0D0)
+        conv_F0 = F0_loc
+        conv_lambda0 = lambda0
         nd = S%n_dens
         nt = NSTARK_TEMPS
 
@@ -1284,17 +1341,23 @@ CONTAINS
           dalpha_grid(ia) = 10.0D0**S%log_dalpha_grid(ia)
         END DO
 
-        ! Bilinear interpolation in (log Ne, T)
-        log_ne = LOG10(XNE(j))
+        ! Bilinear interpolation in (log Ne, T).
+        ! Cap ne at the per-transition IT density: above that limit the
+        ! profile is dissolving into the pseudo-continuum, and clamping
+        ! gives a smooth extension rather than extrapolating into the
+        ! zero-filled region of the table.
+        ASSOCIATE(ne_cap => MIN(XNE(j), S%density_grid(S%max_dens_idx(itrans))))
+        log_ne = LOG10(ne_cap)
         id1 = 1
         DO id1 = 1, nd-1
-          IF (XNE(j) <= S%density_grid(id1+1)) EXIT
+          IF (ne_cap <= S%density_grid(id1+1)) EXIT
         END DO
         id1 = MAX(1, MIN(nd-1, id1))
         id2 = id1 + 1
         frac_d = (log_ne - LOG10(S%density_grid(id1))) / &
                  (LOG10(S%density_grid(id2)) - LOG10(S%density_grid(id1)))
         frac_d = MAX(0.0D0, MIN(1.0D0, frac_d))
+        END ASSOCIATE
 
         it1 = 1
         DO it1 = 1, nt-1
@@ -1554,17 +1617,28 @@ CONTAINS
 
     ELSE
       ! ===============================================================
-      ! FALLBACK: Peterson/Kurucz (K-P) analytic profiles.
+      ! PETERSON/KURUCZ (K-P) ANALYTIC PATH.
       !
-      ! Based on the Vidal, Cooper & Smith (1973) unified theory with
-      ! modifications by Peterson (1969) and Kurucz.  The profile has
-      ! three broadening mechanisms (Doppler, Lorentz, Stark) handled
-      ! by a regime-switching approach:
-      !   nwid = 1: Doppler dominates the core
-      !   nwid = 2: Lorentz dominates the core
-      !   nwid = 3: Stark dominates the core
-      ! Inside the core (del < hfwid), only the dominant mechanism
-      ! contributes.  Outside (the wings), all three are summed.
+      ! Reached when USE_KP_HYDROGEN=.TRUE. (explicit selection), or
+      ! when the Stehlé tables are not loaded, or when the transition
+      ! is outside the table range (n > 4, or m outside n_upper range).
+      !
+      ! Based on Vidal, Cooper & Smith (1973) unified theory with
+      ! modifications by Peterson (1969) and Kurucz.  Three broadening
+      ! mechanisms are handled by a regime-switching approach:
+      !   nwid = 1: Doppler dominates — Gaussian core, Stark+Lorentz wings
+      !   nwid = 2: Lorentz dominates — Lorentzian core, Stark+Doppler wings
+      !   nwid = 3: Stark dominates  — Stark core, Doppler+Lorentz wings
+      ! Only the dominant mechanism contributes inside the core boundary
+      ! hfwid = freqnm × MAX(hwdop, hwlor, hwstk); all three contribute
+      ! outside.
+      !
+      ! Known limitation: the core/wing boundary hfwid depends on Ne
+      ! via the Holtsmark field fo(j), so it varies with depth.  For
+      ! high Balmer lines (H8+) where Stark dominates (nwid=3), this
+      ! depth-dependent boundary produces a derivative discontinuity
+      ! in the depth-integrated emergent profile at ~hfwid from line
+      ! centre.  The Stehlé path does not have this limitation.
       ! ===============================================================
 
       ! Determine which mechanism has the widest half-width
@@ -2834,7 +2908,6 @@ CONTAINS
     ! ----- local scalars -----
     REAL(4)  :: bolt, bolth, oldelo, oldeloh
     REAL(4)  :: kappa0, kappa, kapcen, kapmin
-    REAL(4)  :: kappa0red, kappared, kappa0blue, kappablue
     REAL(4)  :: adamp, dopwl, vvoigt, epsil, frelin, freq
     REAL(4)  :: xsectg, tail, dnbuff
     REAL(4)  :: edgeblue
@@ -2846,7 +2919,6 @@ CONTAINS
     INTEGER  :: minred, maxblue, ixwl, nelem_i
     INTEGER  :: i, k, n
     REAL(8)  :: wave, wcon, wmerge, wshift, wtail
-    REAL(8)  :: bluecut, wlplus1, wlplus2, redcut, wlminus1, wlminus2
     REAL(8)  :: dopratio, wl_loc
     REAL(8), SAVE :: emergeh_loc(kw)
     REAL(4)  :: dopph(kw)
@@ -3235,7 +3307,11 @@ CONTAINS
         CYCLE line_loop
 
       END IF
-      ! General Balmer/Paschen/... with merged continuum
+      ! General Balmer/Paschen/... with merged continuum.
+      ! Each line's Stark-broadened wings extend independently across the
+      ! full wavelength range; contributions from all lines add additively.
+      ! The only cutoffs are the natural opacity falloff (kappa < cutoff)
+      ! and the merged-continuum taper near the series limit (wcon/wtail).
       wshift = 1.0D7 / (conth(ncon) - RYDBERG_H/81.0D0**2)
       wmerge = 1.0D7 / (conth(ncon) - emergeh_loc(j))
       IF (wmerge < 0.0D0) wmerge = wshift + wshift
@@ -3253,65 +3329,31 @@ CONTAINS
       ! Red wing
       IF (wl_loc <= wlend) THEN
         IF (wbegin <= alphahyd(nblo)) THEN
-          redcut   = 1.0D7 / (ELIM_HI - RYDBERG_H/(DBLE(nbup)-0.8D0)**2 - ehyd(nblo))
-          IF (ifvac == 0) redcut = vac_to_air(redcut)
-          redcut   = redcut * dopratio
-          wlminus1 = 1.0D7 / (ehyd(nbup-1) - ehyd(nblo))
-          IF (ifvac == 0) wlminus1 = vac_to_air(wlminus1)
-          wlminus1 = wlminus1 * dopratio
-          wlminus2 = 1.0D7 / (ehyd(nbup-2) - ehyd(nblo))
-          IF (ifvac == 0) wlminus2 = vac_to_air(wlminus2)
-          wlminus2 = wlminus2 * dopratio
-          kappa0red = kappa0 * REAL( hydrogen_oscillator_strength(nblo,nbup-2)/hydrogen_oscillator_strength(nblo,nbup) / &
-                     (ehyd(nbup-2)-ehyd(nblo)) * (ehyd(nbup)-ehyd(nblo)) )
           minred = MAX(1, nbuff)
           wave   = wbegin * ratio**(minred-1)
           DO ibuff = minred, length
             IF (wave >= wcon) THEN
-              IF (wave > wlminus1) EXIT
               kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
               IF (wave < wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
-              IF (wave > redcut) THEN
-                kappared = kappa0red * hydrogen_line_profile(nblo, nbup-2, j, wave-wlminus2, dopph)
-                IF (wave < wtail) kappared = kappared * REAL((wave-wcon)/(wtail-wcon))
-                IF (kappared >= kappa) EXIT
-              END IF
               buffer(ibuff) = buffer(ibuff) + kappa
               IF (kappa < continuum(ibuff)*cutoff) EXIT
             END IF
             wave = wave * ratio
           END DO
         END IF
-        IF (minred == 1) CYCLE line_loop   ! (minred set above)
+        IF (minred == 1) CYCLE line_loop
         IF (wl_loc < wbegin) CYCLE line_loop
       END IF
-      ! Blue wing  (613 block)
-      bluecut  = 1.0D7 / (ELIM_HI - RYDBERG_H/(DBLE(nbup)+0.8D0)**2 - ehyd(nblo))
-      IF (ifvac == 0) bluecut = vac_to_air(bluecut)
-      bluecut  = bluecut * dopratio
-      wlplus1  = 1.0D7 / (ehyd(nbup+1) - ehyd(nblo))
-      IF (ifvac == 0) wlplus1 = vac_to_air(wlplus1)
-      wlplus1  = wlplus1 * dopratio
-      wlplus2  = 1.0D7 / (ehyd(nbup+2) - ehyd(nblo))
-      IF (ifvac == 0) wlplus2 = vac_to_air(wlplus2)
-      wlplus2  = wlplus2 * dopratio
-      kappa0blue = kappa0 * REAL( hydrogen_oscillator_strength(nblo,nbup+2)/hydrogen_oscillator_strength(nblo,nbup) / &
-                   (ehyd(nbup+2)-ehyd(nblo)) * (ehyd(nbup)-ehyd(nblo)) )
+      ! Blue wing
       ibuff   = MIN(length+1, nbuff)
       maxblue = ibuff - 1
       wave    = wbegin * ratio**(ibuff-1)
       DO i = 1, maxblue
         ibuff = ibuff - 1
         wave  = wave / ratio
-        IF (wave < wcon)    CYCLE line_loop
-        IF (wave < wlplus1) CYCLE line_loop
+        IF (wave < wcon) CYCLE line_loop
         kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
         IF (wave < wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
-        IF (wave < bluecut) THEN
-          kappablue = kappa0blue * hydrogen_line_profile(nblo, nbup+2, j, wave-wlplus2, dopph)
-          IF (wave < wtail) kappablue = kappablue * REAL((wave-wcon)/(wtail-wcon))
-          IF (kappablue > kappa) CYCLE line_loop
-        END IF
         buffer(ibuff) = buffer(ibuff) + kappa
         IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
       END DO
