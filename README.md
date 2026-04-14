@@ -93,7 +93,7 @@ The synthesis workflow has three steps:
 
 1. **SYNBEG** — sets wavelength range and resolution, writes `fort.93`
 2. **Line readers** (RGFALLLINELIST, etc.) — select lines, write `fort.12`/`fort.14`
-3. **SYNTHE_SPECTRV** — reads the model and line data, computes the spectrum
+3. **SYNTHE** — reads the model and line data, computes the spectrum
 
 ```
 synthe_spectrv.exe <model.atm> <output_basename>
@@ -104,9 +104,8 @@ Input files:
 | File | Description |
 |------|-------------|
 | `model.atm` | ATLAS12 model atmosphere (unit 5) |
-| `fort.93` | Run parameters from SYNBEG |
+| `fort.19` | NLTE data |
 | `fort.12` | Preprocessed line data |
-| `spectrv.input` | SPECTRV parameters (in `$ATLAS12/data/`) |
 | `continua.dat` | Continuum edge frequencies (in `$ATLAS12/data/`) |
 
 Output files:
@@ -132,7 +131,6 @@ Key data files:
 | `isotopes.dat` | ISOTOPES | Isotope mass fractions |
 | `karzas_*.dat` | XKARZAS | Hydrogen bound-free cross sections |
 | `nltelines_obs.bin` | XLINOP | NLTE line data |
-| `spectrv.input` | SPECTRV | Synthesis run parameters |
 | `continua.dat` | SPECTRV | Continuum edge frequency list |
 
 ## Translation from Fortran 77
