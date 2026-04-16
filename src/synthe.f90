@@ -20,14 +20,15 @@
 !  Unit assignments:
 !    5   input : model atmosphere control cards (command-line arg, read by READIN)
 !   11   output: ASCII spectrum (wavelength in Angstroms, flux, continuum flux)
-!   12   input : preprocessed LTE line data (unformatted sequential)
-!   13   scratch: merged line archive (deleted after use)
-!   15   scratch: (ILINE, KAPCEN) pairs for line-centre tracking (deleted)
-!   16   output: line identification records (formatted)
 !   17   input : continua.dat continuum edge frequency list (from DATADIR)
 !   33   output: wavelength / flux / continuum / optical-depth table
-!   19   input : NLTE line data from RNLTE
 !   93   input : run parameters from SYNBEG (unformatted, deleted after read)
+!
+!  Units REMOVED relative to the original three-program pipeline:
+!   12   -- was: preprocessed LTE  line data (fort.12)  now: lte_lines()  in mod_mklinelist
+!   19   -- was: preprocessed NLTE line data (fort.19)  now: nlte_lines() in mod_mklinelist
+!   13   scratch: merged line archive           (deleted; was unit 13)
+!   15   scratch: (ILINE, KAPCEN) pairs         (now: in-memory)
 !
 !  ASCII spectrum output format (<model>.spec):
 !    One line per wavelength point:
@@ -51,6 +52,7 @@
 PROGRAM SYNTHE
   
   USE synthe_module
+  USE mod_mklinelist, only: run_mklinelist, lte_lines, nlines_lte, nlines_nlte
   USE mod_atlas_data, only: &
     ! Procedures
     JOSH, READIN, KAPP, BLOCKJ, BLOCKH, &
@@ -205,7 +207,7 @@ PROGRAM SYNTHE
   REAL(4), ALLOCATABLE :: merged_lindat4(:,:)   ! (28, nlines)
 
   ! --- Run parameters (unit 93) ---
-  INTEGER   :: nlines_in, ifvac, ifnlte, n19, ifpred, linout
+  INTEGER   :: nlines_in, ifvac, n19, linout
   REAL(4)   :: turbv, cutoff
   REAL(4)   :: deckj(7, kw_p)
   REAL(4)   :: velshift_arr(kw_p)
@@ -258,7 +260,7 @@ PROGRAM SYNTHE
   ! ==========================================================================
 
   ! Command-line model filename and derived outputs
-  CHARACTER(LEN=512) :: model_file, spec_file, linform_file, mol_file
+  CHARACTER(LEN=512) :: model_file, spec_file, linform_file, mol_file, model_base
   CHARACTER(LEN=64)  :: tmparg   ! scratch buffer for optional numeric arguments
 
   ! Wavelength loop variables (SPECTRV half)
@@ -364,16 +366,25 @@ PROGRAM SYNTHE
   WRITE(6, '(A,F10.1)')  ' resolu           = ', resolu
   WRITE(6, '(A,F8.4)')   ' turbv (km/s)     = ', turbv
 
-  ! Strip extension: find last '.' and replace with .spec / .linform
-  dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
-  IF (dotpos > 1) THEN
-    spec_file    = model_file(1:dotpos-1) // '.spec'
-    mol_file     = model_file(1:dotpos-1) // '.mol'
-    linform_file = model_file(1:dotpos-1) // '.linform'
+  ! Strip any leading directory from model_file for output filenames
+  ! e.g. /path/to/sun.atm -> sun.atm
+  dotpos = INDEX(TRIM(model_file), '/', BACK=.TRUE.)
+  IF (dotpos > 0) THEN
+    model_base = model_file(dotpos+1:)
   ELSE
-    spec_file    = TRIM(model_file) // '.spec'
-    mol_file     = TRIM(model_file) // '.mol'
-    linform_file = TRIM(model_file) // '.linform'
+    model_base = TRIM(model_file)
+  END IF
+
+  ! Strip extension: find last '.' and replace with .spec / .linform
+  dotpos = INDEX(TRIM(model_base), '.', BACK=.TRUE.)
+  IF (dotpos > 1) THEN
+    spec_file    = model_base(1:dotpos-1) // '.spec'
+    mol_file     = model_base(1:dotpos-1) // '.mol'
+    linform_file = model_base(1:dotpos-1) // '.linform'
+  ELSE
+    spec_file    = TRIM(model_base) // '.spec'
+    mol_file     = TRIM(model_base) // '.mol'
+    linform_file = TRIM(model_base) // '.linform'
   END IF
   WRITE(6, '(A,A)') ' Spectrum output  = ', TRIM(spec_file)
   WRITE(6, '(A,A)') ' Linform output   = ', TRIM(linform_file)
@@ -401,8 +412,6 @@ PROGRAM SYNTHE
   !   Verified: INT(log(wlend/wlbeg)/log(1+1/resolu)) = 636080 for 300-2500nm at R=300000.
   ! When fort.93 is eventually removed, delete all nine from the READ above and keep only these.
   ifvac  = 1
-  ifnlte = 0
-  ifpred = 1
   resolu = 300000.0D0  ! re-apply defaults before keyword re-parse
   turbv  = 0.0
   DO i = 2, COMMAND_ARGUMENT_COUNT()
@@ -441,45 +450,23 @@ PROGRAM SYNTHE
   END IF
 
   ! ==========================================================================
-  !  SECTION 2.  OPEN FILES AND COUNT LINE RECORDS
+  !  SECTION 2.  BUILD LINE LISTS IN MEMORY
   !
-  !  nlines_in (LTE lines) and n19 (NLTE lines) were formerly read from fort.93.
-  !  They are now counted by rewinding each file and doing a dummy READ loop until
-  !  EOF, consuming one record per iteration without allocating storage.
+  !  run_mklinelist reads lines.list, dispatches to the appropriate readers
+  !  (gfall, predict, mol, h2o) in canonical order, and populates the
+  !  mod_mklinelist module arrays lte_lines(:) and nlte_lines(:).
+  !  nlines_lte and nlines_nlte replace the former fort.12/fort.19 counts.
+  !  fort.12 and fort.19 are never opened or written.
   ! ==========================================================================
-  ! Unit 10 (fort.10) eliminated -- data now in module arrays from run_xnfpelsyn()
-  OPEN(UNIT=12, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
-  OPEN(UNIT=19, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
+  CALL run_mklinelist(wlbeg, wlend, resolu, TRIM(DATADIR) // 'lines.list', DATADIR)
 
-  REWIND 12
-  nlines_in = 0
-  do
-    READ(12, IOSTAT=ios)
-    IF (ios > 0) THEN
-      WRITE(6,'(A,I0,A,I0)') ' ERROR: read error on fort.12 at record ', nlines_in+1, ', IOSTAT=', ios
-      STOP 1
-    END IF
-    IF (ios < 0) EXIT   ! EOF
-    nlines_in = nlines_in + 1
-  end do
-  REWIND 12
+  nlines_in = nlines_lte
+  n19       = nlines_nlte
 
-  REWIND 19
-  n19 = 0
-  do
-    READ(19, IOSTAT=ios)
-    IF (ios > 0) THEN
-      WRITE(6,'(A,I0,A,I0)') ' ERROR: read error on fort.19 at record ', n19+1, ', IOSTAT=', ios
-      STOP 1
-    END IF
-    IF (ios < 0) EXIT   ! EOF
-    n19 = n19 + 1
-  end do
-  REWIND 19
+  WRITE(6,'(A,I9)') ' nlines_in (LTE,  lte_lines)  = ', nlines_in
+  WRITE(6,'(A,I9)') ' n19       (NLTE, nlte_lines) = ', n19
 
-  WRITE(6,'(A,I9)') ' nlines_in (LTE,  fort.12) = ', nlines_in
-  WRITE(6,'(A,I9)') ' n19       (NLTE, fort.19) = ', n19
-
+  ! Diagnostic: print all NLTE lines
   OPEN(UNIT=35, FILE=TRIM(mol_file), STATUS='REPLACE', ACTION='WRITE')
 
   ! ==========================================================================
@@ -671,7 +658,6 @@ PROGRAM SYNTHE
 
   depth_loop: DO j = 1, nrhox
 
-    REWIND 12
     buffer(1:length) = 0.0
 
     ! Read continuum opacity (total = abs+scat) from module array instead of fort.10
@@ -750,8 +736,16 @@ PROGRAM SYNTHE
        alpha_s = 0.0
        
        DO iline = n191, nlines
+
           
-          READ(12) nbuff_s, congf_s, congf_nel, elo_s, gamrf, gamsf, gamwf
+          ! Access LTE line directly from in-memory array (replaces READ(12))
+          nbuff_s  = lte_lines(iline - n19)%nbuff
+          congf_s  = lte_lines(iline - n19)%cgf
+          congf_nel= lte_lines(iline - n19)%nelion
+          elo_s    = lte_lines(iline - n19)%elo
+          gamrf    = lte_lines(iline - n19)%gamrf
+          gamsf    = lte_lines(iline - n19)%gamsf
+          gamwf    = lte_lines(iline - n19)%gamwf
           
           kappa0_s = congf_s * REAL(xnfdop(congf_nel))
           kapmin_s = continuum(MIN(MAX(nbuff_s,1),length)) * cutoff
@@ -829,7 +823,7 @@ PROGRAM SYNTHE
     
   END DO depth_loop
   
-  CLOSE(UNIT=19, STATUS='DELETE')
+  ! fort.19 eliminated -- NLTE lines now in nlte_lines() from mod_mklinelist
 
   ! ==========================================================================
   !  SECTION 8.  SPECTRV WAVELENGTH LOOP
@@ -882,7 +876,7 @@ PROGRAM SYNTHE
   END IF identify_lines
 
   nlines_sv = n9
-  CLOSE(UNIT=12, STATUS='DELETE')
+  ! fort.12 eliminated -- LTE lines now in lte_lines() from mod_mklinelist
 
   IF (ilines == 0 .OR. linout < 0) THEN
     IF (ALLOCATED(merged_lindat8)) DEALLOCATE(merged_lindat8)

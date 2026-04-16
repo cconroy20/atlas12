@@ -8275,7 +8275,7 @@ SUBROUTINE HRAYOP
     ! Below 0.01 ν_L: extrapolate using lowest table value
     XSECT = SIGMA_THOMSON * GAVRILAM(1)**2 * (FREQ / DFREQ1)**4
 
-  else if (FREQ <= 2.4190611D15) then
+  else if (FREQ <= 0.74D0 * FREQ_RYDH) then
     ! Range 1: 0.01–0.74 ν_L, table step = 0.01 ν_L
     I = int(FREQ / DFREQ1)
     I = MIN(I + 1, 74)
