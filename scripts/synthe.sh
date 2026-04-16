@@ -32,7 +32,7 @@ cd $rundir
 
 #run synthe
 echo " Running synthe...."
-$ATLAS12/bin/synthe.exe $indir$2 wlbeg=380 wlend=390 resolu=300000
+$ATLAS12/bin/synthe.exe $indir$2 wlbeg=350 wlend=650 resolu=300000
 
 #save the molecular number density profiles
 #moldir="$kgrids/grids/$1/molnden/"

@@ -466,7 +466,7 @@ PROGRAM SYNTHE
   WRITE(6,'(A,I9)') ' nlines_in (LTE,  lte_lines)  = ', nlines_in
   WRITE(6,'(A,I9)') ' n19       (NLTE, nlte_lines) = ', n19
 
-  ! Diagnostic: print all NLTE lines
+
   OPEN(UNIT=35, FILE=TRIM(mol_file), STATUS='REPLACE', ACTION='WRITE')
 
   ! ==========================================================================

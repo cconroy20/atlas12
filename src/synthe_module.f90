@@ -3257,7 +3257,7 @@ CONTAINS
       IF (kappa0 < kapmin) CYCLE line_loop
       IF (linout >= 0) CALL journal_append(iline, kappa0)
       mlines = mlines + 1
-      END IF
+      ! Alpha (Nbup=Nblo+1) and beta-blue (Nbup=Nblo+2) treated as isolated
       IF (ncon == 0 .OR. nbup == nblo+1) THEN
 
         ! === ALPHA / ISOLATED LINE (red wing + blue wing) ===
@@ -3292,8 +3292,7 @@ CONTAINS
         beta_redwing: do   ! single-pass block for structured exit
           IF (wl_loc <= wlend) THEN
             minred = MAX(1, nbuff)
-                ' nblo=', nblo, ' nbup=', nbup, ' maxred=', length-minred+1
-            END IF
+            wave   = wbegin * ratio**(minred-1)
             DO ibuff = minred, length
               IF (wave > alphahyd(nblo)) EXIT beta_redwing
               kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
@@ -3309,11 +3308,19 @@ CONTAINS
         end do beta_redwing
         ! Blue wing (same as alpha path)
         ibuff   = MIN(length+1, nbuff)
+        maxblue = ibuff - 1
+        wave    = wbegin * ratio**(ibuff-1)
         DO i = 1, maxblue
+          ibuff = ibuff - 1
+          wave  = wave / ratio
+          kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
+          buffer(ibuff) = buffer(ibuff) + kappa
           IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
         END DO
         CYCLE line_loop
 
+      END IF
+      ! General Balmer/Paschen/... with merged continuum.
       wshift = 1.0D7 / (conth(ncon) - RYDBERG_H/81.0D0**2)
       wmerge = 1.0D7 / (conth(ncon) - emergeh_loc(j))
       IF (wmerge < 0.0D0) wmerge = wshift + wshift
@@ -3327,6 +3334,8 @@ CONTAINS
         wtail = vac_to_air(wtail)
       END IF
       wcon = wcon * dopratio
+      IF (ifvac == 0) wl_loc = vac_to_air(1.0D7/(ehyd(nbup)-ehyd(nblo))) * dopratio
+      ! Red wing
       IF (wl_loc <= wlend) THEN
         IF (wcon > wlend) CYCLE line_loop   ! merge point beyond window — no contribution
         IF (wbegin <= alphahyd(nblo)) THEN
@@ -3338,6 +3347,8 @@ CONTAINS
           ! This avoids hundreds of thousands of expensive
           ! hydrogen_line_profile calls for high-n Balmer lines whose
           ! Stark wings have decayed to negligible levels by wbegin.
+          IF (wave >= wcon) THEN
+            kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
             IF (kappa >= continuum(MIN(minred,length))*cutoff) THEN
               IF (wave < wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
               buffer(minred) = buffer(minred) + kappa
@@ -3349,6 +3360,9 @@ CONTAINS
                   buffer(ibuff) = buffer(ibuff) + kappa
                   IF (kappa < continuum(ibuff)*cutoff) EXIT
                 END IF
+                wave = wave * ratio
+              END DO
+            END IF
           END IF
         END IF
         IF (minred == 1) CYCLE line_loop
@@ -3405,8 +3419,10 @@ CONTAINS
         kappa = kappa0 * (ashore_loc*epsil + bshore_loc) / (epsil**2 + 1.0) / bshore_loc
         buffer(ibuff) = buffer(ibuff) + kappa
         IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
+      END DO
       CYCLE line_loop
 
+    END DO line_loop
 
 
   END SUBROUTINE compute_line_opacity
