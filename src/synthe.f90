@@ -22,13 +22,11 @@
 !   11   output: ASCII spectrum (wavelength in Angstroms, flux, continuum flux)
 !   12   input : preprocessed LTE line data (unformatted sequential)
 !   13   scratch: merged line archive (deleted after use)
-!   14   input : preprocessed LTE line data (fort.14, deleted after merge)
 !   15   scratch: (ILINE, KAPCEN) pairs for line-centre tracking (deleted)
 !   16   output: line identification records (formatted)
 !   17   input : continua.dat continuum edge frequency list (from DATADIR)
 !   33   output: wavelength / flux / continuum / optical-depth table
 !   19   input : NLTE line data from RNLTE
-!   20   input : additional NLTE line data
 !   93   input : run parameters from SYNBEG (unformatted, deleted after read)
 !
 !  ASCII spectrum output format (<model>.spec):
@@ -112,7 +110,7 @@ PROGRAM SYNTHE
   REAL(8) :: bone(kw)
   REAL(8) :: wlbeg_loc, wlend_loc, wbegin_loc
   REAL(8) :: air_loc, vt_loc
-  INTEGER :: ifvac_loc, n10_loc, nmu2_loc
+  INTEGER :: ifvac_loc, nmu2_loc
 
   ! ==========================================================================
   !  LOCAL PARAMETERS (aliases for synthe_module constants)
@@ -238,7 +236,7 @@ PROGRAM SYNTHE
   ! ==========================================================================
   !  SYNTHE SCALAR WORK VARIABLES
   ! ==========================================================================
-  INTEGER   :: i, j, l, nu, iedge, nbuff_i
+  INTEGER   :: i, j, l, nu, iedge, nbuff_i, ios, eqpos
   INTEGER   :: n12, nlines, iline, ilines, n191
   INTEGER   :: n9, ncen
   INTEGER   :: nvshift
@@ -261,6 +259,7 @@ PROGRAM SYNTHE
 
   ! Command-line model filename and derived outputs
   CHARACTER(LEN=512) :: model_file, spec_file, linform_file, mol_file
+  CHARACTER(LEN=64)  :: tmparg   ! scratch buffer for optional numeric arguments
 
   ! Wavelength loop variables (SPECTRV half)
   REAL(8)   :: wave_sv   ! current synthesis wavelength (nm)
@@ -268,7 +267,6 @@ PROGRAM SYNTHE
   REAL(8)   :: resid     ! residual intensity
 
   ! Integer loop/index variables (SPECTRV half)
-  INTEGER   :: n910
   INTEGER   :: iedge_sv  ! continuum edge bracket for SPECTRV (separate from SYNTHE's iedge)
 
   ! Flags
@@ -304,19 +302,67 @@ PROGRAM SYNTHE
   WRITE(6, '(/A,A)') ' DATADIR = ', TRIM(DATADIR)
 
   ! ==========================================================================
-  !  PARSE COMMAND-LINE ARGUMENT: model atmosphere filename
+  !  PARSE COMMAND-LINE ARGUMENTS
   !
-  !  Usage:  synthe_spectrv.exe <model_file>
-  !  The input extension is stripped and replaced with .spec for the
-  !  ASCII spectrum output (unit 11).
+  !  Usage:  synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>]
+  !
+  !  Argument 1  : model atmosphere filename (required, positional)
+  !  wlbeg=<nm>  : start wavelength in nm (required)
+  !  wlend=<nm>  : end wavelength in nm (required)
+  !  resolu=<R>  : resolving power lambda/delta-lambda (optional, default 300000)
+  !  turbv=<kms> : extra microturbulence in km/s (optional, default 0.0)
+  !
+  !  Keyword arguments may appear in any order after the model filename.
+  !  The model filename extension is stripped and replaced with .spec / .linform
+  !  for the output files.
   ! ==========================================================================
   IF (COMMAND_ARGUMENT_COUNT() < 1) THEN
-    WRITE(6, '(A)') ' ERROR: expected model filename as argument'
-    WRITE(6, '(A)') ' Usage: synthe_spectrv.exe <model_file>'
+    WRITE(6, '(A)') ' ERROR: expected model filename as first argument'
+    WRITE(6, '(A)') ' Usage: synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>]'
     STOP 1
   END IF
   CALL GET_COMMAND_ARGUMENT(1, model_file)
-  WRITE(6, '(A,A)') ' Input model      = ', TRIM(model_file)
+
+  ! Set defaults for optional keyword args
+  resolu = 300000.0D0
+  turbv  = 0.0
+  wlbeg  = 0.0D0    ! sentinel: must be set by keyword arg
+  wlend  = 0.0D0    ! sentinel: must be set by keyword arg
+
+  DO i = 2, COMMAND_ARGUMENT_COUNT()
+    CALL GET_COMMAND_ARGUMENT(i, tmparg)
+    eqpos = INDEX(tmparg, '=')
+    IF (eqpos < 2) THEN
+      WRITE(6,'(A,A)') ' ERROR: unrecognised argument (expected key=value): ', TRIM(tmparg)
+      STOP 1
+    END IF
+    SELECT CASE (tmparg(1:eqpos-1))
+      CASE ('wlbeg');  READ(tmparg(eqpos+1:), *) wlbeg
+      CASE ('wlend');  READ(tmparg(eqpos+1:), *) wlend
+      CASE ('resolu'); READ(tmparg(eqpos+1:), *) resolu
+      CASE ('turbv');  READ(tmparg(eqpos+1:), *) turbv
+      CASE DEFAULT
+        WRITE(6,'(A,A)') ' ERROR: unknown keyword argument: ', TRIM(tmparg)
+        STOP 1
+    END SELECT
+  END DO
+
+  IF (wlbeg <= 0.0D0) THEN
+    WRITE(6,'(A)') ' ERROR: wlbeg not specified or invalid'
+    WRITE(6,'(A)') ' Usage: synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>]'
+    STOP 1
+  END IF
+  IF (wlend <= wlbeg) THEN
+    WRITE(6,'(A)') ' ERROR: wlend not specified or <= wlbeg'
+    WRITE(6,'(A)') ' Usage: synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>]'
+    STOP 1
+  END IF
+
+  WRITE(6, '(A,A)')      ' Input model      = ', TRIM(model_file)
+  WRITE(6, '(A,F10.3)')  ' wlbeg (nm)       = ', wlbeg
+  WRITE(6, '(A,F10.3)')  ' wlend (nm)       = ', wlend
+  WRITE(6, '(A,F10.1)')  ' resolu           = ', resolu
+  WRITE(6, '(A,F8.4)')   ' turbv (km/s)     = ', turbv
 
   ! Strip extension: find last '.' and replace with .spec / .linform
   dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
@@ -333,10 +379,55 @@ PROGRAM SYNTHE
   WRITE(6, '(A,A)') ' Linform output   = ', TRIM(linform_file)
   WRITE(6, '(A,A)') ' Mol nden output  = ', TRIM(mol_file)
   ! ==========================================================================
-  OPEN(UNIT=93, FORM='UNFORMATTED')
-  READ(93) nlines_in, length, ifvac, ifnlte, n19, turbv, deckj, ifpred, &
-       wlbeg, wlend, resolu, ratio, ratiolg, cutoff, linout
-  CLOSE(UNIT=93, STATUS='DELETE')
+ ! OPEN(UNIT=93, FORM='UNFORMATTED')
+ ! READ(93) nlines_in, length, ifvac, ifnlte, n19, turbv, deckj, ifpred, &
+ !      wlbeg, wlend, resolu, ratio, ratiolg, cutoff, linout
+ ! CLOSE(UNIT=93, STATUS='DELETE')
+
+  ! deckj(1,j) = per-depth velocity shift (km/s); deckj(2,j) = magnetic field strength.
+  ! Columns 3-7 are unused.  Default both to zero (no shift, no field).
+  ! The fort.93 value is discarded here; when fort.93 is eventually removed,
+  ! delete deckj from the READ above and this block becomes the only initialisation.
+  deckj = 0.0
+
+  ! ifvac=1: vacuum wavelengths throughout (sets 'V' flag in title, air_loc, ifvac_loc).
+  ! ifnlte: read from fort.93 but never referenced anywhere downstream -- dead variable.
+  ! ifpred: read from fort.93 but never referenced anywhere downstream -- dead variable.
+  ! turbv, wlbeg, wlend, resolu: set from command-line args before the READ above; restored here
+  !   because the READ overwrites them with whatever SYNBEG wrote.
+  ! ratio, ratiolg: derived from resolu (also recomputed later in the SPECTRV section, but
+  !   needed earlier at the ixwlbeg calculation below).
+  ! length: derived as the number of log-wavelength steps from wlbeg to wlend at the given resolu.
+  !   Verified: INT(log(wlend/wlbeg)/log(1+1/resolu)) = 636080 for 300-2500nm at R=300000.
+  ! When fort.93 is eventually removed, delete all nine from the READ above and keep only these.
+  ifvac  = 1
+  ifnlte = 0
+  ifpred = 1
+  resolu = 300000.0D0  ! re-apply defaults before keyword re-parse
+  turbv  = 0.0
+  DO i = 2, COMMAND_ARGUMENT_COUNT()
+    CALL GET_COMMAND_ARGUMENT(i, tmparg)
+    eqpos = INDEX(tmparg, '=')
+    IF (eqpos < 2) CYCLE
+    SELECT CASE (tmparg(1:eqpos-1))
+      CASE ('wlbeg');  READ(tmparg(eqpos+1:), *) wlbeg
+      CASE ('wlend');  READ(tmparg(eqpos+1:), *) wlend
+      CASE ('resolu'); READ(tmparg(eqpos+1:), *) resolu
+      CASE ('turbv');  READ(tmparg(eqpos+1:), *) turbv
+    END SELECT
+  END DO
+  ratio   = 1.0D0 + 1.0D0 / resolu
+  ratiolg = LOG(ratio)
+  length  = INT(LOG(wlend / wlbeg) / ratiolg)
+
+  ! cutoff=1e-3: line wing truncation threshold (kapmin = continuum * cutoff);
+  !   lines whose wing opacity drops below this fraction of the local continuum
+  !   are dropped.  Value confirmed from fort.93.
+  ! linout=-30: negative value suppresses line identification output entirely
+  !   (all linout>=0 branches are skipped).  Value confirmed from fort.93.
+  ! When fort.93 is eventually removed, delete both from the READ above.
+  cutoff = 1.0E-3
+  linout = -30
 
   
   !nlines_in = 100
@@ -350,41 +441,53 @@ PROGRAM SYNTHE
   END IF
 
   ! ==========================================================================
-  !  SECTION 2.  OPEN FILES
+  !  SECTION 2.  OPEN FILES AND COUNT LINE RECORDS
+  !
+  !  nlines_in (LTE lines) and n19 (NLTE lines) were formerly read from fort.93.
+  !  They are now counted by rewinding each file and doing a dummy READ loop until
+  !  EOF, consuming one record per iteration without allocating storage.
   ! ==========================================================================
   ! Unit 10 (fort.10) eliminated -- data now in module arrays from run_xnfpelsyn()
   OPEN(UNIT=12, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
-  OPEN(UNIT=14, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
   OPEN(UNIT=19, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
-  OPEN(UNIT=20, STATUS='OLD',     FORM='UNFORMATTED', POSITION='APPEND')
+
+  REWIND 12
+  nlines_in = 0
+  do
+    READ(12, IOSTAT=ios)
+    IF (ios > 0) THEN
+      WRITE(6,'(A,I0,A,I0)') ' ERROR: read error on fort.12 at record ', nlines_in+1, ', IOSTAT=', ios
+      STOP 1
+    END IF
+    IF (ios < 0) EXIT   ! EOF
+    nlines_in = nlines_in + 1
+  end do
+  REWIND 12
+
+  REWIND 19
+  n19 = 0
+  do
+    READ(19, IOSTAT=ios)
+    IF (ios > 0) THEN
+      WRITE(6,'(A,I0,A,I0)') ' ERROR: read error on fort.19 at record ', n19+1, ', IOSTAT=', ios
+      STOP 1
+    END IF
+    IF (ios < 0) EXIT   ! EOF
+    n19 = n19 + 1
+  end do
+  REWIND 19
+
+  WRITE(6,'(A,I9)') ' nlines_in (LTE,  fort.12) = ', nlines_in
+  WRITE(6,'(A,I9)') ' n19       (NLTE, fort.19) = ', n19
 
   OPEN(UNIT=35, FILE=TRIM(mol_file), STATUS='REPLACE', ACTION='WRITE')
 
   ! ==========================================================================
   !  SECTION 3.  MERGE LINE ARCHIVES INTO MEMORY
   !
-  !  Read predicted lines (unit 20) and atomic/molecular lines (unit 14)
-  !  into merged_lindat8/merged_lindat4 arrays.  Replaces the former
-  !  scratch file on unit 13.
+  !  Line identification output (linout>=0) is permanently disabled (linout=-30);
+  !  fort.14 and fort.20 are never opened or used.
   ! ==========================================================================
-  IF (linout >= 0 .AND. (n19 + nlines_in) > 0) THEN
-    ALLOCATE(merged_lindat8(14, n19 + nlines_in))
-    ALLOCATE(merged_lindat4(28, n19 + nlines_in))
-    IF (n19 > 0) THEN
-      REWIND 20
-      DO i = 1, n19
-        READ(20) merged_lindat8(:,i), merged_lindat4(:,i)
-      END DO
-    END IF
-    IF (nlines_in > 0) THEN
-      REWIND 14
-      DO i = 1, nlines_in
-        READ(14) merged_lindat8(:, n19+i), merged_lindat4(:, n19+i)
-      END DO
-    END IF
-  END IF
-  CLOSE(UNIT=20, STATUS='DELETE')
-  CLOSE(UNIT=14, STATUS='DELETE')
 
   ! ==========================================================================
   !  SECTION 4.  VOIGT FUNCTION
@@ -512,7 +615,6 @@ PROGRAM SYNTHE
   vt_loc          = DBLE(turbv)
   air_loc         = DBLE(ifvac)    ! legacy: air_loc /= 0 means vacuum wavelengths
   ifvac_loc       = ifvac
-  n10_loc         = 0              ! NLTE line centres (not currently used)
 
   ! Store 'A' or 'V' flag in title(74)
   itmp = INT(ICHAR('A'), 8)
@@ -835,7 +937,6 @@ PROGRAM SYNTHE
 
   ncen    = 0
 
-  n910 = n9 + n10_loc
 
   DO i = 1, n9
     ncen = ncen + 1
@@ -862,44 +963,6 @@ PROGRAM SYNTHE
 
   WRITE(6,'(I10,A)') ncen, ' LINE CENTER RECORDS PROCESSED'
 
-  ! --- SPECTRV Section 8: NLTE line centres (unit 20) ---
-  IF (n10_loc > 0) THEN
-    REWIND 20
-    wavold   = 0.0D0
-    iedge_sv = 1
-
-    nlte_loop: DO iline = 1, n10_loc
-      READ(20) lindat8_c, lindat4_c
-      CALL unpack_lindat()
-      wave_sv = wlvac_c
-      IF (wave_sv < wavold) iedge_sv = 1
-      wavold = wave_sv
-
-      CALL setup_opacity_sv(wave_sv)
-
-      CALL josh(1, IFSURF)
-      IF (IFSURF == 1) concen_c = HNU(1)
-      IF (IFSURF == 2) concen_c = SURFI(1)
-
-      CALL josh(1, IFSURF)
-      IF (IFSURF == 1) center_c = HNU(1)
-      IF (IFSURF == 2) center_c = SURFI(1)
-      concen_c = surf_sv(1)
-      resid    = center_c / concen_c
-
-      WRITE(6, '(1H0,F10.4,F7.3,F5.1,F12.3,F5.1,F12.3,F9.2,1X,A8,A2,A8,A2,' // &
-                'F12.4,F9.3,1P2E11.3,' // &
-                '/1X,0PF10.4,I4,F6.2,F6.2,F6.2,A4,I2,I2,I3,F7.3,I3,F7.3,1X,' // &
-                'A8,A2,A8,A2,F7.4,F7.3,3F6.2)') &
-        wl_c, gflog_c, xj_c, e_c, xjp_c, ep_c, code_c, label_c, labelp_c, &
-        wlvac_c, resid, center_c, concen_c, &
-        wl_c, nelion_c, gr_c, gs_c, gw_c, ref_c, nblo_c, nbup_c, &
-        iso1_c, x1_c, iso2_c, x2_c, &
-        other1_c, other2_c, dwl_c, dgflog_c, dgammar_c, dgammas_c, dgammaw_c
-
-    END DO nlte_loop
-    CLOSE(UNIT=20, STATUS='DELETE')
-  END IF
 
   CLOSE(UNIT=11)
   CLOSE(UNIT=33)

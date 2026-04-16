@@ -40,23 +40,21 @@ mkdir $rundir
 cd $rundir
 
 # Set the directory containing the line information
-#linedir="Lines_RV31new"
-linedir="Lines_v2.3_uncal_old"
+linedir="Lines_RV31new"
+#linedir="Lines_v2.3_uncal_old"
 echo " Input line dir:" $linedir
 
-#generate synthe-ready input file
+#copy input model atm 
 /bin/cp $indir$2 $2
 
 #link the input files generated from synthe.setup
-ln -s ${ATLAS12}/${linedir}/tfort.12 fort.12
-ln -s ${ATLAS12}/${linedir}/tfort.14 fort.14
-ln -s ${ATLAS12}/${linedir}/tfort.19 fort.19
-ln -s ${ATLAS12}/${linedir}/tfort.20 fort.20
-ln -s ${ATLAS12}/${linedir}/tfort.93 fort.93
+ln -s ${ATLAS12}/${linedir}/fort.12 fort.12
+ln -s ${ATLAS12}/${linedir}/fort.19 fort.19
+#ln -s ${ATLAS12}/${linedir}/tfort.93 fort.93
 
 #run synthe, the main program
 echo " Running synthe...."
-$bindir/synthe.exe $2
+$bindir/synthe.exe $2 wlbeg=510 wlend=535 resolu=300000
 
 #save the molecular number density profiles
 #mol="${asc/spec/mol}"
@@ -72,3 +70,4 @@ cd ../
 
 date
 
+# 63385516
