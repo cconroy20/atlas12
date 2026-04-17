@@ -4,6 +4,8 @@ Fortran 90 translation of Robert L. Kurucz's stellar atmosphere and spectral
 synthesis codes, originally developed at the Harvard-Smithsonian Center for
 Astrophysics.
 
+This translation was written by Charlie Conroy and Claude.AI.
+
 ## Programs
 
 ### ATLAS12 — Opacity-Sampling Stellar Atmosphere Code
@@ -50,11 +52,14 @@ cd src && make && cd ..
 # Point the code at the data directory
 export ATLAS12=$(pwd)
 
-# Run ATLAS12 on a prepared input_model.dat in the current directory
-./bin/atlas12c.exe sun
+# Move into the work directory, which ships with a solar input_model.dat
+cd workdir
 
-# Synthesise a visible spectrum from the converged model
-./bin/synthe_spectrv.exe sun.atm wlbeg=400 wlend=700
+# Run ATLAS12 on the solar model
+../bin/atlas12c.exe sun
+
+# Synthesize a visible spectrum from the converged model
+../bin/synthe_spectrv.exe sun.atm wlbeg=400 wlend=700
 ```
 
 See [Running ATLAS12](#running-atlas12) and [Running SYNTHE](#running-synthe)
@@ -132,7 +137,7 @@ starting with `#` or `!` are treated as comments.  Example:
 26  -4.54
 ```
 
-When `zscale`, `heabnd`, or `abund=` is used, ATLAS12 renormalises so
+When `zscale`, `heabnd`, or `abund=` is used, ATLAS12 renormalizes so
 that X + Y + Z = 1 (aborting if the specified Y + Z would drive X
 negative), then recomputes all abundance-dependent quantities before
 the iteration loop.  If both `teff=` and `logg=` are given, the model
@@ -158,8 +163,8 @@ Arguments:
 | Argument         | Required | Description |
 |------------------|:--------:|-------------|
 | `<model_file>`   | yes      | ATLAS12 `.atm` model atmosphere (positional, 1st) |
-| `wlbeg=<nm>`     | yes      | Start wavelength in nanometres |
-| `wlend=<nm>`     | yes      | End wavelength in nanometres (> wlbeg) |
+| `wlbeg=<nm>`     | yes      | Start wavelength in nanometers |
+| `wlend=<nm>`     | yes      | End wavelength in nanometers (> wlbeg) |
 | `resolu=<R>`     | no       | Resolving power λ/Δλ (default 300 000) |
 | `turbv=<kms>`    | no       | Extra microturbulence in km/s added in quadrature to the model value (default 0.0) |
 
@@ -176,7 +181,7 @@ Output files:
 | `<base>.linform`  | Line identifications (written only if line-journalling is enabled) |
 | `<base>.mol`      | Molecular number-density diagnostics |
 
-Wavelengths are handled internally in nanometres on a logarithmic grid
+Wavelengths are handled internally in nanometers on a logarithmic grid
 with spacing `ratio = 1 + 1/resolu`; vacuum wavelengths are used
 throughout.  The `.spec` file reports wavelengths in Angstroms for
 compatibility with legacy post-processing.
@@ -185,7 +190,7 @@ compatibility with legacy post-processing.
 
 *TBD — end-to-end worked example (e.g. a solar-model `input_model.dat`,
 the ATLAS12 invocation that converges it, and the SYNTHE call that
-synthesises the visible spectrum from the resulting `.atm` file).*
+synthesizes the visible spectrum from the resulting `.atm` file).*
 
 ## Input Data
 
@@ -204,13 +209,13 @@ are marked with † in the tables below.  After downloading, unpack
 `mol.tar.gz` in place — `lines.list` references the individual molecular
 sub-lists that the archive expands to.
 
-The full contents of the data directory, organised by purpose:
+The full contents of the data directory, organized by purpose:
 
 **Equation of state and partition functions**
 
 | File | Used by | Contents |
 |------|---------|----------|
-| `ionpots.dat`  | `IONPOTS`  | Ionisation potentials, all species |
+| `ionpots.dat`  | `IONPOTS`  | Ionization potentials, all species |
 | `isotopes.dat` | `ISOTOPES` | Isotope mass fractions |
 | `molecules.dat`| `READMOL`  | Molecular equilibrium constants |
 | `pfsaha.dat`   | `PFSAHA`   | Atomic partition functions |
@@ -225,7 +230,7 @@ The full contents of the data directory, organised by purpose:
 | `crossch.dat`        | `CHOP`       | CH bound-free + bound-bound cross-section table |
 | `crossoh.dat`        | `OHOP`       | OH bound-free + bound-bound cross-section table |
 | `h2collop.dat`       | `H2COLLOP`   | H₂ collision-induced absorption |
-| `hotop.dat`          | `HOTOP`      | Hot-star opacities (high-ionisation species) |
+| `hotop.dat`          | `HOTOP`      | Hot-star opacities (high-ionization species) |
 | `karzas_ekarzas.dat` | `read_karzas_tables` | Karzas–Latter tabulated Gaunt-factor energy grid |
 | `karzas_freqn.dat`   | `read_karzas_tables` | Karzas–Latter frequency grid |
 | `karzas_xl.dat`      | `read_karzas_tables` | Karzas–Latter ℓ-resolved cross sections |
@@ -297,7 +302,7 @@ Key changes in the modernization:
 
 **Data and code hygiene**
 
-- Hardcoded data arrays (partition functions, Feautrier matrices, Karzas–Latter tables, ionisation potentials, isotope fractions) externalised to readable data files
+- Hardcoded data arrays (partition functions, Feautrier matrices, Karzas–Latter tables, ionization potentials, isotope fractions) externalized to readable data files
 - Dead-code audit with static call-graph analysis: ~233 lines removed from `atlas12_modules.f90`
 - He I line-profile island (`HE1_GENERIC_PROFILE` and 11 helpers, ~904 lines) retained but marked `PORT INCOMPLETE` and not currently called; `stark_quasistatic_profile` handles He I until that port is completed
 - All remaining Fortran 2008 `BLOCK...END BLOCK` constructs eliminated
