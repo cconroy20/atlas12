@@ -450,6 +450,36 @@ PROGRAM SYNTHE
   END IF
 
   ! ==========================================================================
+  !  SPECTRV INITIALISATION  (formerly the opening sections of spectrv.f90)
+  !
+  !  These steps are done once, before the depth/opacity loop.
+  !  READIN populates the mod_atlas_data atmosphere state, then
+  !  run_xnfpelsyn computes continuum opacities and ion populations.
+  !
+  !  This block runs *before* run_mklinelist so that teff_a is available
+  !  to gate temperature-dependent line lists (H2O, TiO) out of hot-star
+  !  runs.  The two stages are otherwise independent: line-list assembly
+  !  does not touch atmosphere state, and the atmosphere initialisation
+  !  does not touch the line lists.
+  !
+  !  The source-function fudge parameters (LINE_SCAT_RHOX_SCALE, PH1, PC1,
+  !  PSI1) used to be read here from 'spectrv.input', but they're now
+  !  hardcoded as PARAMETERs near the top of this file (see comments there).
+  ! ==========================================================================
+
+  ! --- Run READIN then run_xnfpelsyn ---
+  ! IFPRES is set by READIN from the model cards (e.g. "PRESSURE OFF").
+  itemp_a  = 1
+  OPEN(UNIT=5,  FILE=TRIM(model_file),  STATUS='OLD', ACTION='READ')
+  OPEN(UNIT=17, FILE=trim(DATADIR)//'continua.dat', STATUS='OLD', ACTION='READ')
+  CALL readin(20)
+  ! Keep unit 5 open: MOLEC reads molecular data from INPUTDATA (=5)
+  ! on its first call during run_xnfpelsyn.
+  CALL run_xnfpelsyn()
+  CLOSE(UNIT=5)
+  CLOSE(UNIT=17)
+
+  ! ==========================================================================
   !  SECTION 2.  BUILD LINE LISTS IN MEMORY
   !
   !  run_mklinelist reads lines.list, dispatches to the appropriate readers
@@ -457,8 +487,13 @@ PROGRAM SYNTHE
   !  mod_mklinelist module arrays lte_lines(:) and nlte_lines(:).
   !  nlines_lte and nlines_nlte replace the former fort.12/fort.19 counts.
   !  fort.12 and fort.19 are never opened or written.
+  !
+  !  teff_a (set by readin above) gates H2O and TiO line lists: they are
+  !  skipped when teff_a > TEFF_COOL_LIMIT (5000 K), even if listed in
+  !  lines.list.
   ! ==========================================================================
-  CALL run_mklinelist(wlbeg, wlend, resolu, TRIM(DATADIR) // 'lines.list', DATADIR)
+  CALL run_mklinelist(wlbeg, wlend, resolu, teff_a, &
+                      TRIM(DATADIR) // 'lines.list', DATADIR)
 
   nlines_in = nlines_lte
   n19       = nlines_nlte
@@ -481,30 +516,6 @@ PROGRAM SYNTHE
   !  The Weideman (1994) algorithm uses precomputed PARAMETER coefficients
   !  in synthe_module — no runtime initialisation is needed.
   ! ==========================================================================
-
-  ! ==========================================================================
-  !  SPECTRV INITIALISATION  (formerly the opening sections of spectrv.f90)
-  !
-  !  These steps are done once, before the depth/opacity loop.
-  !  READIN populates the mod_atlas_data atmosphere state, then
-  !  run_xnfpelsyn computes continuum opacities and ion populations.
-  !
-  !  The source-function fudge parameters (LINE_SCAT_RHOX_SCALE, PH1, PC1,
-  !  PSI1) used to be read here from 'spectrv.input', but they're now
-  !  hardcoded as PARAMETERs near the top of this file (see comments there).
-  ! ==========================================================================
-
-  ! --- Run READIN then run_xnfpelsyn ---
-  ! IFPRES is set by READIN from the model cards (e.g. "PRESSURE OFF").
-  itemp_a  = 1
-  OPEN(UNIT=5,  FILE=TRIM(model_file),  STATUS='OLD', ACTION='READ')
-  OPEN(UNIT=17, FILE=trim(DATADIR)//'continua.dat', STATUS='OLD', ACTION='READ')
-  CALL readin(20)
-  ! Keep unit 5 open: MOLEC reads molecular data from INPUTDATA (=5)
-  ! on its first call during run_xnfpelsyn.
-  CALL run_xnfpelsyn()
-  CLOSE(UNIT=5)
-  CLOSE(UNIT=17)
 
   ! ==========================================================================
   !  SECTIONS 5+6.  POPULATE SYNTHE WORKING ARRAYS FROM MODULE ARRAYS

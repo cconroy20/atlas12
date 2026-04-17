@@ -7754,21 +7754,38 @@ END FUNCTION COULBF1S
 !=========================================================================
 ! FUNCTION COULFF(J, NZ)
 !
-! Free-free (bremsstrahlung) Gaunt factor for a hydrogen-like ion.
+! Thermally averaged free-free (bremsstrahlung) Gaunt factor for a
+! hydrogen-like ion of effective charge Z.
 !
-! Returns g_ff by bilinear interpolation in a 11x12 table indexed by:
-!   gamma^2 = Z^4 * 158000/T  (columns: log10(gamma^2) = -6..4)
-!   u = h*nu/(kT)              (rows:    log10(u)       = -8..3)
+! Returns <g_ff(gamma^2, u)> by bilinear interpolation of the table
+! published by van Hoof et al. (2014), MNRAS 444, 420.  The table
+! covers canonical log10(gamma^2) in [-6, +10] and log10(u) in
+! [-16, +13] at 0.2-dex spacing (81 x 146 = 11,826 points), computed
+! to ~1e-5 relative precision using arbitrary-precision arithmetic.
 !
-! The table values are from Karzas & Latter (1961). The interpolation
-! uses log10 of both variables for uniform spacing.
+! Physical variables:
+!   gamma^2 = Z^2 Ry / kT      = Z^2 * 1.57877e5 K / T
+!   u       = h*nu / kT
+!
+! AXIS CONVENTION NOTE:
+!   The original Kurucz COULFF stored the lookup variable as
+!     GAMLOG = log10(158000 * Z^4 / T) = 2 * log10(gamma^2)  (canonical)
+!     HVKTLG = log10((hnu/kT)^2)       = 2 * log10(u)        (canonical)
+!   (see legacy comment "GAMLOG=LOG10(158000*Z*Z/T)*2" in the original
+!   Fortran 77 code).  The old 11x12 table labels "log gamma^2 = -6..+4"
+!   and "log u = -8..+3" were therefore twice the canonical values.
+!   Once decoded, the old table agreed with van Hoof (2014) to ~1%.
+!   The new code computes canonical log gamma^2 and log u directly.
+!
+! Data file:  $ATLAS12/gauntff_vanhoof.dat  (ASCII; original copyright
+!   notice preserved.  See van Hoof et al. 2014; data available at
+!   http://data.nublado.org/gauntff/.)
 !
 ! Arguments:
-!   J  — depth index (for accessing T, FREQ via module arrays)
-!   NZ — charge index (1-6) for Z^4 lookup
+!   J  - depth index (for accessing T, TLOG, FREQ, FREQLG via module arrays)
+!   NZ - charge index (1-6) for Z^2 lookup
 !
-! Error corrected 13 Apr 1988: original had incorrect value at one
-! grid point.
+! Callers: HOP (NZ=1, neutral H), HE2OP (NZ=2, He+).
 !=========================================================================
 
 FUNCTION COULFF(J, NZ)
@@ -7777,62 +7794,201 @@ FUNCTION COULFF(J, NZ)
 
   ! --- Arguments ---
   integer, intent(in) :: J       ! depth index
-  integer, intent(in) :: NZ      ! charge index (1=H, 2=He+, etc.)
+  integer, intent(in) :: NZ      ! charge index (1=H, 2=He+, ..., 6)
 
   ! --- Return value ---
   real*8 :: COULFF
 
-  ! --- log10(Z^4) for NZ = 1-6 ---
-  real*8, parameter :: Z4LOG(6) = (/ &
-    0.0D0, 1.20412D0, 1.90849D0, 2.40824D0, 2.79588D0, 3.11261D0 /)
+  ! --- log10(Z^2) for NZ = 1-6 (canonical gamma^2 scales as Z^2) ---
+  real*8, parameter :: Z2LOG(6) = (/ &
+    0.0D0, 0.60206D0, 0.95424D0, 1.20412D0, 1.39794D0, 1.55630D0 /)
 
-  ! --- Gaunt factor table: A(gamma_index, u_index) ---
-  ! Rows (11): log10(gamma^2) = -6, -5, ..., 4
-  ! Cols (12): log10(u)       = -8, -7, ..., 3
-  real*8, parameter :: A(11, 12) = reshape( (/ &
-    5.53, 5.49, 5.46, 5.43, 5.40, 5.25, 5.00, 4.69, 4.48, 4.16, 3.85, &
-    4.91, 4.87, 4.84, 4.80, 4.77, 4.63, 4.40, 4.13, 3.87, 3.52, 3.27, &
-    4.29, 4.25, 4.22, 4.18, 4.15, 4.02, 3.80, 3.57, 3.27, 2.98, 2.70, &
-    3.64, 3.61, 3.59, 3.56, 3.54, 3.41, 3.22, 2.97, 2.70, 2.45, 2.20, &
-    3.00, 2.98, 2.97, 2.95, 2.94, 2.81, 2.65, 2.44, 2.21, 2.01, 1.81, &
-    2.41, 2.41, 2.41, 2.41, 2.41, 2.32, 2.19, 2.02, 1.84, 1.67, 1.50, &
-    1.87, 1.89, 1.91, 1.93, 1.95, 1.90, 1.80, 1.68, 1.52, 1.41, 1.30, &
-    1.33, 1.39, 1.44, 1.49, 1.55, 1.56, 1.51, 1.42, 1.33, 1.25, 1.17, &
-    0.90, 0.95, 1.00, 1.08, 1.17, 1.30, 1.32, 1.30, 1.20, 1.15, 1.11, &
-    0.55, 0.58, 0.62, 0.70, 0.85, 1.01, 1.15, 1.18, 1.15, 1.11, 1.08, &
-    0.33, 0.36, 0.39, 0.46, 0.59, 0.76, 0.97, 1.09, 1.13, 1.10, 1.08, &
-    0.19, 0.21, 0.24, 0.28, 0.38, 0.53, 0.76, 0.96, 1.08, 1.09, 1.09  &
-    /), (/ 11, 12 /) )
-  ! Error corrected 13 Apr 1988:
-  ! Original had 0.45 instead of 0.55 at A(1,10)
+  ! --- van Hoof (2014) table grid parameters ---
+  integer, parameter :: GFF_N_GAM2       = 81
+  integer, parameter :: GFF_N_U          = 146
+  real*8,  parameter :: GFF_LOG_GAM2_MIN = -6.0D0
+  real*8,  parameter :: GFF_LOG_U_MIN    = -16.0D0
+  real*8,  parameter :: GFF_DLOG         =  0.2D0
+  integer, parameter :: GFF_MAGIC        = 20140210
+
+  ! --- Cached Gaunt factor table (stored as log10(g_ff) for interpolation) ---
+  ! First index: log(gamma^2); second index: log(u).
+  real*8, save :: GFF_LOGTAB(GFF_N_GAM2, GFF_N_U)
+  logical, save :: INITIALIZED = .false.
 
   ! --- Local variables ---
-  real*8  :: GAMLOG    ! log10(gamma^2) = log10(158000*Z^4/T)
-  real*8  :: HVKTLG    ! log10(h*nu/kT)
-  real*8  :: PP, QQ    ! interpolation weights
-  integer :: IGAM, IHVKT
+  real*8  :: LGAM2          ! canonical log10(gamma^2)
+  real*8  :: LU             ! canonical log10(u)
+  real*8  :: XI, XJ         ! fractional grid indices
+  real*8  :: FI, FJ         ! fractional parts
+  real*8  :: LG00, LG01, LG10, LG11  ! log(g_ff) at 4 grid corners
+  real*8  :: LG             ! interpolated log(g_ff)
+  integer :: I0, J0         ! lower-corner grid indices (1-based Fortran)
+
+  ! --- Derived physical constants (computed from mod_constants).
+  !     log10(Ry_H / k) = log10(1.57881e5 K), with Ry in energy units.
+  !     log10(k/h)      = log10(2.08366e10 Hz/K).
+  real*8, parameter :: LOG10_RYH_OVER_K = log10(FREQ_RYDH * HOVERK)
+  real*8, parameter :: LOG10_K_OVER_H   = -log10(HOVERK)
+  real*8, parameter :: LN10             = 2.30258509299405D0
+
+  ! --- First-call initialization ---
+  if (.not. INITIALIZED) then
+    call read_gauntff_table()
+    INITIALIZED = .true.
+  end if
 
   if (IDEBUG == 1) write(6,'(A)') ' RUNNING COULFF'
 
-  ! log10(gamma^2) = log10(158000) - log10(T) + log10(Z^4)
-  !   but stored as: 10.39638 - TLOG/ln(10) + Z4LOG
-  GAMLOG = 10.39638D0 - TLOG(J) / 1.15129D0 + Z4LOG(NZ)
-  IGAM = max(min(int(GAMLOG + 7.0D0), 10), 1)
+  ! --- Compute canonical log gamma^2 = log10(Z^2 * Ry / (k*T))
+  !       = log10(Z^2) + log10(Ry/k) - log10(T)
+  LGAM2 = Z2LOG(NZ) + LOG10_RYH_OVER_K - TLOG(J) / LN10
 
-  ! log10(h*nu/kT) = log10(FREQ) - log10(T) - log10(k/h)
-  HVKTLG = (FREQLG - TLOG(J)) / 1.15129D0 - 20.63764D0
-  IHVKT = max(min(int(HVKTLG + 9.0D0), 11), 1)
+  ! --- Compute canonical log u = log10(h*nu / (k*T))
+  !       = log10(nu) - log10(T) - log10(k/h)
+  LU = (FREQLG - TLOG(J)) / LN10 - LOG10_K_OVER_H
 
-  ! Bilinear interpolation
-  PP = GAMLOG - dble(IGAM - 7)
-  QQ = HVKTLG - dble(IHVKT - 9)
+  ! --- Fractional grid indices (1-based).  Clamp to valid interior [1, N-1]
+  !     so we always have a 4-cell neighborhood for bilinear interpolation.
+  XI = (LGAM2 - GFF_LOG_GAM2_MIN) / GFF_DLOG + 1.0D0
+  XJ = (LU    - GFF_LOG_U_MIN)    / GFF_DLOG + 1.0D0
+  I0 = max(1, min(int(XI), GFF_N_GAM2 - 1))
+  J0 = max(1, min(int(XJ), GFF_N_U    - 1))
+  FI = XI - dble(I0)
+  FJ = XJ - dble(J0)
+  ! Clamp fractions too, so out-of-range lookups use the edge value rather
+  ! than extrapolating.  Canonical stellar conditions sit well inside the
+  ! grid; clamping is a safety net for pathological T/nu combinations.
+  FI = max(0.0D0, min(FI, 1.0D0))
+  FJ = max(0.0D0, min(FJ, 1.0D0))
 
-  COULFF = (1.0D0 - PP) * ((1.0D0 - QQ) * A(IGAM, IHVKT) &
-                          + QQ * A(IGAM, IHVKT + 1)) &
-         + PP * ((1.0D0 - QQ) * A(IGAM + 1, IHVKT) &
-                + QQ * A(IGAM + 1, IHVKT + 1))
+  ! --- Bilinear interpolation of log10(g_ff), following van Hoof's own
+  !     interpolator convention (keeps the interpolated quantity smooth
+  !     over many orders of magnitude at large |log u|).
+  LG00 = GFF_LOGTAB(I0,     J0)
+  LG01 = GFF_LOGTAB(I0,     J0 + 1)
+  LG10 = GFF_LOGTAB(I0 + 1, J0)
+  LG11 = GFF_LOGTAB(I0 + 1, J0 + 1)
+  LG   = (1.0D0 - FI) * ((1.0D0 - FJ) * LG00 + FJ * LG01) &
+       +          FI  * ((1.0D0 - FJ) * LG10 + FJ * LG11)
+
+  COULFF = 10.0D0 ** LG
 
   return
+
+contains
+
+  !-------------------------------------------------------------------
+  ! Read the van Hoof (2014) Gaunt factor table from
+  ! $DATADIR/gauntff_vanhoof.dat.
+  !
+  ! The file is the original ASCII-formatted table distributed at
+  ! http://data.nublado.org/gauntff/ (BSD-style license preserved).
+  ! It contains a commented header followed by two 146-row data
+  ! tables: first the Gaunt factors, then their uncertainty estimates.
+  ! Each data row has 81 values, one per log10(gamma^2) grid point.
+  !
+  ! We store log10(g_ff) in GFF_LOGTAB(I, J) where I indexes
+  ! log10(gamma^2) and J indexes log10(u), so (I, J) order matches
+  ! Fortran column-major layout (fast axis = gamma^2).
+  !-------------------------------------------------------------------
+  subroutine read_gauntff_table()
+    integer :: IU, IOS, I, J
+    integer :: MAGIC_IN, N_GAM2_IN, N_U_IN
+    real*8  :: LOG_GAM2_IN, LOG_U_IN, DLOG_IN
+    real*8  :: ROW(GFF_N_GAM2)
+    character(256)  :: FILEPATH, LINE
+    character(2048) :: DATALINE   ! big enough for 81 %e values (~1300 chars)
+
+    IU = 89
+    FILEPATH = trim(DATADIR) // 'gauntff_vanhoof.dat'
+    open(unit=IU, file=FILEPATH, status='OLD', action='READ', iostat=IOS)
+    if (IOS /= 0) then
+      write(6,*) 'COULFF: ERROR opening ', trim(FILEPATH)
+      stop 'COULFF: cannot read van Hoof Gaunt factor table'
+    end if
+
+    ! --- Skip copyright header (lines starting with '#') and consume the
+    !     5 numeric metadata lines (magic, grid dims, start values, step).
+    call read_nonblank_line(IU, LINE);  read(LINE, *) MAGIC_IN
+    call read_nonblank_line(IU, LINE);  read(LINE, *) N_GAM2_IN, N_U_IN
+    call read_nonblank_line(IU, LINE);  read(LINE, *) LOG_GAM2_IN
+    call read_nonblank_line(IU, LINE);  read(LINE, *) LOG_U_IN
+    call read_nonblank_line(IU, LINE);  read(LINE, *) DLOG_IN
+
+    ! --- Validate header against expected constants ---
+    if (MAGIC_IN  /= GFF_MAGIC .or. &
+        N_GAM2_IN /= GFF_N_GAM2 .or. &
+        N_U_IN    /= GFF_N_U .or. &
+        abs(LOG_GAM2_IN - GFF_LOG_GAM2_MIN) > 1.0D-6 .or. &
+        abs(LOG_U_IN    - GFF_LOG_U_MIN)    > 1.0D-6 .or. &
+        abs(DLOG_IN     - GFF_DLOG)         > 1.0D-6) then
+      write(6,*) 'COULFF: ERROR file header mismatch for ', trim(FILEPATH)
+      write(6,*) '   magic:  expect ', GFF_MAGIC,        ' got ', MAGIC_IN
+      write(6,*) '   n_gam2: expect ', GFF_N_GAM2,       ' got ', N_GAM2_IN
+      write(6,*) '   n_u:    expect ', GFF_N_U,          ' got ', N_U_IN
+      write(6,*) '   log_gam2_min: expect ', GFF_LOG_GAM2_MIN, ' got ', LOG_GAM2_IN
+      write(6,*) '   log_u_min:    expect ', GFF_LOG_U_MIN,    ' got ', LOG_U_IN
+      write(6,*) '   dlog:         expect ', GFF_DLOG,         ' got ', DLOG_IN
+      stop 'COULFF: van Hoof table header does not match compiled constants'
+    end if
+
+    ! --- Skip blank lines and '#' comment lines between the metadata and
+    !     the first data row, then read the 146 rows of Gaunt factor data.
+    !
+    !     Each row corresponds to a fixed log(u) value (starting at
+    !     log(u) = -16) and sweeps log(gamma^2) from -6 to +10 across its
+    !     81 entries.  On-disk layout is [U, GAM2] row-major.  We
+    !     transpose on the fly into [GAM2, U] so Fortran column-major
+    !     indexing puts the hot lookup axis (gamma^2) first.  We also
+    !     take log10 of each value here so runtime interpolation is
+    !     purely additive.
+    !
+    !     Each data line has 81 floating-point values occupying ~1300
+    !     characters -- we need a large line buffer.
+    do J = 1, GFF_N_U
+      call read_nonblank_line(IU, DATALINE)
+      read(DATALINE, *, iostat=IOS) (ROW(I), I = 1, GFF_N_GAM2)
+      if (IOS /= 0) then
+        write(6,*) 'COULFF: error parsing row ', J, ' of Gaunt factor data'
+        stop 'COULFF: corrupted Gaunt factor data file'
+      end if
+      do I = 1, GFF_N_GAM2
+        GFF_LOGTAB(I, J) = log10(ROW(I))
+      end do
+    end do
+
+    close(IU)
+    ! --- Uncertainty table (second half of file) is not read; it is only
+    !     useful for sanity-checking the published data itself, not for
+    !     runtime opacity calculation.
+
+  end subroutine read_gauntff_table
+
+  !-------------------------------------------------------------------
+  ! Read one non-blank, non-comment line from unit IU into LINE.
+  ! Treats '#' as a line-initial comment marker (per the van Hoof
+  ! file format).  Also strips inline '# comment' tails so the caller
+  ! can read numeric values with list-directed READ.
+  !-------------------------------------------------------------------
+  subroutine read_nonblank_line(IU, LINE)
+    integer, intent(in) :: IU
+    character(*), intent(out) :: LINE
+    integer :: IOS, K
+    do
+      read(IU, '(A)', iostat=IOS) LINE
+      if (IOS /= 0) then
+        write(6,*) 'COULFF: unexpected EOF reading gauntff_vanhoof.dat'
+        stop 'COULFF: corrupted Gaunt factor data file'
+      end if
+      LINE = adjustl(LINE)
+      if (len_trim(LINE) == 0) cycle
+      if (LINE(1:1) == '#')    cycle
+      K = index(LINE, '#')
+      if (K > 0) LINE(K:) = ' '
+      return
+    end do
+  end subroutine read_nonblank_line
 
 END FUNCTION COULFF
 
@@ -7926,12 +8082,69 @@ END SUBROUTINE H2PLOP
 ! Temperature-dependent quantities (H⁻ population XHMIN, theta) are
 ! cached and only recomputed when ITEMP changes.
 !
+! -------------------------------------------------------------------------
+! MODERNIZATION REVIEW (2026):
+!
+! Both data sources here were reviewed against the modern literature as
+! part of the F90 modernization, with the conclusion that NO UPGRADE is
+! warranted.  The reasoning, for posterity:
+!
+! BOUND-FREE: Wishart (1979) / Broad & Reinhardt (1976), as tabulated by
+!   Mathisen (1984), remains the community standard reference.  It is the
+!   cross-section used by the 2024 Barklem & Amarsi non-LTE H⁻ study
+!   (A&A 689, A100), which explicitly adopted Wishart (1979) after reviewing
+!   alternatives.  McLaughlin et al. (2017, ApJ 842, 65) provide new
+!   R-matrix calculations that add Feshbach+shape resonances between 10.92
+!   and 14.35 eV (88-113 nm), but from their Fig. 1:
+!     "The differences compared to the Wishart (1979) data are very small
+!      in the visual and UV (photon energies up to 7 eV, roughly redward
+!      of 1700 Å)."
+!   The current 85-point table already captures the first resonance at
+!   ~113 nm (10.97 eV) with 10 points reaching a peak of 95e-18 cm².  The
+!   additional resonances at 11.5-14.35 eV fall below the shortest non-
+!   resonance point of the current grid (~100 nm) and are only relevant
+!   for the far-UV spectra of hot stars (Teff >~ 20,000 K).
+!
+!   John (1988, A&A 193, 189) is NOT a higher-accuracy calculation: it is
+!   an analytic fit formula to the Wishart data.  Adopting John (1988)
+!   would be a convenience-for-accuracy trade that cannot represent the
+!   resonance structure at all, and is not an improvement.
+!
+! FREE-FREE: Bell & Berrington (1987) is an R-matrix calculation using 1s,
+!   2s, 2p hydrogen states plus three pseudostates, quoted in the paper as
+!   "currently the most accurate available" and still so as of this writing.
+!   No modern replacement exists; Barklem & Amarsi (2024) also use this
+!   source.  Again, John (1988) gives an analytic fit to these same
+!   Bell & Berrington values -- a convenience formulation, not a new
+!   calculation.
+!
+! NET RESULT: Both the bound-free and free-free cross-sections currently in
+!   use here are the same data that modern 2024-era non-LTE studies adopt.
+!   Any replacement would either be (a) the same data in a different form
+!   (John 1988 fit formulas), which is lower accuracy, or (b) McLaughlin
+!   (2017), which only changes things below 108 nm -- outside the regime
+!   where ATLAS is typically used and which the current table already
+!   covers adequately via Mathisen's tabulation of the first resonance.
+!
+! The original Kurucz code was well-chosen; no change needed.
+! -------------------------------------------------------------------------
+!
 ! References:
-!   Wishart, A.W. 1979, MNRAS 187, 59P
+!   Wishart, A.W. 1979, MNRAS 187, 59P           [bound-free cross-section]
 !   Broad, J.T. & Reinhardt, W.P. 1976, Phys.Rev.A 14, 2159
-!   Bell, K.L. & Berrington, K.A. 1987, J.Phys.B 20, 801
+!                                                [resonance region of bf]
+!   Mathisen, R. 1984, Inst.Theor.Astrophys.Oslo Pub.Series No. 1
+!                                                [85-point tabulation used]
+!   Bell, K.L. & Berrington, K.A. 1987, J.Phys.B 20, 801  [free-free]
 !   Hotop, H. & Lineberger, W.C. 1985, J.Phys.Chem.Ref.Data 14, 731
-!     (H⁻ electron affinity = 0.754209 eV)
+!                                  [H⁻ electron affinity = 0.754209 eV]
+!
+!   McLaughlin, B.M. et al. 2017, ApJ 842, 65    [modern bf; for far-UV
+!                                                 resonances only, not
+!                                                 adopted here]
+!   Barklem, P.S. & Amarsi, A.M. 2024, A&A 689, A100
+!                                  [modern non-LTE H⁻ study using the
+!                                   same Wishart/Bell-Berrington data]
 !=========================================================================
 
 SUBROUTINE HMINOP
@@ -16447,3 +16660,4 @@ END FUNCTION occupation_prob
 
 
 end module mod_atlas_data
+

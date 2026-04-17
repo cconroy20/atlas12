@@ -59,7 +59,7 @@ cd workdir
 ../bin/atlas12c.exe sun
 
 # Synthesize a visible spectrum from the converged model
-../bin/synthe_spectrv.exe sun.atm wlbeg=400 wlend=700
+../bin/synthe.exe sun.atm wlbeg=400 wlend=700
 ```
 
 See [Running ATLAS12](#running-atlas12) and [Running SYNTHE](#running-synthe)
@@ -81,9 +81,9 @@ files required.
 Requires `gfortran`.  From the source directory:
 
 ```
-make              # build both atlas12c.exe and synthe_spectrv.exe
+make              # build both atlas12c.exe and synthe.exe
 make atlas        # build atlas12c.exe only
-make synthe       # build synthe_spectrv.exe only
+make synthe       # build synthe.exe only
 ```
 
 Executables are installed to `../bin/`.  The source directory is left
@@ -147,7 +147,7 @@ is regridded via `SCALE_MODEL` before iteration begins.
 
 ```
 export ATLAS12=/path/to/atlas12/
-synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>]
+synthe.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>]
 ```
 
 The merged executable performs line-list construction, continuum opacity
@@ -170,7 +170,7 @@ Arguments:
 
 The output basename is derived from the model filename by stripping the
 leading directory and trailing extension.  For example,
-`synthe_spectrv.exe models/sun.atm wlbeg=400 wlend=700` produces
+`synthe.exe models/sun.atm wlbeg=400 wlend=700` produces
 `sun.spec`, `sun.linform`, and `sun.mol` in the current directory.
 
 Output files:

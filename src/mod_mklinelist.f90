@@ -87,6 +87,17 @@ module mod_mklinelist
 
   real(8), save :: potion(999)
 
+  ! ============================================================================
+  !  TEMPERATURE GATE FOR COOL-ATMOSPHERE MOLECULAR LINES
+  !
+  !  Line lists for species that only form in cool atmospheres (H2O, TiO) are
+  !  skipped when Teff exceeds this threshold, even if they are listed in
+  !  lines.list.  This avoids wasted I/O and memory on molecular opacities
+  !  that contribute negligibly in warmer stars.
+  ! ============================================================================
+
+  real(8), parameter :: TEFF_COOL_LIMIT = 5000.0d0
+
 contains
 
   ! ============================================================================
@@ -95,8 +106,8 @@ contains
   !  Reads lines.list, dispatches to readers in canonical order, assembles
   !  the lte_lines and nlte_lines module arrays.
   ! ============================================================================
-  subroutine run_mklinelist(wlbeg, wlend, resolu, lines_list_path, datadir)
-    real(8),          intent(in) :: wlbeg, wlend, resolu
+  subroutine run_mklinelist(wlbeg, wlend, resolu, teff, lines_list_path, datadir)
+    real(8),          intent(in) :: wlbeg, wlend, resolu, teff
     character(len=*), intent(in) :: lines_list_path
     character(len=*), intent(in) :: datadir
 
@@ -178,6 +189,12 @@ contains
     end if
 
     do imol = 1, nmol
+      ! Skip TiO files when Teff is above the cool-atmosphere limit.
+      if (is_tio_file(mol_files(imol)) .and. teff > TEFF_COOL_LIMIT) then
+        write(6,'(a4,2x,a12,2x,a12,2x,a,a)') 'mol', 'skip', '', &
+          'Teff > 5000 K: ', trim(basename(mol_files(imol)))
+        cycle
+      end if
       n_lte_mol_before = n_lte_mol
       call read_molec(mol_files(imol), wlbeg, wlend, ratiolg, ixwlbeg, &
                       lte_mol, n_lte_mol)
@@ -185,7 +202,10 @@ contains
         trim(basename(mol_files(imol)))
     end do
 
-    if (h2o_file /= '') then
+    if (h2o_file /= '' .and. teff > TEFF_COOL_LIMIT) then
+      write(6,'(a4,2x,a12,2x,a12,2x,a,a)') 'h2o', 'skip', '', &
+        'Teff > 5000 K: ', trim(basename(h2o_file))
+    else if (h2o_file /= '') then
       call read_h2o(h2o_file, wlbeg, wlend, ratiolg, ixwlbeg, &
                     lte_h2o, n_lte_h2o)
       write(6,'(a4,2x,i12,2x,i12,2x,a)') 'h2o', n_lte_h2o, 0, &
@@ -1426,6 +1446,35 @@ contains
       name = path
     end if
   end function basename
+
+
+  ! ============================================================================
+  !  IS_TIO_FILE — heuristic: does the basename begin with "tio" (any case)?
+  !
+  !  Used to gate TiO line lists out of hot-star runs.  Kurucz molecular line
+  !  list filenames conventionally lead with the species symbol (tioXXX.asc,
+  !  tiopred.bin, etc.), so a prefix match is both specific enough to avoid
+  !  false positives (e.g. "ratio", "station") and general enough to cover
+  !  the filenames Kurucz distributes.
+  ! ============================================================================
+  pure function is_tio_file(path) result(isTiO)
+    character(len=*), intent(in) :: path
+    logical                      :: isTiO
+    character(len=512) :: bname
+    character(len=3)   :: prefix
+    integer :: k, c
+
+    bname = basename(path)
+    prefix = bname(1:3)
+    ! Lowercase in place (ASCII only; Kurucz filenames are ASCII).
+    do k = 1, 3
+      c = iachar(prefix(k:k))
+      if (c >= iachar('A') .and. c <= iachar('Z')) then
+        prefix(k:k) = achar(c + 32)
+      end if
+    end do
+    isTiO = (prefix == 'tio')
+  end function is_tio_file
 
 
   ! ============================================================================
