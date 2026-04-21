@@ -211,9 +211,9 @@ module mod_constants
   ! Speed of light [cm s⁻¹]  (exact)
   real*8, parameter :: CLIGHT = 2.99792458D10
 
-  ! Speed of light in other wavelength·frequency unit systems
-  real*8, parameter :: CLIGHT_NM  = 2.99792458D17   ! [nm Hz]   freq = CLIGHT_NM / lambda_nm
-  real*8, parameter :: CLIGHT_ANG = 2.99792458D18   ! [Å Hz]    freq = CLIGHT_ANG / lambda_Ang
+  ! Speed of light in other wavelength-per-time unit systems
+  real*8, parameter :: CLIGHT_NMS  = 2.99792458D17   ! [nm s⁻¹]  freq = CLIGHT_NMS / lambda_nm
+  real*8, parameter :: CLIGHT_ANGS = 2.99792458D18   ! [Å s⁻¹]   freq = CLIGHT_ANGS / lambda_Ang
   real*8, parameter :: CLIGHT_KMS = 2.99792458D5    ! [km s⁻¹]
 
   ! Unified atomic mass unit [g]
@@ -1218,6 +1218,11 @@ module mod_atlas_data
 
   ! --- Flag set if SYNTHE is running ---
   integer :: IFSYNTHE = 0
+
+  ! --- Flag set if SYNTHE should emit .mol/.linform output files ---
+  ! Gated by the more_output CLI argument.  NMOLEC checks IFMOLOUT to
+  ! decide whether to write its molecular-density table to unit 35.
+  integer :: IFMOLOUT = 0
 
   ! --- Radiative transfer J-coefficient matrix ---
   ! COMMON /MATXJ/
@@ -6437,7 +6442,7 @@ SUBROUTINE NMOLEC(MODE)
     end do
   end if
 
-  if (ITER == NUMITS .and. IFSYNTHE == 1) then
+  if (ITER == NUMITS .and. IFSYNTHE == 1 .and. IFMOLOUT == 1) then
     do JMOL1 = 1, NUMMOL, 10
       JMOL10 = min(JMOL1 + 9, NUMMOL)
       write(35, '(49X,"MOLECULAR NUMBER DENSITIES"/5X,10F12.2)') &
@@ -9398,7 +9403,7 @@ FUNCTION CROSSHE(FREQ)
   CROSSHE = 0.0D0
   if (FREQ < 5.945209D15) return
 
-  WAVE = CLIGHT_ANG / FREQ
+  WAVE = CLIGHT_ANGS / FREQ
 
   if (WAVE > 50.0D0) then
     ! 50–505 Å regime (Δλ = 5 Å)
@@ -9478,7 +9483,7 @@ FUNCTION HE111S(FREQ)
   HE111S = 0.0D0
   if (FREQ < 5.945209D15) return
 
-  WAVE = CLIGHT_ANG / FREQ
+  WAVE = CLIGHT_ANGS / FREQ
   do I = 2, NP
     if (WAVE > W(I)) exit
   end do
@@ -9981,7 +9986,7 @@ SUBROUTINE HERAOP
 
   ! Wavelength in Å, capped just redward of the He I 584 Å resonance
   ! to prevent the dispersion denominator from going singular.
-  W  = CLIGHT_ANG / min(FREQ, 5.15D15)
+  W  = CLIGHT_ANGS / min(FREQ, 5.15D15)
   WW = W**2                                   ! λ² [Å²]
 
   ! σ(λ) = (5.484e-14 / λ⁴) * [α(ω)/α(0)]²
@@ -12340,7 +12345,7 @@ SUBROUTINE H2RAOP
   ! frequency at 2.922e15 Hz (λ ≈ 1026 Å) to prevent extrapolation
   ! into the H₂ Lyman/Werner band region where the Rayleigh
   ! approximation breaks down.
-  W  = CLIGHT_ANG / min(FREQ, 2.922D15)   ! wavelength [Å], capped
+  W  = CLIGHT_ANGS / min(FREQ, 2.922D15)   ! wavelength [Å], capped
   WW = W**2                                ! λ² [Å²]
 
   ! σ(λ) = (8.14e-13 + 1.28e-6/λ² + 1.61/λ⁴) / λ⁴   [cm²]
@@ -12568,7 +12573,7 @@ FUNCTION STARK(N, M, J)
     .01196D0, .007825D0, .005882D0, .004233D0, .003375D0 /), shape(FSTARK))
 
   real*8, parameter :: RYD = FREQ_RYDH       ! Rydberg frequency (Hz)
-  ! PI from mod_constants; CLIGHT_ANG replaces local CLIGHT (Å·Hz)
+  ! PI from mod_constants; CLIGHT_ANGS replaces local CLIGHT (Å·Hz)
   real*8, parameter :: A0 = 0.0265384D0       ! profile normalization constant
 
   ! --- Persistent state ---
@@ -12625,7 +12630,7 @@ FUNCTION STARK(N, M, J)
   !---------------------------------------------------------------------
   FREQNM = RYD * (1.0D0 / NN - 1.0D0 / MM)
   DEL = abs(FREQ - FREQNM)
-  DBETA = CLIGHT_ANG / FREQNM**2 / F0(J) / KNM
+  DBETA = CLIGHT_ANGS / FREQNM**2 / F0(J) / KNM
   BETA = DBETA * DEL
 
   !---------------------------------------------------------------------
@@ -12877,7 +12882,7 @@ FUNCTION STARK_MMM(N, M, J)
 
   ! Physical constants
   real*8, parameter :: A0 = 0.0265384D0         ! π e² / (m_e c) [cm²/s]
-  real*8, parameter :: CLIGHT_ANG = 2.9979D18   ! speed of light [Å/s]
+  real*8, parameter :: CLIGHT_ANGS = 2.9979D18   ! speed of light [Å/s]
   real*8, parameter :: RYD_ANG = 911.7633455D0  ! Rydberg wavelength [Å]
 
   ! Local variables
@@ -12930,7 +12935,7 @@ FUNCTION STARK_MMM(N, M, J)
   xn = dble(N)
   xm = dble(M)
   lambda0 = RYD_ANG * (xn * xm)**2 / ((xm - xn) * (xm + xn))
-  freq_nm = CLIGHT_ANG / lambda0
+  freq_nm = CLIGHT_ANGS / lambda0
   del_freq = abs(FREQ - freq_nm)
 
   F0 = 1.25D-9 * XNE(J)**(2.0D0/3.0D0)
@@ -12940,7 +12945,7 @@ FUNCTION STARK_MMM(N, M, J)
   end if
 
   ! Δα = Δλ / F0, and Δλ = λ₀²/c × Δν (for small Δλ)
-  dalpha = lambda0**2 / CLIGHT_ANG * del_freq / F0
+  dalpha = lambda0**2 / CLIGHT_ANGS * del_freq / F0
 
   ! ---------------------------------------------------------------
   ! Check bounds and find bracketing indices
@@ -13026,7 +13031,7 @@ FUNCTION STARK_MMM(N, M, J)
       ! Beyond table: use asymptotic wing K_alpha / Δα^2.5
       f_nm = hydrogen_f_value(N, M)
       I_dalpha = S%k_alpha(itrans) / dalpha**2.5D0
-      STARK_MMM = A0 * f_nm * I_dalpha * lambda0**2 / (CLIGHT_ANG * F0)
+      STARK_MMM = A0 * f_nm * I_dalpha * lambda0**2 / (CLIGHT_ANGS * F0)
       return
     else
       ia1 = 1
@@ -13090,7 +13095,7 @@ FUNCTION STARK_MMM(N, M, J)
   !   σ = (πe²/m_ec) × f_nm × I(Δα) × λ₀² / (c × F₀)
   ! ---------------------------------------------------------------
   f_nm = hydrogen_f_value(N, M)
-  STARK_MMM = A0 * f_nm * I_dalpha * lambda0**2 / (CLIGHT_ANG * F0)
+  STARK_MMM = A0 * f_nm * I_dalpha * lambda0**2 / (CLIGHT_ANGS * F0)
 
 END FUNCTION STARK_MMM
 
@@ -13123,8 +13128,8 @@ SUBROUTINE LINOP1
   implicit none
 
   ! Named constants (derived from mod_constants)
-  real*8, parameter :: CEN_PREFAC4 = 0.026538D0 / SQRTPI / CLIGHT_NM
-  real*8, parameter :: FOURPI_C_INV = 1.0D0 / (FOURPI * CLIGHT_NM)
+  real*8, parameter :: CEN_PREFAC4 = 0.026538D0 / SQRTPI / CLIGHT_NMS
+  real*8, parameter :: FOURPI_C_INV = 1.0D0 / (FOURPI * CLIGHT_NMS)
   real*8, parameter :: LORENTZ_PREFAC = INVSQRTPI
   real*8, parameter :: ADAMP_THRESH = 0.20D0
   integer, parameter :: MAX_WING = 100
@@ -13584,7 +13589,7 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
         if (IFERR /= 0) &
           write(6, '(A,I4,A,1PE12.4,A,I3,A,E9.2)') &
             ' JOSH WARNING: Lambda iter not converged in ', MAX_ITER, &
-            ' sweeps  wave=', CLIGHT_NM/FREQ, '  tau_pt=', WORST_K, '  err=', WORST_ERR
+            ' sweeps  wave=', CLIGHT_NMS/FREQ, '  tau_pt=', WORST_K, '  err=', WORST_ERR
       END BLOCK
 
       ! Post-iteration dispatch
@@ -13662,7 +13667,7 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
       end do
       if (ERROR >= 0.00001D0) &
         write(6, '(A,I4,A,1PE10.3,A,0PF10.3)') ' JOSH WARNING: Eddington iteration did not converge in ', &
-          MAX_ITER, ' sweeps, err=', ERROR, '  wave=', CLIGHT_NM/FREQ
+          MAX_ITER, ' sweeps, err=', ERROR, '  wave=', CLIGHT_NMS/FREQ
     end if  ! MAXJ /= NRHOX
 
     !-------------------------------------------------------------------
@@ -14143,7 +14148,7 @@ SUBROUTINE KAPCONT
   do NU = 1, NWAVE
     WAVE = WAVETAB(NU)
     IWAVETAB(NU) = int(log(WAVE) / RATIOLG + 0.5D0)
-    FREQ = CLIGHT_NM / WAVETAB(NU)
+    FREQ = CLIGHT_NMS / WAVETAB(NU)
     WAVENO = 1.0D7 / WAVETAB(NU)
     FREQLG = log(FREQ)
 
@@ -14314,7 +14319,7 @@ SUBROUTINE SELECTLINES
 
     ! Advance wavelength bin to match line position
     do while (IWL >= IWAVETAB(NU))
-      FREQ = CLIGHT_NM / WAVETAB(NU)
+      FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -14360,7 +14365,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = CLIGHT_NM / WAVETAB(NU)
+      FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -14402,7 +14407,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = CLIGHT_NM / WAVETAB(NU)
+      FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -14444,7 +14449,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = CLIGHT_NM / WAVETAB(NU)
+      FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -14509,7 +14514,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = CLIGHT_NM / WAVETAB(NU)
+      FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -14560,7 +14565,7 @@ SUBROUTINE SELECTLINES
     read(51, end=1881) IWL, IELO, IGFLOG
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = CLIGHT_NM / WAVETAB(NU)
+      FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       ! Radiation damping from frequency
       GAMMAR = 2.474D-22 * FREQ**2 * 0.001
@@ -14624,7 +14629,7 @@ SUBROUTINE SELECTLINES
     call UNPACK_LINEDATA(LINEREC)
 
     do while (IWL >= IWAVETAB(NU))
-      FREQ = CLIGHT_NM / WAVETAB(NU)
+      FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
     end do
@@ -15239,7 +15244,7 @@ SUBROUTINE XLINOP
 
     case (1)
       ! AUTOIONIZING LINE — Fano profile, all depths
-      FRELIN = CLIGHT_NM / WLVAC
+      FRELIN = CLIGHT_NMS / WLVAC
       do J = 1, NRHOX
         CENTER = BSHORE * G * XNFP(J, NELION) / RHO(J)
         if (CENTER < TABCONT(J, NUCONT)) cycle
@@ -15247,7 +15252,7 @@ SUBROUTINE XLINOP
         if (CENTER < TABCONT(J, NUCONT)) cycle
         ! Red wing
         do IW = NU, min(NU + MAX_WING, NUMNU)
-          EPSIL = 2.0D0 * (CLIGHT_NM / WAVESET(IW) - FRELIN) / GAMMAR
+          EPSIL = 2.0D0 * (CLIGHT_NMS / WAVESET(IW) - FRELIN) / GAMMAR
           CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0D0) / BSHORE
           XLINES(J, IW) = XLINES(J, IW) + CV
           if (CV < TABCONT(J, NUCONT)) exit
@@ -15256,7 +15261,7 @@ SUBROUTINE XLINOP
         do I = 1, MAX_WING
           IW = NU - I
           if (IW <= 0) exit
-          EPSIL = 2.0D0 * (CLIGHT_NM / WAVESET(IW) - FRELIN) / GAMMAR
+          EPSIL = 2.0D0 * (CLIGHT_NMS / WAVESET(IW) - FRELIN) / GAMMAR
           CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0D0) / BSHORE
           XLINES(J, IW) = XLINES(J, IW) + CV
           if (CV < TABCONT(J, NUCONT)) exit
@@ -15799,8 +15804,8 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     if (MMN <= 2 .and. N <= 2) Y1WHT = Y1WTM(N, MMN)
 
     FREQNM = FREQ_RYDH * GNM
-    DBETA = CLIGHT_ANG / FREQNM**2 / XKNM
-    WAVENM = CLIGHT_ANG / FREQNM
+    DBETA = CLIGHT_ANGS / FREQNM**2 / XKNM
+    WAVENM = CLIGHT_ANGS / FREQNM
     C1CON = XKNM / WAVENM * GNM * XM2MN2
     C2CON = (XKNM / WAVENM)**2
 
@@ -15860,7 +15865,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
   ! ==================================================================
   DELstark = -10.0D0 * DELW / WAVENM * FREQNM
   WL = WAVENM + DELW * 10.0D0
-  FREQ4 = CLIGHT_ANG / WL
+  FREQ4 = CLIGHT_ANGS / WL
   DEL = abs(FREQ4 - FREQNM)
   WL = WL / 10.0D0   ! convert to nm
 

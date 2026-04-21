@@ -147,7 +147,7 @@ is regridded via `SCALE_MODEL` before iteration begins.
 
 ```
 export ATLAS12=/path/to/atlas12/
-synthe.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>]
+synthe.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>] [more_output=<yes|no>]
 ```
 
 The merged executable performs line-list construction, continuum opacity
@@ -160,26 +160,28 @@ appropriate readers (gfall, predict, mol, h2o).
 
 Arguments:
 
-| Argument         | Required | Description |
-|------------------|:--------:|-------------|
-| `<model_file>`   | yes      | ATLAS12 `.atm` model atmosphere (positional, 1st) |
-| `wlbeg=<nm>`     | yes      | Start wavelength in nanometers |
-| `wlend=<nm>`     | yes      | End wavelength in nanometers (> wlbeg) |
-| `resolu=<R>`     | no       | Resolving power λ/Δλ (default 300 000) |
-| `turbv=<kms>`    | no       | Extra microturbulence in km/s added in quadrature to the model value (default 0.0) |
+| Argument              | Required | Description |
+|-----------------------|:--------:|-------------|
+| `<model_file>`        | yes      | ATLAS12 `.atm` model atmosphere (positional, 1st) |
+| `wlbeg=<nm>`          | yes      | Start wavelength in nanometers |
+| `wlend=<nm>`          | yes      | End wavelength in nanometers (> wlbeg) |
+| `resolu=<R>`          | no       | Resolving power λ/Δλ (default 300 000) |
+| `turbv=<kms>`         | no       | Extra microturbulence in km/s added in quadrature to the model value (default 0.0) |
+| `more_output=<yes\|no>` | no     | If yes, also write `.linform` and `.mol` diagnostic files (default no).  Accepted truthy values: `yes`, `true`, `1`, `on`, `y` (case-insensitive); falsy: `no`, `false`, `0`, `off`, `n`. |
 
 The output basename is derived from the model filename by stripping the
 leading directory and trailing extension.  For example,
-`synthe.exe models/sun.atm wlbeg=400 wlend=700` produces
-`sun.spec`, `sun.linform`, and `sun.mol` in the current directory.
+`synthe.exe models/sun.atm wlbeg=400 wlend=700` produces `sun.spec` in
+the current directory.  Adding `more_output=yes` additionally produces
+`sun.linform` and `sun.mol`.
 
 Output files:
 
-| File              | Contents |
-|-------------------|----------|
-| `<base>.spec`     | ASCII spectrum: wavelength (Å, F11.4), flux (E15.6), continuum flux (E15.6) |
-| `<base>.linform`  | Line identifications (written only if line-journalling is enabled) |
-| `<base>.mol`      | Molecular number-density diagnostics |
+| File              | Written                 | Contents |
+|-------------------|-------------------------|----------|
+| `<base>.spec`     | always                  | ASCII spectrum: wavelength (Å, F11.4), flux (E15.6), continuum flux (E15.6) |
+| `<base>.linform`  | only if `more_output=yes` | Per-wavelength diagnostic: wavelength, emergent H, surface H, monochromatic optical depth at each atmospheric layer |
+| `<base>.mol`      | only if `more_output=yes` | Molecular number-density diagnostics vs. depth for all species tracked by the equation of state |
 
 Wavelengths are handled internally in nanometers on a logarithmic grid
 with spacing `ratio = 1 + 1/resolu`; vacuum wavelengths are used

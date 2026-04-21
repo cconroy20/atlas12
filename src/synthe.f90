@@ -6,12 +6,27 @@
 !  mod_mklinelist.  ATLAS library routines are accessed through
 !  mod_atlas_data (atlas12_modules.f90).
 !
+!  Example usage:
+!
+!    ./synthe_spectrv.exe model.dat wlbeg=400 wlend=700
+!
+!    ./synthe_spectrv.exe model.dat wlbeg=400 wlend=700 \
+!                         resolu=500000 turbv=1.5 more_output=yes
+!
+!  Arguments:
+!    <model_file>       (required, positional) model atmosphere file
+!    wlbeg=<nm>         (required) start wavelength in nm
+!    wlend=<nm>         (required) end wavelength in nm
+!    resolu=<R>         (optional) resolving power, default 300000
+!    turbv=<kms>        (optional) extra microturbulence in km/s, default 0.0
+!    more_output=<v>    (optional) if yes/true/1/on, also emit the
+!                       <model>.mol and <model>.linform files.  Default no.
+!
 !  Units:
 !     5  input  : model atmosphere cards (CLI argument, read by READIN)
 !    11  output : ASCII spectrum <model>.spec
-!    17  input  : continua.dat continuum edge frequency list (from DATADIR)
-!    33  output : <model>.linform (wavelength / flux / continuum / tau table)
-!    35  output : <model>.mol molecular number density table
+!    33  output : <model>.linform (wavelength / flux / continuum / tau table) -- only when more_output=yes
+!    35  output : <model>.mol molecular number density table                   -- only when more_output=yes
 !
 !  <model>.spec format, one line per wavelength point:
 !    cols  1-11 : wavelength (Angstroms),        F11.4
@@ -25,7 +40,7 @@ PROGRAM SYNTHE
   USE mod_mklinelist, only: run_mklinelist, lte_lines, nlines_lte, nlines_nlte
   USE mod_atlas_data, only: &
     JOSH, READIN, BLOCKJ, BLOCKH, set_bc_data_dir, &
-    DATADIR, IFSYNTHE, &
+    DATADIR, IFSYNTHE, IFMOLOUT, &
     ! Renamed to avoid collision with module-level names in synthe_module
     hkt_a => HKT, itemp_a => ITEMP, &
     nrhox_a => NRHOX, rhox_a => RHOX, &
@@ -68,7 +83,8 @@ PROGRAM SYNTHE
   REAL(8), PARAMETER :: PSI1                 = 0.0D0
 
   CHARACTER(LEN=*), PARAMETER :: USAGE = &
-    ' Usage: synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>]'
+    ' Usage: synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> ' // &
+    '[resolu=<R>] [turbv=<kms>] [more_output=yes|no]'
 
   ! --- Fixed run parameters (formerly read from fort.93 / SYNBEG) -------
   !   ifvac  = 1    : vacuum wavelengths throughout
@@ -79,6 +95,7 @@ PROGRAM SYNTHE
 
   ! --- Run parameters set from CLI --------------------------------------
   REAL(4)   :: turbv
+  LOGICAL   :: more_output   ! emit .mol (molecular densities) and .linform (tau tables)
 
   ! --- Model atmosphere header ------------------------------------------
   INTEGER   :: nedge
@@ -132,11 +149,16 @@ PROGRAM SYNTHE
   CALL set_bc_data_dir(TRIM(DATADIR))   ! point B&C partition-fn reader at the same dir
 
   ! --- Parse command-line arguments -------------------------------------
-  !   Arg 1       : model atmosphere filename (positional, required)
-  !   wlbeg=<nm>  : start wavelength (required)
-  !   wlend=<nm>  : end wavelength   (required)
-  !   resolu=<R>  : resolving power  (optional, default 300000)
-  !   turbv=<kms> : extra microturbulence (optional, default 0.0)
+  !   Arg 1            : model atmosphere filename (positional, required)
+  !   wlbeg=<nm>       : start wavelength (required)
+  !   wlend=<nm>       : end wavelength   (required)
+  !   resolu=<R>       : resolving power  (optional, default 300000)
+  !   turbv=<kms>      : extra microturbulence (optional, default 0.0)
+  !   more_output=<v>  : if yes/true/1, also emit <model>.mol (molecular
+  !                      number densities) and <model>.linform (tau table).
+  !                      Accepted true values: yes, true, 1, on.
+  !                      Accepted false values: no, false, 0, off.
+  !                      Default: no.
   ! Output file basenames are model_file with extension stripped.
   ! -----------------------------------------------------------------------
   IF (COMMAND_ARGUMENT_COUNT() < 1) THEN
@@ -146,10 +168,11 @@ PROGRAM SYNTHE
   END IF
   CALL GET_COMMAND_ARGUMENT(1, model_file)
 
-  resolu = 300000.0D0
-  turbv  = 0.0
-  wlbeg  = 0.0D0    ! sentinel
-  wlend  = 0.0D0    ! sentinel
+  resolu      = 300000.0D0
+  turbv       = 0.0
+  wlbeg       = 0.0D0    ! sentinel
+  wlend       = 0.0D0    ! sentinel
+  more_output = .FALSE.
 
   DO i = 2, COMMAND_ARGUMENT_COUNT()
     CALL GET_COMMAND_ARGUMENT(i, tmparg)
@@ -163,6 +186,17 @@ PROGRAM SYNTHE
       CASE ('wlend');  READ(tmparg(eqpos+1:), *) wlend
       CASE ('resolu'); READ(tmparg(eqpos+1:), *) resolu
       CASE ('turbv');  READ(tmparg(eqpos+1:), *) turbv
+      CASE ('more_output')
+        SELECT CASE (TRIM(ADJUSTL(tmparg(eqpos+1:))))
+          CASE ('yes', 'YES', 'true', 'TRUE', '1', 'on', 'ON', 'y', 'Y')
+            more_output = .TRUE.
+          CASE ('no', 'NO', 'false', 'FALSE', '0', 'off', 'OFF', 'n', 'N')
+            more_output = .FALSE.
+          CASE DEFAULT
+            WRITE(6,'(A,A)') ' ERROR: more_output expects yes/no, got: ', &
+              TRIM(tmparg(eqpos+1:))
+            STOP 1
+        END SELECT
       CASE DEFAULT
         WRITE(6,'(A,A)') ' ERROR: unknown keyword argument: ', TRIM(tmparg)
         STOP 1
@@ -175,11 +209,16 @@ PROGRAM SYNTHE
     STOP 1
   END IF
 
+  ! Propagate more_output to the ATLAS-level flag read by NMOLEC
+  IFMOLOUT = MERGE(1, 0, more_output)
+
+  WRITE(6,*) ''
   WRITE(6,'(A,A)')     ' Input model      = ', TRIM(model_file)
   WRITE(6,'(A,F10.3)') ' wlbeg (nm)       = ', wlbeg
   WRITE(6,'(A,F10.3)') ' wlend (nm)       = ', wlend
   WRITE(6,'(A,F10.1)') ' resolu           = ', resolu
   WRITE(6,'(A,F8.4)')  ' turbv (km/s)     = ', turbv
+  WRITE(6,'(A,L1)')    ' more_output      = ', more_output
 
   ! Derive output filenames: strip leading path, strip last extension
   dotpos = INDEX(TRIM(model_file), '/', BACK=.TRUE.)
@@ -213,24 +252,24 @@ PROGRAM SYNTHE
   ! run_mklinelist runs after these so TEFF is set (gates cool-star
   ! line lists: H2O, TiO).  The two stages are otherwise independent.
   itemp_a = 1
-  OPEN(UNIT=5,  FILE=TRIM(model_file),              STATUS='OLD', ACTION='READ')
-  OPEN(UNIT=17, FILE=TRIM(DATADIR)//'continua.dat', STATUS='OLD', ACTION='READ')
+  OPEN(UNIT=5,  FILE=TRIM(model_file), STATUS='OLD',     ACTION='READ')
+  IF (more_output) &
+    OPEN(UNIT=35, FILE=TRIM(mol_file), STATUS='REPLACE', ACTION='WRITE')
   CALL readin(20)
   ! Keep unit 5 open: MOLEC reads from INPUTDATA(=5) on first call below.
   CALL run_xnfpelsyn()
   CLOSE(UNIT=5)
-  CLOSE(UNIT=17)
 
   ! --- Build line lists in memory --------------------------------------
   ! Populates lte_lines(:), nlte_lines(:), nlines_lte, nlines_nlte in
   ! mod_mklinelist.  TEFF > TEFF_COOL_LIMIT skips H2O/TiO lists.
+  WRITE(6,*) ''
+  WRITE(6,*) 'Assembling line list...'
   CALL run_mklinelist(wlbeg, wlend, resolu, TEFF, &
                       TRIM(DATADIR) // 'lines.list', DATADIR)
 
   WRITE(6,'(A,I9,A,I9,A,I9)') ' Lines:  LTE =', nlines_lte, &
        '   NLTE =', nlines_nlte, '   total =', nlines_lte + nlines_nlte
-
-  OPEN(UNIT=35, FILE=TRIM(mol_file), STATUS='REPLACE', ACTION='WRITE')
 
   ! --- Copy module state into local working arrays ---------------------
   nrhox = nrhox_a
@@ -306,6 +345,8 @@ PROGRAM SYNTHE
   CALL BLOCKH
 
   ! --- Main depth loop: SYNTHE opacity accumulation ---------------------
+  WRITE(6,*) ''
+  WRITE(6,*) 'Accumulating opacity...'
   ALLOCATE(opacity_matrix(length, nrhox))
   opacity_matrix = 0.0
 
@@ -447,23 +488,28 @@ PROGRAM SYNTHE
 
   END DO depth_loop
 
-  ! --- SPECTRV wavelength loop: radiative transfer per wavelength point -
+  ! --- Wavelength loop: radiative transfer per wavelength point ---
+  WRITE(6,*) 'Synthesizing spectrum...'
+
   OPEN(UNIT=11, FILE=TRIM(spec_file),    STATUS='REPLACE', ACTION='WRITE')
-  OPEN(UNIT=33, FILE=TRIM(linform_file), STATUS='REPLACE', ACTION='WRITE')
+  IF (more_output) &
+    OPEN(UNIT=33, FILE=TRIM(linform_file), STATUS='REPLACE', ACTION='WRITE')
 
   DO iwave = 1, length
     wave8 = wbegin * ratio**(iwave-1)
-    freq8 = CLIGHT_NM_HZ / wave8
+    freq8 = CLIGHT_NMS / wave8
     DO j = 1, nrhox
       asynth(j) = REAL( opacity_matrix(iwave, j) * (1.0D0 - EXP(-freq8*hkt(j))) )
     END DO
-    CALL process_wavelength_point(iwave, wave8, asynth)
+    CALL process_wavelength_point(wave8, asynth)
   END DO
 
   DEALLOCATE(opacity_matrix)
   CLOSE(UNIT=11)
-  CLOSE(UNIT=33)
-  CLOSE(UNIT=35)
+  IF (more_output) THEN
+    CLOSE(UNIT=33)
+    CLOSE(UNIT=35)
+  END IF
 
   CALL SYSTEM_CLOCK(clock_end)
   CALL report_elapsed(REAL(clock_end - clock_start, 8) / REAL(clock_rate, 8))
@@ -504,13 +550,13 @@ CONTAINS
                             c3*contscat_sv(3,iedge_sv,jj))
     END DO
 
-    FREQ   = CLIGHT_NM_HZ / wave
+    FREQ   = CLIGHT_NMS / wave
     freq15 = FREQ / 1.0D15
     FREQLG = LOG(FREQ)
     DO jj = 1, nrhox
       EHVKT(jj)  = EXP(-FREQ * hkt_a(jj))
       STIM(jj)   = 1.0D0 - EHVKT(jj)
-      BNU(jj)    = PLANCK_PREFACTOR * freq15**3 * EHVKT(jj) / STIM(jj)
+      BNU(jj)    = BNU_PREFAC * freq15**3 * EHVKT(jj) / STIM(jj)
       ALINE(jj)  = 0.0D0
       SIGMAL(jj) = 0.0D0
       SLINE(jj)  = BNU(jj)
@@ -521,18 +567,16 @@ CONTAINS
 
 
   ! ------------------------------------------------------------------------
-  !  process_wavelength_point(nu_idx, wave_in, asyn)
+  !  process_wavelength_point(wave_in, asyn)
   !
   !  Radiative transfer at one wavelength point.  Calls JOSH twice (pure
   !  continuum, then continuum+line) and writes one record each to the
   !  .spec (flux vs wavelength) and .linform (tau table) outputs.
   !
-  !    nu_idx  : wavelength point index (1..LENGTH)
   !    wave_in : wavelength in nm
   !    asyn    : stimulated-emission-corrected line opacity vector (nrhox)
   ! ------------------------------------------------------------------------
-  SUBROUTINE process_wavelength_point(nu_idx, wave_in, asyn)
-    INTEGER, INTENT(IN) :: nu_idx
+  SUBROUTINE process_wavelength_point(wave_in, asyn)
     REAL(8), INTENT(IN) :: wave_in
     REAL(4), INTENT(IN) :: asyn(kw)
 
@@ -548,8 +592,6 @@ CONTAINS
       IF (IFSURF == 2) surf_sv(mu_loc) = SURFI(mu_loc)
     END DO
 
-    IF (nu_idx == 1) WRITE(6,'(A)') ' '
-
     ! Blend line opacity + fudge source function, then JOSH again.
     DO jj = 1, nrhox
       ALINE(jj)  = DBLE(asyn(jj)) * (1.0D0 - fscat_sv(jj))
@@ -558,8 +600,9 @@ CONTAINS
     END DO
     CALL josh(1, IFSURF)
 
-    WRITE(33, '(F12.4,1P2E12.4,/(10E12.4))') wave_in, HNU(1), surf_sv(1), &
-         (TAUNU(jj), jj=1,nrhox)
+    IF (more_output) &
+      WRITE(33, '(F12.4,1P2E12.4,/(10E12.4))') wave_in, HNU(1), surf_sv(1), &
+           (TAUNU(jj), jj=1,nrhox)
 
     DO mu_loc = 1, NMU
       IF (IFSURF == 1) resid = HNU(1)          / surf_sv(mu_loc)
@@ -587,16 +630,16 @@ CONTAINS
     INTEGER :: h, m, s
 
     IF (seconds < 60.0D0) THEN
-      WRITE(6,'(/A,F6.2,A)') ' Elapsed: ', seconds, 's'
+      WRITE(6,'(/A,F6.2,A)') ' Runtime: ', seconds, 's'
     ELSE IF (seconds < 3600.0D0) THEN
       m = INT(seconds / 60.0D0)
       s = NINT(seconds - 60.0D0 * m)
-      WRITE(6,'(/A,I0,A,I2.2,A)') ' Elapsed: ', m, 'm ', s, 's'
+      WRITE(6,'(/A,I0,A,I2.2,A)') ' Runtime: ', m, 'm ', s, 's'
     ELSE
       h = INT(seconds / 3600.0D0)
       m = INT((seconds - 3600.0D0 * h) / 60.0D0)
       s = NINT(seconds - 3600.0D0 * h - 60.0D0 * m)
-      WRITE(6,'(/A,I0,A,I2.2,A,I2.2,A)') ' Elapsed: ', h, 'h ', m, 'm ', s, 's'
+      WRITE(6,'(/A,I0,A,I2.2,A,I2.2,A)') ' Runtime: ', h, 'h ', m, 'm ', s, 's'
     END IF
 
   END SUBROUTINE report_elapsed
