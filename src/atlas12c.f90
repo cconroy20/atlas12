@@ -186,6 +186,9 @@ PROGRAM ATLAS12
     DATADIR = 'data/'
   end if
 
+  ! Point the B&C partition function module at the same data directory.
+  call set_bc_data_dir(trim(DATADIR))
+
   ! --- Pre-tabulate Voigt profile H(a,v) at 200 steps per Doppler width ---
   VSTEPS = 200.0
   call TABVOIGT(VSTEPS, 2001)

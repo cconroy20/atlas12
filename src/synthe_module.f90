@@ -127,9 +127,19 @@ MODULE synthe_module
      2.26353729990026764D+00, &
      2.57225340812456960D+00  ]
 
+  ! --- Core array-dimension parameters (Kurucz convention) ---
+  !   kw  = 99      : max depth points in the model atmosphere.
+  !                   All depth-indexed arrays (e.g. BHYD(kw,8), AHLINE(kw))
+  !                   are sized by this; runtime nrhox must satisfy nrhox <= kw.
+  !   mw  = 139     : max elements + molecules.  Slots 1..39 are atomic
+  !                   elements (H..Y, Z=1..39); slots 40..mw are molecules.
+  !                   See also mm = mw - 39 = 100 (molecule count) below.
+  !   mw6 = mw * 6  : flattened (6, mw) ionization-stage arrays
+  !                   (6 stages per element: I, II, III, IV, V, VI).
+  INTEGER, PARAMETER :: kw = 99, mw = 139, mw6 = mw * 6
+
   ! --- COMMON /BHE/ ---
   ! He I bound-free and line opacity data for each depth point.
-  INTEGER, PARAMETER :: kw = 99, mw = 139, mw6 = mw * 6
   REAL(4), SAVE :: BHE1(kw,29), AHE1(kw), SHE1(kw)
   REAL(4), SAVE :: BHE2(kw,6),  AHE2(kw), SHE2(kw)
   REAL(4), SAVE :: AHEMIN(kw),  SIGHE(kw)
@@ -147,7 +157,7 @@ MODULE synthe_module
   ! --- COMMON /NLINES/ ---
   ! Wavelength grid parameters.
   REAL(8), SAVE :: WLBEG, WLEND, RESOLU, RATIO, RATIOLG, WBEGIN
-  INTEGER, SAVE :: LENGTH, MLINES, IXWLBEG
+  INTEGER, SAVE :: LENGTH, IXWLBEG
 
   ! --- COMMON /RHOX/ ---
   REAL(8), SAVE :: RHOX(kw)
@@ -207,14 +217,6 @@ MODULE synthe_module
   REAL(4), SAVE :: BUFFER(MAXBUFF), PROFILE(MAXPROF)
   REAL(4), SAVE :: CONTINUUM(MAXBUFF)
 
-  ! In-memory line-centre journal (replaces unit 15 scratch file).
-  ! Stores (iline, kapcen) pairs written during the depth loop, grouped
-  ! by depth point (mlinej(j) records per depth).  Filled by journal_append()
-  ! from both the main program and compute_line_opacity().
-  INTEGER,  ALLOCATABLE, SAVE :: journal_iline(:)
-  REAL(4),  ALLOCATABLE, SAVE :: journal_kapcen(:)
-  INTEGER,               SAVE :: journal_count = 0
-  INTEGER,               SAVE :: journal_size  = 0
   !
   !  These arrays replace the fort.10 file written by XNFPELSYN and read
   !  by SYNTHE / SPECTRV.  They are filled by run_xnfpelsyn() and
@@ -271,22 +273,10 @@ MODULE synthe_module
   ! ====================================================================
   !  SPECTRV SHARED INTERFACE DATA
   !
-  !  These arrays replace the unit-9 / unit-8 I/O between SYNTHE and
-  !  SPECTRV when the two programs are merged into synthe_spectrv.f90.
-  !  They are declared here (in synthe_module) so that both the SYNTHE
-  !  half and the SPECTRV half of the merged program can access them via
-  !  USE synthe_module without passing large arrays through argument lists.
-  !
-  !  asynth_sv(j)          : net line opacity at depth j for the current
-  !                          wavelength point (set by the SYNTHE transpose
-  !                          section, consumed by the SPECTRV wavelength loop).
-  !  lindat8_sv(14)        : REAL*8 line parameter record (wl, e, ep, labels,
-  !                          wlvac, center, concen).
-  !  lindat4_sv(28)        : REAL*4 line parameter record (nelion, damping, …).
-  !  alinec_sv(kw)         : depth vector of line-centre opacities for the
-  !                          current line identification record.
-  !  nlines_sv             : number of line-centre identification records
-  !                          (= n9 at the end of SYNTHE section 9).
+  !  These arrays are used by the SPECTRV half of synthe_spectrv.f90 and
+  !  declared here (in synthe_module) so that the main program can access
+  !  them via USE synthe_module without passing large arrays through
+  !  argument lists.
   !
   !  SPECTRV continuum tables (filled once from unit 10 before the main loop):
   !  contabs_sv(3,medge,kw)  : log10 continuum absorption per (point,edge,depth)
@@ -300,12 +290,6 @@ MODULE synthe_module
   ! ====================================================================
 
   INTEGER, PARAMETER :: medge = 377   ! max continuum edge points (matches spectrv)
-
-  REAL(4), SAVE :: asynth_sv(kw)
-  REAL(8), SAVE :: lindat8_sv(14)
-  REAL(4), SAVE :: lindat4_sv(28)
-  REAL(4), SAVE :: alinec_sv(kw)
-  INTEGER, SAVE :: nlines_sv
 
   REAL(8), SAVE :: contabs_sv(3, medge, kw)
   REAL(8), SAVE :: contscat_sv(3, medge, kw)
@@ -2899,11 +2883,10 @@ CONTAINS
 !                vacuum by upstream convention).  IFVAC = 1 leaves output
 !                wavelengths in vacuum; IFVAC = 0 converts vacuum -> air on
 !                output via vac_to_air().
-!    LINOUT   -- >= 0: write (ILINE, KAPCEN) records to unit 15
 ! ============================================================================
-  SUBROUTINE compute_line_opacity(j, n19, cutoff, velshift, ifvac, linout)
+  SUBROUTINE compute_line_opacity(j, n19, cutoff, velshift, ifvac)
 
-    INTEGER,  INTENT(IN) :: j, n19, ifvac, linout
+    INTEGER,  INTENT(IN) :: j, n19, ifvac
     REAL(4),  INTENT(IN) :: cutoff, velshift
 
     ! ----- local scalars -----
@@ -2912,12 +2895,9 @@ CONTAINS
     REAL(4)  :: adamp, dopwl, vvoigt, epsil, frelin, freq
     REAL(4)  :: xsectg, tail, dnbuff
     REAL(4)  :: edgeblue
-    REAL(4)  :: v2
-    REAL(4)  :: hfac(kw), hefac(kw), h2fac(kw)
-    REAL(4)  :: alpha_bao            ! Barklem-Anstee-O'Mara exponent
     INTEGER  :: iline, ncon, nelionx, itype, nlast_loc
     INTEGER  :: nbuff, nbuff1, nbuff2, nbuff3, ibuff
-    INTEGER  :: minred, maxblue, ixwl, nelem_i
+    INTEGER  :: minred, maxblue, ixwl
     INTEGER  :: i, k, n
     REAL(8)  :: wave, wcon, wmerge, wshift, wtail
     REAL(8)  :: dopratio, wl_loc
@@ -3079,7 +3059,6 @@ CONTAINS
     oldelo    = 1.0E30 * REAL(j * itemp)
     oldeloh   = 1.0E30 * REAL(j * itemp)
     dopratio  = 1.0D0 + DBLE(velshift) / CLIGHT_KMS
-    alpha_bao = 0.0
 
     line_loop: DO iline = 1, n19
 
@@ -3173,8 +3152,6 @@ CONTAINS
         IF (ibuff > nbuff2) tail = REAL(nbuff3 - ibuff) / dnbuff
         buffer(ibuff) = buffer(ibuff) + kappa * tail
       END DO
-      IF (linout >= 0) CALL journal_append(iline, kappa)
-      mlines = mlines + 1
       CYCLE line_loop
 
       ! ------------------------------------------------------------------
@@ -3189,25 +3166,14 @@ CONTAINS
       END IF
       kappa0 = kappa0 * bolt
       IF (kappa0 < kapmin) CYCLE line_loop
-      mlines = mlines + 1
       wcon  = 0.0D0
       wtail = 0.0D0
       IF (ncon > 0) THEN
         wcon  = 1.0D7 / (contx(ncon,nelionx) - emerge(j)) * dopratio
         wtail = 1.0D7 / (contx(ncon,nelionx) - emerge(j) - 500.0D0) * dopratio
       END IF
-      ! Barklem-Anstee-O'Mara van der Waals (when alpha_bao /= 0)
-      IF (alpha_bao /= 0.0) THEN
-        nelem_i = INT(nelion/6) + 1
-        v2 = (1.0 - alpha_bao) / 2.0
-        hfac(j)  = (t(j)/10000.0)**v2
-        hefac(j) = 0.628 * (2.0991E-4*t(j)*(0.25 + 1.008/atmass(nelem_i)))**v2
-        h2fac(j) = 1.08  * (2.0991E-4*t(j)*(0.50 + 1.008/atmass(nelem_i)))**v2
-        txnxn(j) = xnfh(j)*hfac(j) + xnfhe(j,1)*hefac(j) + xnfh2(j)*h2fac(j)
-      END IF
       adamp  = REAL((gammar_loc + gammas_loc*xne(j) + gammaw_loc*txnxn(j)) / dopple(nelion))
       kapcen = kappa0 * voigt_profile(0.0, adamp)
-      IF (linout >= 0) CALL journal_append(iline, kapcen)
       dopwl  = REAL(dopple(nelion)) * REAL(wl_loc)
       ! Red wing
       IF (wl_loc <= wlend) THEN
@@ -3255,8 +3221,6 @@ CONTAINS
       IF (itype == -2) dopph(j) = dopph(j) / 1.4142    ! deuterium
       kappa0 = kappa0 * bolth
       IF (kappa0 < kapmin) CYCLE line_loop
-      IF (linout >= 0) CALL journal_append(iline, kappa0)
-      mlines = mlines + 1
       ! Alpha (Nbup=Nblo+1) and beta-blue (Nbup=Nblo+2) treated as isolated
       IF (ncon == 0 .OR. nbup == nblo+1) THEN
 
@@ -3391,8 +3355,6 @@ CONTAINS
       IF (kappa0 < kapmin) CYCLE line_loop
       kappa0 = kappa0 * REAL(EXP(-elo_loc * hckt(j)))
       IF (kappa0 < kapmin) CYCLE line_loop
-      IF (linout >= 0) CALL journal_append(iline, kappa0)
-      mlines = mlines + 1
       frelin = REAL(CLIGHT_NM_HZ / wl_loc)
       ! Red wing
       IF (wl_loc <= wlend) THEN
@@ -3426,34 +3388,6 @@ CONTAINS
 
 
   END SUBROUTINE compute_line_opacity
-
-  ! ============================================================================
-  ! journal_append - Append one (iline, kapcen) pair to the in-memory
-  !                  line-center journal
-  ! ============================================================================
-
-  SUBROUTINE journal_append(il, kc)
-    INTEGER, INTENT(IN) :: il
-    REAL(4), INTENT(IN) :: kc
-    INTEGER, ALLOCATABLE :: tmp_i(:)
-    REAL(4), ALLOCATABLE :: tmp_k(:)
-    INTEGER :: newsize
-
-    IF (journal_count >= journal_size) THEN
-      newsize = MAX(journal_size * 2, 65536)
-      ALLOCATE(tmp_i(newsize), tmp_k(newsize))
-      IF (journal_size > 0) THEN
-        tmp_i(1:journal_size) = journal_iline(1:journal_size)
-        tmp_k(1:journal_size) = journal_kapcen(1:journal_size)
-      END IF
-      CALL MOVE_ALLOC(tmp_i, journal_iline)
-      CALL MOVE_ALLOC(tmp_k, journal_kapcen)
-      journal_size = newsize
-    END IF
-    journal_count = journal_count + 1
-    journal_iline(journal_count)  = il
-    journal_kapcen(journal_count) = kc
-  END SUBROUTINE journal_append
 
   ! ============================================================================
   !
