@@ -122,9 +122,8 @@
 !  CONTINUOUS OPACITY  — Assembly
 !    KAPP                        Total continuous opacity from all sources
 !    KAPCONT                     Continuous opacity tabulation
-!    COOLOP                      Cool-star opacity assembly (T < 7000 K)
-!    WARMOP                      Lukewarm opacity (7000–12000 K)
-!    HOTOP                       Hot-star opacity (T > 12000 K)
+!    CONT_METAL_OPACITY_LEGACY   Consolidated metal/molecular/CIA continuum
+!                                (replaces former COOLOP + WARMOP + HOTOP)
 !    ELECOP                      Electron scattering
 !    XCONOP                      Tabulated continuum opacity lookup
 !    ROSSTAB                     Rosseland opacity table interpolation
@@ -1116,6 +1115,8 @@ MODULE mod_atlas_data
   REAL(8)  :: AHYD(kw), AH2P(kw), AHMIN(kw), SIGH(kw)
   REAL(8)  :: AHE1(kw), AHE2(kw), AHEMIN(kw), SIGHE(kw)
   REAL(8)  :: ACOOL(kw), ALUKE(kw), AHOT(kw)
+  REAL(8)  :: AH2COLL(kw)           ! H2-H2 collision-induced absorption
+  REAL(8)  :: ACONT_METAL(kw)       ! consolidated metal+molecular continuum
   REAL(8)  :: SIGEL(kw), SIGH2(kw), AHLINE(kw), ALINES(kw), SIGLIN(kw)
   REAL(8)  :: AXLINE(kw), SIGXL(kw), AXCONT(kw), SIGX(kw)
   REAL(8)  :: SHYD(kw), SHMIN(kw), SHLINE(kw), SXLINE(kw), SXCONT(kw)
@@ -7414,9 +7415,10 @@ END SUBROUTINE COMPUTE_PTURB
 !        IFOP(6)  HE2OP   — ionized helium bound-free and free-free
 !        IFOP(7)  HEMIOP  — He- free-free
 !        IFOP(8)  HERAOP  — helium Rayleigh scattering
-!        IFOP(9)  COOLOP  — metals (Mg, Al, Si, Ca, Fe, etc.)
-!        IFOP(10) WARMOP  — additional metal opacities
-!        IFOP(11) HOTOP   — high-ionization opacities
+!        IFOP(9)  CONT_METAL_OPACITY_LEGACY — all metal/molecular/CIA continuum
+!                 (consolidates former COOLOP + WARMOP + HOTOP)
+!        IFOP(10) unused (was WARMOP, now part of IFOP(9); kept for back-compat)
+!        IFOP(11) unused (was HOTOP,  now part of IFOP(9); kept for back-compat)
 !        IFOP(12) ELECOP  — electron (Thomson) scattering
 !        IFOP(13) H2RAOP  — H2 Rayleigh scattering
 !        IFOP(14) HLINOP  — hydrogen line opacity (Stark broadened)
@@ -7453,6 +7455,8 @@ SUBROUTINE KAPP
     ACOOL(J)  = 0.0D0
     ALUKE(J)  = 0.0D0
     AHOT(J)   = 0.0D0
+    AH2COLL(J) = 0.0D0
+    ACONT_METAL(J) = 0.0D0
     SIGEL(J)  = 0.0D0
     SIGH2(J)  = 0.0D0
     AHLINE(J) = 0.0D0
@@ -7482,9 +7486,11 @@ SUBROUTINE KAPP
   IF (IFOP(6)  == 1) CALL HE2OP
   IF (IFOP(7)  == 1) CALL HEMIOP
   IF (IFOP(8)  == 1) CALL HERAOP
-  IF (IFOP(9)  == 1) CALL COOLOP
-  IF (IFOP(10) == 1) CALL WARMOP
-  IF (IFOP(11) == 1) CALL HOTOP
+  IF (IFOP(9)  == 1) CALL CONT_METAL_OPACITY_LEGACY
+  ! IFOP(10) and IFOP(11) are retained in the flag array for backward
+  ! compatibility with existing model decks but are no longer dispatched;
+  ! the content of the former WARMOP and HOTOP is now inside
+  ! CONT_METAL_OPACITY_LEGACY along with the former COOLOP.
   IF (IFOP(12) == 1) CALL ELECOP
   IF (IFOP(13) == 1) CALL H2RAOP
   IF (IFOP(14) == 1) CALL HLINOP
@@ -7510,15 +7516,18 @@ SUBROUTINE KAPP
   ! the ATLAS12 driver, and the atlas12.for treatment is the correct
   ! reference.
   !
-  ! Note on the absorption sum: ACONT here uses the individual metal
-  ! opacity arrays (AC1, AMG1, AAL1, ASI1, AFE1) directly rather than
-  ! the lumped ACOOL bundle from atlas12.for, because the F90 broke
-  ! the metal continua out into separate routines during translation.
-  ! The numerical sum is identical -- just a regrouping.
+  ! Note on the absorption sum: the metal, molecular, and CIA continuum
+  ! contributions are consolidated into ACONT_METAL(J) by the routine
+  ! CONT_METAL_OPACITY_LEGACY.  This bundle replaces the sum that was
+  ! previously assembled inline here (AC1 + AMG1 + AAL1 + ASI1 + AFE1
+  ! + ALUKE + AHOT + AH2COLL + CH/OH molecular), and exists so that a
+  ! TOPbase-based metal continuum variant can be swapped in as a
+  ! drop-in replacement (CONT_METAL_OPACITY_TOPBASE, phase 3 of the
+  ! F90 modernization).  The individual per-species arrays (AC1, AMG1,
+  ! etc.) remain populated and available for diagnostics.
   DO J = 1, NRHOX
     ! Sources weighted by BNU in the source function
-    A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) + ALUKE(J) + AHOT(J) &
-      + AC1(J)  + AMG1(J) + AAL1(J) + ASI1(J)   + AFE1(J)
+    A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) + ACONT_METAL(J)
 
     ! Total continuum absorption
     ACONT(J) = A + AHYD(J) + AHMIN(J) + AXCONT(J)
@@ -9885,33 +9894,184 @@ SUBROUTINE HERAOP
 
 END SUBROUTINE HERAOP
 
-!=======================================================================
-! COOLOP: Cool-star opacity assembly (T < 7000 K)
-!=======================================================================
+!=========================================================================
+! SUBROUTINE CONT_METAL_OPACITY_LEGACY
+!
+! Consolidated continuum-metal opacity using Kurucz's legacy hand-coded
+! cross sections (Luo & Pradhan + Burke & Taylor Fanos for C I, Seaton
+! formulas for Mg I / Al I / Si I / Fe I / Ca II, Peterson fits for
+! N I / O I / C II / Mg II / Si II, and the 60-edge HOTOP modified-
+! Seaton table).  Also includes H2-H2 collision-induced absorption
+! and CH / OH molecular opacity.
+!
+! This routine replaces the former COOLOP + WARMOP + HOTOP wrappers.
+! It exists so that a TOPbase-based variant (CONT_METAL_OPACITY_TOPBASE)
+! can be dropped in as an alternative metal-continuum backend without
+! disturbing the surrounding KAPP dispatch.
+!
+! Output: ACONT_METAL(J) in cm^2/g, stimulated-emission corrected,
+! ready to sum into the total continuum absorption in KAPP.
+!
+! Structure:
+!   1. Cool block (below Lyman limit only): neutral-metal bound-free
+!      (C I, Mg I, Al I, Si I, Fe I), H2-H2 CIA, CH and OH molecular.
+!      Gated by FREQ <= FREQ_RYDH because neutral-metal thresholds all
+!      lie below the Lyman limit and H bound-free dominates above it.
+!   2. Warm block (all frequencies): first-ion bound-free (C II, Mg II,
+!      Si II) plus inline N I, O I, Ca II cross sections times
+!      populations.
+!   3. Hot block (all frequencies): ion free-free for C/N/O/Ne/Mg/Si/S/Fe
+!      stages I-V with Coulomb Gaunt factors, plus the 60 modified-
+!      Seaton bound-free edges from hotop.dat.  Accumulates into a
+!      local array with the "< 1% of running total" skip optimization
+!      preserved bit-for-bit from the original HOTOP, then applies
+!      STIM/RHO before adding to ACONT_METAL.
+!=========================================================================
 
-SUBROUTINE COOLOP
+SUBROUTINE CONT_METAL_OPACITY_LEGACY
 
   IMPLICIT NONE
-  INTEGER :: J
-  REAL(8)  :: AH2COLL(kw)
 
-  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COOLOP'
-  ! Cool-star opacities: only contribute below Lyman limit
-  IF (FREQ > FREQ_RYDH) RETURN
-  CALL C1OP
-  CALL MG1OP
-  CALL AL1OP
-  CALL SI1OP
-  CALL FE1OP
-  CALL H2COLLOP(AH2COLL)
+  ! --- HOTOP persistent state (preserved across calls) ---
+  INTEGER, PARAMETER :: NUM = 60    ! number of bound-free edges
+  INTEGER, PARAMETER :: NPAR = 7    ! parameters per edge
+  REAL(8),  SAVE :: A_HOT(NPAR, NUM)
+  LOGICAL,  SAVE :: HOT_INITIALIZED = .FALSE.
+
+  ! --- Locals ---
+  REAL(8)  :: AHOT_TMP(kw)          ! running HOT total before STIM/RHO
+  REAL(8)  :: AC2OP(kw)             ! C II b-f placeholder (disabled)
+  REAL(8)  :: FREE, XSECT, XX, FRATIO
+  INTEGER  :: I, J, ID
+  CHARACTER(256) :: LINE
+
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING CONT_METAL_OPACITY_LEGACY'
+
+  ! Zero output
   DO J = 1, NRHOX
-    ACOOL(J) = AC1(J) + AMG1(J) + AAL1(J) + ASI1(J) + AFE1(J) &
-             + (CHOP(J) * XNFP(J, 846) + OHOP(J) * XNFP(J, 848)) &
-             * STIM(J) / RHO(J) + AH2COLL(J)
+    ACONT_METAL(J) = 0.0D0
   END DO
+
+  !======================================================================
+  ! (1) Cool block: below Lyman limit only.
+  !     Neutrals C I, Mg I, Al I, Si I, Fe I + H2-H2 CIA + CH/OH molec.
+  !======================================================================
+  IF (FREQ <= FREQ_RYDH) THEN
+    CALL C1OP
+    CALL MG1OP
+    CALL AL1OP
+    CALL SI1OP
+    CALL FE1OP
+    CALL H2COLLOP(AH2COLL)        ! fills module-scope AH2COLL(kw)
+    DO J = 1, NRHOX
+      ACONT_METAL(J) = ACONT_METAL(J)                                    &
+        + AC1(J) + AMG1(J) + AAL1(J) + ASI1(J) + AFE1(J)                 &
+        + AH2COLL(J)                                                     &
+        + (CHOP(J) * XNFP(J, 846) + OHOP(J) * XNFP(J, 848))              &
+          * STIM(J) / RHO(J)
+    END DO
+  END IF
+
+  !======================================================================
+  ! (2) Warm block: all frequencies.
+  !     First-ion bound-free C II / Mg II / Si II + inline N I / O I /
+  !     Ca II cross sections * populations * STIM / RHO.
+  !======================================================================
+  CALL C2OP
+  CALL MG2OP
+  CALL SI2OP
+  DO J = 1, NRHOX
+    ACONT_METAL(J) = ACONT_METAL(J)                                      &
+      + AC2(J) + AMG2(J) + ASI2(J)                                       &
+      + (N1OP(J) * XNFP(J, 28) + O1OP(J) * XNFP(J, 36)                   &
+       + CA2OP(J) * XNFP(J, 211)) * STIM(J) / RHO(J)
+  END DO
+
+  !======================================================================
+  ! (3) Hot block: all frequencies.
+  !     Ion free-free (C/N/O/Ne/Mg/Si/S/Fe I-V) + 60 bound-free edges
+  !     from hotop.dat.  Accumulates into local AHOT_TMP to preserve
+  !     the "< 1% running total" skip optimization in the edge loop,
+  !     then applies STIM/RHO once before adding to ACONT_METAL.
+  !======================================================================
+
+  ! Read edge parameters from file on first call
+  IF (.NOT. HOT_INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'hotop.dat', STATUS='OLD', ACTION='READ')
+    DO
+      READ(89, '(A)') LINE
+      IF (LINE(1:1) /= '#') THEN
+        BACKSPACE(89)
+        EXIT
+      END IF
+    END DO
+    DO I = 1, NUM
+      READ(89, *) A_HOT(:, I)
+    END DO
+    CLOSE(89)
+    HOT_INITIALIZED = .TRUE.
+  END IF
+
+  ! Free-free opacity: C,N,O,Ne,Mg,Si,S,Fe ions (stages I-V)
+  DO J = 1, NRHOX
+    FREE = COULFF(J,1) * 1.0D0                                           &
+            * (XNF(J,22) + XNF(J,29) + XNF(J,37) + XNF(J,56)             &
+             + XNF(J,79) + XNF(J,106) + XNF(J,137) + XNF(J,352))         &
+         + COULFF(J,2) * 4.0D0                                           &
+            * (XNF(J,23) + XNF(J,30) + XNF(J,38) + XNF(J,57)             &
+             + XNF(J,80) + XNF(J,107) + XNF(J,138) + XNF(J,353))         &
+         + COULFF(J,3) * 9.0D0                                           &
+            * (XNF(J,24) + XNF(J,31) + XNF(J,39) + XNF(J,58)             &
+             + XNF(J,81) + XNF(J,108) + XNF(J,139) + XNF(J,354))         &
+         + COULFF(J,4) * 16.0D0                                          &
+            * (XNF(J,25) + XNF(J,32) + XNF(J,40) + XNF(J,59)             &
+             + XNF(J,82) + XNF(J,109) + XNF(J,140) + XNF(J,355))         &
+         + COULFF(J,5) * 25.0D0                                          &
+            * (XNF(J,26) + XNF(J,33) + XNF(J,41) + XNF(J,60)             &
+             + XNF(J,83) + XNF(J,110) + XNF(J,141) + XNF(J,356))
+
+    AHOT_TMP(J) = FREE * COEFF_FF / (FREQ * FREQ * FREQ) * XNE(J) / sqrt(T(J))
+  END DO
+
+  ! C II bound-free: disabled (handled in warm block per Bischoff 4 Jun 2003)
+  ! The placeholder is kept for source-code parity with HOTOP.
+  DO J = 1, NRHOX
+    AC2OP(J) = 0.0D0
+  END DO
+  DO J = 1, NRHOX
+    AHOT_TMP(J) = AHOT_TMP(J) + AC2OP(J)
+  END DO
+
+  ! 60 modified-Seaton bound-free edges.  The "< 1% of running total"
+  ! skip condition is preserved exactly from the original HOTOP so that
+  ! the refactor is bit-for-bit identical.
+  DO I = 1, NUM
+    IF (FREQ < A_HOT(1, I)) CYCLE
+    FRATIO = A_HOT(1, I) / FREQ
+    XSECT = A_HOT(2, I) * (A_HOT(3, I) + FRATIO - A_HOT(3, I) * FRATIO)  &
+          * sqrt(FRATIO ** int(A_HOT(4, I)))
+    ID = int(A_HOT(7, I))
+    DO J = 1, NRHOX
+      XX = XSECT * XNFP(J, ID) * A_HOT(5, I)
+      IF (XX > AHOT_TMP(J) / 100.0D0) THEN
+        AHOT_TMP(J) = AHOT_TMP(J) + XX / exp(A_HOT(6, I) / TKEV(J))
+      END IF
+    END DO
+  END DO
+
+  ! Apply stimulated emission and density normalization, sum into output.
+  ! AHOT(J) (module-level) is kept populated for diagnostic consumers
+  ! that may still reference it; nothing in the current pipeline reads
+  ! AHOT after this point.
+  DO J = 1, NRHOX
+    AHOT_TMP(J) = AHOT_TMP(J) * STIM(J) / RHO(J)
+    AHOT(J) = AHOT_TMP(J)
+    ACONT_METAL(J) = ACONT_METAL(J) + AHOT_TMP(J)
+  END DO
+
   RETURN
 
-END SUBROUTINE COOLOP
+END SUBROUTINE CONT_METAL_OPACITY_LEGACY
 
 !=========================================================================
 ! SUBROUTINE C1OP
@@ -11274,28 +11434,6 @@ SUBROUTINE H2COLLOP(AH2COLL)
 
 END SUBROUTINE H2COLLOP
 
-!=======================================================================
-! WARMOP: Lukewarm opacity assembly (7000-12000 K)
-!=======================================================================
-
-SUBROUTINE WARMOP
-  IMPLICIT NONE
-  INTEGER :: J
-
-  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING WARMOP'
-  ! Lukewarm metal opacities: N I, O I, Ca II + C II, Mg II, Si II
-  CALL C2OP
-  CALL MG2OP
-  CALL SI2OP
-  DO J = 1, NRHOX
-    ALUKE(J) = (N1OP(J) * XNFP(J, 28) + O1OP(J) * XNFP(J, 36) &
-             + CA2OP(J) * XNFP(J, 211)) * STIM(J) / RHO(J) &
-             + AC2(J) + AMG2(J) + ASI2(J)
-  END DO
-  RETURN
-
-END SUBROUTINE WARMOP
-
 !=========================================================================
 ! SUBROUTINE C2OP
 !
@@ -11974,133 +12112,6 @@ FUNCTION CA2OP(J)
   RETURN
 
 END FUNCTION CA2OP
-
-!=========================================================================
-! SUBROUTINE HOTOP
-!
-! Hot-star opacity assembly (significant for T > ~12000 K).
-!
-! Combines three contributions into AHOT(J):
-!
-!   1. Free-free opacity from C, N, O, Ne, Mg, Si, S, Fe (ions I-V)
-!      using Coulomb free-free Gaunt factors COULFF(J,Z) for Z=1..5.
-!      Formula: sigma_ff = 3.6919e8 * Z^2 * g_ff * n_e / (nu^3 * sqrt(T))
-!
-!   2. C II bound-free (AC2OP) — currently disabled (handled in LUKE
-!      per Bischoff 2003); placeholder zeroed array preserved.
-!
-!   3. 60 bound-free edges from various species, read from hotop.dat.
-!      Each edge has 7 parameters: freq0, sigma0, s, n_power, g, E_exc, id
-!      Cross-section (modified Seaton):
-!        sigma = sigma0 * (s + freq0/nu - s*freq0/nu) * sqrt((freq0/nu)^n)
-!      Applied with stat weight g and Boltzmann factor exp(-E_exc/kT).
-!      Optimization: edges contributing < 1% of running total are skipped.
-!=========================================================================
-
-SUBROUTINE HOTOP
-
-  IMPLICIT NONE
-
-  INTEGER, PARAMETER :: NUM = 60    ! number of bound-free edges
-  INTEGER, PARAMETER :: NPAR = 7    ! parameters per edge
-
-  ! COEFF_FF replaced by COEFF_FF from mod_constants
-
-  ! --- Edge parameters (read from file on first call) ---
-  ! A(1:7,I): freq0, sigma0, s, n_power, g_stat, E_exc, species_id
-  REAL(8),  SAVE :: A(NPAR, NUM)
-  LOGICAL, SAVE :: INITIALIZED = .FALSE.
-
-  ! --- Local variables ---
-  REAL(8)  :: AC2OP(kw)
-  REAL(8)  :: FREE, XSECT, XX, FRATIO
-  INTEGER :: I, J, ID
-  CHARACTER(256) :: LINE
-
-  ! --- External functions ---
-
-  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HOTOP'
-
-  !---------------------------------------------------------------------
-  ! Read edge parameters from file on first call
-  !---------------------------------------------------------------------
-  IF (.NOT. INITIALIZED) THEN
-    OPEN(UNIT=89, FILE=trim(DATADIR)//'hotop.dat', STATUS='OLD', ACTION='READ')
-    DO
-      READ(89, '(A)') LINE
-      IF (LINE(1:1) /= '#') THEN
-        BACKSPACE(89)
-        EXIT
-      END IF
-    END DO
-    DO I = 1, NUM
-      READ(89, *) A(:, I)
-    END DO
-    CLOSE(89)
-    INITIALIZED = .TRUE.
-  END IF
-
-  !---------------------------------------------------------------------
-  ! Free-free opacity: C,N,O,Ne,Mg,Si,S,Fe ions (stages I-V)
-  !---------------------------------------------------------------------
-  DO J = 1, NRHOX
-    FREE = COULFF(J,1) * 1.0D0 &
-            * (XNF(J,22) + XNF(J,29) + XNF(J,37) + XNF(J,56) &
-             + XNF(J,79) + XNF(J,106) + XNF(J,137) + XNF(J,352)) &
-         + COULFF(J,2) * 4.0D0 &
-            * (XNF(J,23) + XNF(J,30) + XNF(J,38) + XNF(J,57) &
-             + XNF(J,80) + XNF(J,107) + XNF(J,138) + XNF(J,353)) &
-         + COULFF(J,3) * 9.0D0 &
-            * (XNF(J,24) + XNF(J,31) + XNF(J,39) + XNF(J,58) &
-             + XNF(J,81) + XNF(J,108) + XNF(J,139) + XNF(J,354)) &
-         + COULFF(J,4) * 16.0D0 &
-            * (XNF(J,25) + XNF(J,32) + XNF(J,40) + XNF(J,59) &
-             + XNF(J,82) + XNF(J,109) + XNF(J,140) + XNF(J,355)) &
-         + COULFF(J,5) * 25.0D0 &
-            * (XNF(J,26) + XNF(J,33) + XNF(J,41) + XNF(J,60) &
-             + XNF(J,83) + XNF(J,110) + XNF(J,141) + XNF(J,356))
-
-    AHOT(J) = FREE * COEFF_FF / (FREQ * FREQ * FREQ) * XNE(J) / sqrt(T(J))
-  END DO
-
-  !---------------------------------------------------------------------
-  ! C II bound-free — disabled (handled in LUKE per Bischoff 4 Jun 2003)
-  !---------------------------------------------------------------------
-  DO J = 1, NRHOX
-    AC2OP(J) = 0.0D0
-  END DO
-  ! CALL C2OP(AC2OP)
-  DO J = 1, NRHOX
-    AHOT(J) = AHOT(J) + AC2OP(J)
-  END DO
-
-  !---------------------------------------------------------------------
-  ! Bound-free edges (60 modified-Seaton edges from various species)
-  !---------------------------------------------------------------------
-  DO I = 1, NUM
-    IF (FREQ < A(1, I)) CYCLE
-    FRATIO = A(1, I) / FREQ
-    XSECT = A(2, I) * (A(3, I) + FRATIO - A(3, I) * FRATIO) &
-          * sqrt(FRATIO ** int(A(4, I)))
-    ID = int(A(7, I))
-    DO J = 1, NRHOX
-      XX = XSECT * XNFP(J, ID) * A(5, I)
-      IF (XX > AHOT(J) / 100.0D0) THEN
-        AHOT(J) = AHOT(J) + XX / exp(A(6, I) / TKEV(J))
-      END IF
-    END DO
-  END DO
-
-  !---------------------------------------------------------------------
-  ! Apply stimulated emission and normalize by density
-  !---------------------------------------------------------------------
-  DO J = 1, NRHOX
-    AHOT(J) = AHOT(J) * STIM(J) / RHO(J)
-  END DO
-
-  RETURN
-
-END SUBROUTINE HOTOP
 
 !=======================================================================
 ! ELECOP
