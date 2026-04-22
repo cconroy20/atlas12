@@ -39,9 +39,6 @@ PROGRAM ATLAS12
   USE mod_atlas_data
   IMPLICIT NONE
 
-  ! --- Named constants for clarity ---
-  REAL(8), PARAMETER :: PLANCK_PREFAC = 1.47439D-2       ! 2*h/c^2 in CGS-frequency units
-
   ! --- Local variables ---
   REAL(8)        :: VSTEPS, RCOWT
   REAL(8)        :: EXCESS, XMAX, FREQ15
@@ -511,7 +508,7 @@ PROGRAM ATLAS12
         DO J = 1, NRHOX
           EHVKT(J) = EXP(-FREQ * HKT(J))
           STIM(J)  = 1.0D0 - EHVKT(J)
-          BNU(J)   = PLANCK_PREFAC * FREQ15**3 * EHVKT(J) / STIM(J)
+          BNU(J)   = BNU_PREFAC * FREQ15**3 * EHVKT(J) / STIM(J)
         END DO
 
         ! Compute continuous opacity at this frequency

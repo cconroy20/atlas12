@@ -1162,7 +1162,6 @@ CONTAINS
     ! Stehlé path: convolution-building variables
     INTEGER, PARAMETER :: NCONV_MAX = 600
     INTEGER, PARAMETER :: NWING_MAX = 200
-    REAL(8), PARAMETER :: PI8 = 3.14159265358979323846D0
     REAL(8) :: xn8, xm8, lambda0, F0_loc, dop_dalpha, lor_dalpha
     REAL(8) :: dalpha_grid(NSTARK_DALPHA), stark_prof(NSTARK_DALPHA)
     REAL(8) :: gsum, da_i, voigt_kern
@@ -1188,7 +1187,7 @@ CONTAINS
       itemp1 = itemp
       conv_valid = .false.
       DO k = 1, NRHOX
-        xne16 = REAL(XNE(k)**0.1666667)   ! Ne^(1/6)
+        xne16 = REAL(XNE(k)**(1.0D0/6.0D0))   ! Ne^(1/6)
 
         ! Plasma parameter p = interparticle distance / Debye length.
         ! Controls Debye-shielded ion microfield distribution in the
@@ -1413,7 +1412,7 @@ CONTAINS
 
         xn8 = DBLE(n)
         xm8 = DBLE(m)
-        lambda0 = 911.7633455D0 * (xn8*xm8)**2 / ((xm8-xn8)*(xm8+xn8))
+        lambda0 = RYD_ANG * (xn8*xm8)**2 / ((xm8-xn8)*(xm8+xn8))
         iseries = n
         S => STEHLE_DATA(iseries)
         itrans = m - S%n_upper_min + 1
@@ -1597,7 +1596,7 @@ CONTAINS
           IF (da_i > da_wing_max .AND. da_wing_max > 0.0D0) THEN
             ! Beyond convolution grid: Stark wing + Lorentz tail
             conv_profile(ia) = stark_prof(ia) &
-                 + DBLE(voigt_a) * dop_dalpha / (PI8 * da_i**2)
+                 + DBLE(voigt_a) * dop_dalpha / (PI * da_i**2)
           ELSE
             ! Numerical convolution with Voigt kernel
             gsum = 0.0D0
@@ -3163,10 +3162,11 @@ CONTAINS
     REAL(8), SAVE :: alphahyd(99) = 0.0D0
 
     ! ----- DATA: hydrogen series limits (cm^{-1}) used for merged continuum -----
-    REAL(8), PARAMETER :: conth(15) = [ &
-      ELIM_HI, 27419.659D0, 12186.462D0,  6854.871D0, 4387.113D0, &
-        3046.604D0,  2238.320D0,  1713.711D0,  1354.044D0, 1096.776D0, &
-         906.426D0,   761.650D0,   648.980D0,   559.579D0,  487.456D0 ]
+    ! Use the shared H_SERIES_LIMITS array from mod_constants; this matches
+    ! the values used by atlas12 HOP (IF-ladder) and the H I column of contx
+    ! below.  Previously the local n=8 value was 1713.711, harmonized with
+    ! the canonical observed value 1713.713 in the process.
+    REAL(8), PARAMETER :: conth(15) = H_SERIES_LIMITS
 
     ! ----- DATA: CONTX(26,17) -- ionisation edge wavenumbers -----
     !
@@ -3185,12 +3185,10 @@ CONTAINS
     !
     ! The N*val repeat syntax is invalid in F90 array constructors;
     ! zeros are spelled out individually.
+    REAL(8), PARAMETER :: contx_col1_zeros(16) = 0.0D0     ! pads the H column below n=10
     REAL(8), PARAMETER :: contx(26,17) = RESHAPE( [ &
-      ! col 1  -- H I (1.00)
-      ELIM_HI, 27419.659D0, 12186.462D0,  6854.871D0, 4387.113D0, &
-        3046.604D0,  2238.320D0,  1713.713D0,  1354.044D0, 1096.776D0, &
-        0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,            &
-        0.D0,0.D0,0.D0,0.D0,0.D0,0.D0,                                  &
+      ! col 1  -- H I (1.00): 10 series limits (n=1..10) + 16 trailing zeros.
+      H_SERIES_LIMITS(1:10), contx_col1_zeros,                                    &
       ! col 2  -- He I (2.00)
       198310.760D0, 38454.691D0, 32033.214D0, 29223.753D0, 27175.760D0, &
        15073.868D0, 0.D0,0.D0,0.D0,0.D0,                                &
@@ -3313,7 +3311,7 @@ CONTAINS
         ! just redward of the Balmer/other series limits.
         inglis = REAL(1600.0 / xne(k)**(2.0/15.0))
         nmerge = inglis - 1.5
-        emerge(k)     = 109737.312D0 / DBLE(nmerge)**2
+        emerge(k)     = RYDBERG_INF / DBLE(nmerge)**2
         emergeh_loc(k)= RYDBERG_H / DBLE(nmerge)**2
       END DO
       itemp1 = itemp
@@ -3629,7 +3627,7 @@ CONTAINS
           !  this reinterpretation was done via EQUIVALENCE of TYPE and
           !  NLAST; here we just use itype directly.)
           ! ==============================================================
-          wshift = 1.0D7 / (1.0D7/wl_loc - 109737.312D0/DBLE(itype)**2)
+          wshift = 1.0D7 / (1.0D7/wl_loc - RYDBERG_INF/DBLE(itype)**2)
           wmerge = 1.0D7 / (1.0D7/wl_loc - emerge(j))
           IF (nelion == 1) THEN
             wshift = 1.0D7 / (1.0D7/wl_loc - RYDBERG_H/DBLE(itype)**2)

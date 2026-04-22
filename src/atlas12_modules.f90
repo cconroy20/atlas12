@@ -22,122 +22,148 @@
 !  -----------------
 !
 !  MODULES
-!    mod_parameters          Compile-time constants (kw, mion, maxmol, ...)
-!    mod_atlas_data          All shared state (replaces 58 COMMON blocks)
+!    mod_parameters              Compile-time constants (kw, mion, maxmol, ...)
+!    mod_constants               Physical constants (CODATA 2018) and
+!                                dissolved-level support data (Holtsmark Q
+!                                table, Hummer-Mihalas beta coefficient)
+!    mod_partition_functions     Barklem & Collet (2016) atomic partition
+!                                functions; U_BC accessor + lazy file load
+!    mod_atlas_data              All shared state (replaces 58 COMMON blocks)
+!                                plus the main physics/numerics routines
 !
-!  MAIN PROGRAM
-!    ATLAS12                 Iteration driver: read input, iterate atmosphere
+!  MAIN PROGRAM  (in atlas12c.f90)
+!    ATLAS12                     Iteration driver: read input, iterate atmosphere
+!
+!  --- Procedures in mod_partition_functions -----------------------------
+!    set_bc_data_dir             Set directory for partfn_bc2016.dat
+!    init_bc_partition_functions Lazy one-time load of the B&C table
+!    parse_t_grid                Parser: T grid header line
+!    parse_species_record        Parser: one species line (label + 42 U(T))
+!    classify_label              Parser: "Fe_I"/"H-"/... -> (Z, ION) or neg-ion
+!    element_Z                   Atomic symbol -> Z
+!    roman_to_int                Roman numeral -> integer
+!    U_BC                        Positive-ion partition function U(Z,ION,T)
+!    U_BC_NEG                    Negative-ion partition function
+!    BC_HAS                      Coverage query (Z, ION)
+!    BC_HAS_NEG                  Coverage query (Z, negative ion)
+!    interp_log_linear_cached    Log-linear T interpolation with bracket hint
+!
+!  --- Procedures in mod_atlas_data --------------------------------------
 !
 !  MODEL OUTPUT
-!    PUTOUT                  Write model atmosphere, fluxes, intensities
+!    PUTOUT                      Write model atmosphere, fluxes, intensities
 !
 !  TEMPERATURE CORRECTION & STRUCTURE
-!    TCORR                   Temperature correction via flux conservation
-!    STATEQ                  Statistical equilibrium (H NLTE rates)
-!    RADIAP                  Radiative acceleration iteration
-!    ROSS                    Rosseland mean opacity computation
-!    CONVEC                  Convective flux by mixing-length theory
-!    COMPUTE_PTURB           Turbulent pressure computation
-!    VTURB_VARYDEPTH         Standard microturbulent velocity profile
-!    HIGH                    High-temperature opacity flag setting
-!    TTAUP                   Starting model: T-tau-P relation
+!    TCORR                       Temperature correction via flux conservation
+!    STATEQ                      Statistical equilibrium (H NLTE rates)
+!    RADIAP                      Radiative acceleration iteration
+!    ROSS                        Rosseland mean opacity computation
+!    CONVEC                      Convective flux by mixing-length theory
+!    COMPUTE_PTURB               Turbulent pressure computation
+!    VTURB_VARYDEPTH             Standard microturbulent velocity profile
+!    COMPUTE_HEIGHT              Geometric depth from hydrostatic integration
+!    TTAUP                       Starting model: T-tau-P relation
 !
 !  EQUATION OF STATE
-!    NELECT                  Electron density by charge conservation
-!    COMPUTE_ONE_POP         Single-species population (Saha-Boltzmann)
-!    COMPUTE_ALL_POPS        Populations for all species
-!    PFSAHA                  Partition functions and Saha ionization
-!    PFGROUND_HYBRID         Atomic partition function dispatcher (B&C/Kurucz)
-!    PFGROUND_KURUCZ         Kurucz hand-coded partition functions (fallback)
-!    PFIRON                  Iron-group partition function interpolation
-!    MOLEC                   Single-molecule equilibrium
-!    NMOLEC                  Full molecular equilibrium solution
-!    READMOL                 Read molecular equilibrium input data
-!    EQUILH2                 H2 equilibrium constant
-!    PARTFNH2                H2 molecular partition function
+!    NELECT                      Electron density by charge conservation
+!    COMPUTE_ONE_POP             Single-species population (Saha-Boltzmann)
+!    COMPUTE_ALL_POPS            Populations for all species
+!    PFSAHA                      Partition functions and Saha ionization
+!    pfsaha_highlevels           Hydrogenic high-n Rydberg tail correction
+!    PFGROUND_HYBRID             Atomic partition function dispatcher (B&C/Kurucz)
+!    PFGROUND_KURUCZ             Kurucz hand-coded partition functions (fallback)
+!    PFIRON                      Iron-group partition function interpolation
+!    MOLEC                       Single-molecule equilibrium
+!    NMOLEC                      Full molecular equilibrium solution
+!    READMOL                     Read molecular equilibrium input data
+!    EQUILH2                     H2 equilibrium constant
+!    PARTFNH2                    H2 molecular partition function
 !
 !  RADIATIVE TRANSFER
-!    JOSH                    Source function solver (Feautrier method)
-!    ENERGY_DENSITY          Radiation energy density integration
-!    BLOCKJ                  J-coefficient matrix (loaded from file)
-!    BLOCKH                  H-coefficient matrix (loaded from file)
+!    JOSH                        Source function solver (Feautrier method)
+!    ENERGY_DENSITY              Radiation energy density integration
+!    BLOCKJ                      J-coefficient matrix (loaded from file)
+!    BLOCKH                      H-coefficient matrix (loaded from file)
 !
 !  CONTINUOUS OPACITY  — Hydrogen
-!    HOP                     H I bound-free + free-free
-!    XKARZAS                 Karzas-Latter bound-free cross sections
-!    COULX                   Hydrogenic photoionization cross section
-!    COULBF1S                Ground-state Coulomb bound-free
-!    COULFF                  Coulomb free-free gaunt factor
-!    HMINOP                  H- bound-free + free-free
-!    H2PLOP                  H2+ opacity
-!    H2RAOP                  H2 Rayleigh scattering
-!    H2COLLOP                H2 collision-induced absorption
-!    HRAYOP                  H I Rayleigh scattering
+!    HOP                         H I bound-free + free-free
+!    XKARZAS                     Karzas-Latter bound-free cross sections
+!    COULX                       Hydrogenic photoionization cross section
+!    COULBF1S                    Ground-state Coulomb bound-free
+!    COULFF                      Coulomb free-free gaunt factor
+!    HMINOP                      H- bound-free + free-free
+!    H2PLOP                      H2+ opacity
+!    H2RAOP                      H2 Rayleigh scattering
+!    H2COLLOP                    H2 collision-induced absorption
+!    HRAYOP                      H I Rayleigh scattering
+!    occupation_prob             Hummer-Mihalas (1988) level occupation w_n
+!    holtsmark_Q                 Holtsmark microfield cumulative Q(beta)
 !
 !  CONTINUOUS OPACITY  — Helium
-!    HE1OP                   He I bound-free (with satellites)
-!    CROSSHE                 He I photoionization cross section
-!    HE111S, HE12S1S, ...    He I level-specific cross sections
-!    HE2OP                   He II bound-free + free-free
-!    HEMIOP                  He- free-free
-!    HERAOP                  He I Rayleigh scattering
+!    HE1OP                       He I bound-free (with satellites)
+!    CROSSHE                     He I photoionization cross section
+!    HE111S, HE12S1S, ...        He I level-specific cross sections
+!    HE2OP                       He II bound-free + free-free
+!    HEMIOP                      He- free-free
+!    HERAOP                      He I Rayleigh scattering
 !
 !  CONTINUOUS OPACITY  — Metals
-!    C1OP, C2OP              Carbon  I–II
-!    N1OP                    Nitrogen I
-!    O1OP                    Oxygen   I 
-!    MG1OP, MG2OP            Magnesium I–II
-!    AL1OP                   Aluminum I
-!    SI1OP, SI2OP            Silicon  I–II
-!    CA2OP                   Calcium  II
-!    FE1OP                   Iron I
-!    CHOP                    CH molecular opacity
-!    OHOP                    OH molecular opacity
+!    C1OP, C2OP                  Carbon  I–II
+!    O1OP                        Oxygen   I
+!    MG1OP, MG2OP                Magnesium I–II
+!    AL1OP                       Aluminum I
+!    SI1OP, SI2OP                Silicon  I–II
+!    CA2OP                       Calcium  II
+!    FE1OP                       Iron I
+!    CHOP                        CH molecular opacity
+!    OHOP                        OH molecular opacity
+!    SEATON                      Seaton formula for photoionization x-section
 !
 !  CONTINUOUS OPACITY  — Assembly
-!    KAPP                    Total continuous opacity from all sources
-!    KAPCONT                 Continuous opacity tabulation
-!    COOLOP                  Cool-star opacity assembly (T < 7000 K)
-!    WARMOP                  Lukewarm opacity (7000–12000 K)
-!    HOTOP                   Hot-star opacity (T > 12000 K)
-!    ELECOP                  Electron scattering
-!    XCONOP                  Tabulated continuum opacity lookup
-!    ROSSTAB                 Rosseland opacity table interpolation
+!    KAPP                        Total continuous opacity from all sources
+!    KAPCONT                     Continuous opacity tabulation
+!    COOLOP                      Cool-star opacity assembly (T < 7000 K)
+!    WARMOP                      Lukewarm opacity (7000–12000 K)
+!    HOTOP                       Hot-star opacity (T > 12000 K)
+!    ELECOP                      Electron scattering
+!    XCONOP                      Tabulated continuum opacity lookup
+!    ROSSTAB                     Rosseland opacity table interpolation
 !
 !  LINE OPACITY
-!    SELECTLINES             Line selection for current frequency
-!    LINOP1                  Line opacity computation (single frequency)
-!    XLINOP                  Extended line opacity computation
-!    IONPOTS                 Load ionization potentials
-!    ISOTOPES                Load isotope data
+!    SELECTLINES                 Line selection for current frequency
+!    LINOP1                      Line opacity computation (single frequency)
+!    XLINOP                      Extended line opacity computation
+!    IONPOTS                     Load ionization potentials
+!    ISOTOPES                    Load isotope data
 !
 !  LINE PROFILES
-!    HLINOP                  Hydrogen line opacity (Balmer, Lyman, ...)
-!    HPROF4                  Hydrogen Stark + resonance profile
-!    STARK                   Stark broadening half-width
-!    VOIGT                   Voigt function H(a,v)
-!    TABVOIGT                Voigt profile tabulation
-!    HFNM                    Hydrogen oscillator strength f(n,m)
-!    VCSE1F                  VCS electric field distribution
-!    STARK_PROFILE           Stark profile wing function (formerly SOFBET)
-!    (FASTE1 removed — replaced by direct EXPI calls)
-!    EXPI                    Exponential integral E_n(x)
+!    HLINOP                      Hydrogen line opacity (Balmer, Lyman, ...)
+!    STARK                       Kurucz analytic Stark broadening (VCS)
+!    STARK_MMM                   Stehle (1999) MMM tabulated Stark broadening
+!    INIT_STARK_TABLES           Lazy load of the Stehle binary tables
+!    hydrogen_f_value            Hydrogen oscillator strength f(n,m)
+!    TABVOIGT                    Voigt profile tabulation
+!    HFNM                        Hydrogen f(n,m) (Kurucz convention)
+!    VCSE1F                      VCS electric field distribution
+!    STARK_PROFILE               Stark profile wing function (formerly SOFBET)
+!    EXPI                        Exponential integral E_n(x)
 !
 !  NUMERICAL UTILITIES
-!    DERIV                   Differentiation by parabolic interpolation
-!    INTEG                   Integration using parabolic coefficients
-!    PARCOE                  Parabolic interpolation coefficients
-!    MAP1                    Linear interpolation/remapping
-!    MAP4                    Cubic interpolation/remapping
-!    SOLVIT                  LU decomposition linear equation solver
-!    LINTER                  Linear interpolation utility
+!    DERIV                       Differentiation by parabolic interpolation
+!    INTEG                       Integration using parabolic coefficients
+!    PARCOE                      Parabolic interpolation coefficients
+!    MAP1                        Linear interpolation/remapping
+!    MAP4                        Cubic interpolation/remapping
+!    SOLVIT                      LU decomposition linear equation solver
+!    LINTER                      Linear interpolation utility
 !
 !  I/O & PARSING
-!    READIN                  Read and parse all input control cards
-!    FREEFF                  Free-format floating point reader
-!    FREEFR                  Free-format real number reader
-!    NEXTWORD                 Free-format word reader (returns character string)
-!    DUMP_ARRAY              Debug array print utility
+!    READIN                      Read and parse all input control cards
+!    SCALE_MODEL                 Rescale existing model to new Teff/logg
+!    FREEFF                      Free-format floating point reader
+!    FREEFR                      Free-format real number reader
+!    NEXTWORD                    Free-format word reader (returns character string)
+!    DUMP_ARRAY                  Debug array print utility
 !
 !=========================================================================
 
@@ -145,28 +171,30 @@
 ! mod_parameters: Compile-time constants for ATLAS12
 !=========================================================================
 
-module mod_parameters
+MODULE mod_parameters
 
-  implicit none
-  integer, parameter :: kw = 80        ! Number of atmospheric depth points
-  integer, parameter :: mion = 1006    ! Number of ion species
-  integer, parameter :: maxmol = 200   ! Maximum number of molecules
-  integer, parameter :: max1 = maxmol + 1
-  integer, parameter :: maxeq = 35     ! Maximum number of equilibrium equations
-  integer, parameter :: maxloc = 3 * maxmol
+  IMPLICIT NONE
+  INTEGER, PARAMETER :: kw = 80        ! Number of atmospheric depth points
+  INTEGER, PARAMETER :: mion = 1006    ! Number of ion species
+  INTEGER, PARAMETER :: maxmol = 200   ! Maximum number of molecules
+  INTEGER, PARAMETER :: max1 = maxmol + 1
+  INTEGER, PARAMETER :: maxeq = 35     ! Maximum number of equilibrium equations
+  INTEGER, PARAMETER :: maxloc = 3 * maxmol
 
   ! Debug flag: set to 1 to print subroutine entry tracing to unit 6
-  integer, parameter :: IDEBUG = 0
+  INTEGER, PARAMETER :: IDEBUG = 0
 
-end module mod_parameters
+END MODULE mod_parameters
 
 !=========================================================================
 ! mod_constants: Physical constants and derived quantities
 !
-!   Fundamental constants: CODATA 2018 / 2019 SI redefinition.
-!   k_B and h are exact by definition; c is exact by the definition
-!   of the metre; sigma_T and m_u carry experimental uncertainties
-!   negligible for our purposes.
+!   Fundamental constants: CODATA 2022 / 2019 SI redefinition.
+!   k_B, h, c, e_charge (in C), and 1 eV are exact by the 2019 SI
+!   redefinition.  The remaining quantities (m_u, m_e, sigma_T, R_inf,
+!   e in esu) carry small experimental uncertainties that are
+!   negligible for stellar atmosphere work but kept to full tabulated
+!   precision so future recompilations match the literature.
 !
 !   Derived constants: pre-computed combinations that appear throughout
 !   ATLAS12/SYNTHE (Planck function prefactor, Saha prefactor, free-free
@@ -180,331 +208,177 @@ end module mod_parameters
 !   CHANGE LOG:
 !     Initial creation consolidating CODATA-1963 literals scattered
 !     across ~100 locations in the codebase.  Values updated to
-!     CODATA 2018 (Tiesinga et al. 2021, Rev. Mod. Phys. 93, 025010).
+!     CODATA 2018 (Tiesinga et al. 2021, Rev. Mod. Phys. 93, 025010)
+!     and then to CODATA 2022 (Mohr et al. 2024, Rev. Mod. Phys. 97,
+!     025002).  Differences between 2018 and 2022 are all <10 ppm.
 !
 !   Previously used (CODATA 1963):
 !     k_B = 1.38054E-16,  h = 6.6256E-27,  m_u = 1.660E-24
 !=========================================================================
 
-module mod_constants
+MODULE mod_constants
 
-  implicit none
+  IMPLICIT NONE
 
   ! =====================================================================
   !  FUNDAMENTAL CONSTANTS  (CGS-Gaussian units)
-  !
-  !  Source: CODATA 2018 (Tiesinga et al. 2021, RMP 93, 025010)
+  !  Source: CODATA 2022 (Mohr et al. 2024, RMP 97, 025002).
   !  Values marked (exact) are exact under the 2019 SI redefinition.
+  !  Precision is written to the last digit REAL(8) can store.
   ! =====================================================================
 
-  real*8, parameter :: PI        = 3.14159265358979323846D0
-  real*8, parameter :: FOURPI    = 4.0D0 * PI               ! 12.566370614...
-  real*8, parameter :: SQRTPI    = 1.7724538509055159D0      ! sqrt(pi)
-  real*8, parameter :: INVSQRTPI = 0.5641895835477563D0      ! 1/sqrt(pi)
+  REAL(8), PARAMETER :: PI        = 3.141592653589793D0
+  REAL(8), PARAMETER :: FOURPI    = 4.0D0 * PI
+  REAL(8), PARAMETER :: SQRTPI    = 1.7724538509055159D0
+  REAL(8), PARAMETER :: INVSQRTPI = 0.5641895835477563D0
 
-  ! Boltzmann constant [erg K⁻¹]  (exact)
-  real*8, parameter :: KBOL = 1.380649D-16
+  REAL(8), PARAMETER :: KBOL    = 1.380649D-16          ! Boltzmann constant [erg/K] (exact)
+  REAL(8), PARAMETER :: HPLANCK = 6.62607015D-27        ! Planck constant [erg s]    (exact)
+  REAL(8), PARAMETER :: CLIGHT  = 2.99792458D10         ! speed of light [cm/s]      (exact)
 
-  ! Planck constant [erg s]  (exact)
-  real*8, parameter :: HPLANCK = 6.62607015D-27
+  ! Speed of light in other wavelength-per-time units
+  REAL(8), PARAMETER :: CLIGHT_NMS  = 2.99792458D17     ! [nm/s]   freq = CLIGHT_NMS  / lambda_nm
+  REAL(8), PARAMETER :: CLIGHT_ANGS = 2.99792458D18     ! [Å/s]    freq = CLIGHT_ANGS / lambda_Å
+  REAL(8), PARAMETER :: CLIGHT_KMS  = 2.99792458D5      ! [km/s]
 
-  ! Speed of light [cm s⁻¹]  (exact)
-  real*8, parameter :: CLIGHT = 2.99792458D10
+  REAL(8), PARAMETER :: AMU     = 1.66053906892D-24     ! atomic mass unit [g]
+  REAL(8), PARAMETER :: EMASS   = 9.1093837139D-28      ! electron mass [g]
+  REAL(8), PARAMETER :: ECHARGE = 4.80320471D-10        ! elementary charge [esu]
 
-  ! Speed of light in other wavelength-per-time unit systems
-  real*8, parameter :: CLIGHT_NMS  = 2.99792458D17   ! [nm s⁻¹]  freq = CLIGHT_NMS / lambda_nm
-  real*8, parameter :: CLIGHT_ANGS = 2.99792458D18   ! [Å s⁻¹]   freq = CLIGHT_ANGS / lambda_Ang
-  real*8, parameter :: CLIGHT_KMS = 2.99792458D5    ! [km s⁻¹]
-
-  ! Unified atomic mass unit [g]
-  ! CODATA 2018: 1.66053906660(50) × 10⁻²⁴ g
-  real*8, parameter :: AMU = 1.66053907D-24
-
-  ! Electron mass [g]
-  ! CODATA 2018: 9.1093837015(28) × 10⁻²⁸ g
-  real*8, parameter :: EMASS = 9.1093837D-28
-
-  ! Elementary charge [esu = statcoulomb]
-  ! CODATA 2018: 4.80320451(10) × 10⁻¹⁰ esu
-  real*8, parameter :: ECHARGE = 4.80320451D-10
-
-  ! Stefan-Boltzmann constant [erg cm⁻² s⁻¹ K⁻⁴]
-  ! σ = 2π⁵k⁴/(15h³c²)
-  ! CODATA 2018: 5.670374419 × 10⁻⁵
-  real*8, parameter :: SIGMA_SB = 5.670374419D-5
-
-  ! Thomson scattering cross section [cm²]
-  ! σ_T = 8π/3 × (e²/m_e c²)²
-  ! CODATA 2018: 6.6524587321(60) × 10⁻²⁵ cm²
-  real*8, parameter :: SIGMA_THOMSON = 6.6524587D-25
-
-  ! Electron volt [erg]
-  ! CODATA 2018: 1.602176634 × 10⁻¹² erg  (exact)
-  real*8, parameter :: EV_ERG = 1.602176634D-12
+  REAL(8), PARAMETER :: SIGMA_SB      = 5.670374419D-5   ! Stefan-Boltzmann [erg/cm²/s/K⁴]
+  REAL(8), PARAMETER :: SIGMA_THOMSON = 6.6524587051D-25 ! Thomson cross section [cm²]
+  REAL(8), PARAMETER :: EV_ERG        = 1.602176634D-12  ! 1 eV in erg (exact)
 
   ! =====================================================================
   !  DERIVED CONSTANTS
-  !
-  !  Pre-computed combinations that appear frequently in the code.
-  !  All derived from the fundamental constants above.
+  !  Pre-computed combinations of the fundamentals, used throughout the code.
   ! =====================================================================
 
-  ! hc/k  [cm K]  — exponent factor: exp(-E_cm * HCK / T)
-  real*8, parameter :: HCK = HPLANCK * CLIGHT / KBOL
-  !                        = 1.43877688... (vs old 1.43879 from CODATA 1963)
+  REAL(8), PARAMETER :: HCK     = HPLANCK * CLIGHT / KBOL     ! hc/k  [cm K]  exp(-E_cm * HCK / T)
+  REAL(8), PARAMETER :: HOVERK  = HPLANCK / KBOL              ! h/k   [s K]   HKT = HOVERK / T
+  REAL(8), PARAMETER :: KBOL_EV = KBOL / EV_ERG               ! k/eV  [1/K]   TKEV = T * KBOL_EV
+  REAL(8), PARAMETER :: LN10    = 2.30258509299405D0          ! ln(10); log(x) = LN10 * log10(x)
 
-  ! h/k  [s K]  — for computing HKT = h/(kT) = HOVERK / T(K)
-  ! then hν/kT = HKT * freq
-  real*8, parameter :: HOVERK = HPLANCK / KBOL
+  ! log₁₀(e) / k_B(eV) -- Boltzmann θ parameter:  θ = THETA_COEFF / T
+  REAL(8), PARAMETER :: THETA_COEFF = 0.4342944819032518D0 / KBOL_EV
 
-  ! k/eV  [K⁻¹]  — so TKEV = T * KBOL_EV
-  real*8, parameter :: KBOL_EV = KBOL / EV_ERG
-  !                            = 8.617333262... × 10⁻⁵ eV/K
+  REAL(8), PARAMETER :: FOURPI_OVER_C      = FOURPI / CLIGHT        ! 4π/c  [cm⁻¹ s]
+  REAL(8), PARAMETER :: FOUR_SIGMA_OVER_PI = 4.0D0 * SIGMA_SB / PI  ! 4σ/π  (convection)
 
-  ! Reciprocal temperature coefficient: θ = THETA_COEFF / T
-  ! where θ is the conventional log₁₀ Boltzmann parameter
-  ! THETA_COEFF = log₁₀(e) / k_B(eV) = 5039.81...
-  real*8, parameter :: THETA_COEFF = 0.4342944819032518D0 / KBOL_EV
+  ! Planck function prefactor: 2h/c² × (10¹⁵)³  [cgs], with ν in units of 10¹⁵ Hz.
+  !   B_ν = BNU_PREFAC * (ν/10¹⁵)³ * exp(-hν/kT) / (1 - exp(-hν/kT))
+  REAL(8), PARAMETER :: BNU_PREFAC = 2.0D0 * HPLANCK / CLIGHT**2 * 1.0D45
 
-  ! 4π/c  [cm⁻¹ s]  — radiation energy density factor
-  real*8, parameter :: FOURPI_OVER_C = FOURPI / CLIGHT
-
-  ! 4σ/π  [erg cm⁻² s⁻¹ K⁻⁴]  — appears in convection
-  real*8, parameter :: FOUR_SIGMA_OVER_PI = 4.0D0 * SIGMA_SB / PI
-
-  ! Planck function prefactor: 2h/c² × (10¹⁵)³  [cgs]
-  ! For B_ν = BNU_PREFAC * (ν/10¹⁵)³ × exp(-hν/kT) / (1 - exp(-hν/kT))
-  real*8, parameter :: BNU_PREFAC = 2.0D0 * HPLANCK / CLIGHT**2 * 1.0D45
-  !                               = 1.47449...E-2  (vs old 1.47439E-2)
-
-  ! Saha equation prefactor: 2 × (2π m_e k / h²)^(3/2)  [cm⁻³ K⁻³/²]
-  ! Usage: n_e × n⁺/n₀ = SAHA_PREFAC × T^(3/2) × (U⁺/U₀) × exp(-χ/kT)
-  real*8, parameter :: SAHA_PREFAC = 2.0D0 &
+  ! Saha equation prefactor: 2 × (2π m_e k / h²)^(3/2)  [cm⁻³ K⁻³/²].
+  ! The leading 2 is the electron spin weight g_e, so SAHA_PREFAC is the
+  ! FULL prefactor; no extra factor of 2 is needed at call sites.
+  !   n_e × n⁺/n₀ = SAHA_PREFAC × T^(3/2) × (U⁺/U₀) × exp(-χ/kT)
+  REAL(8), PARAMETER :: SAHA_PREFAC = 2.0D0 &
     * (2.0D0 * PI * EMASS * KBOL / HPLANCK**2)**1.5D0
-  !                               = 2.4150...E15  (vs old 2.4148E15)
 
-  ! Free-free opacity coefficient  [cgs]
-  ! κ_ff = COEFF_FF / ν³ × g_ff × n_e × n_ion / (ρ √T)
-  ! COEFF_FF = 32π² e⁶ / (3√3 m_e c h) × √(2π / (3 m_e k))
-  !          = 3.6919...E8
-  ! The full derivation is given by, e.g., Mihalas (1978) eq. 4-64.
-  real*8, parameter :: COEFF_FF = 3.69196D8
+  ! Free-free opacity coefficient [cgs].  Mihalas (1978) eq. 4-64.
+  !   κ_ff = COEFF_FF / ν³ × g_ff × n_e × n_ion / (ρ √T)
+  !   COEFF_FF = 32π² e⁶ / (3√3 m_e c h) × √(2π / (3 m_e k))
+  ! Kept at the ATLAS canonical value; e appears to the 6th power, so
+  ! the CODATA 2022 shift in e (~4 ppm) would move this by ~25 ppm,
+  ! well below the precision at which the constant is quoted.
+  REAL(8), PARAMETER :: COEFF_FF = 3.69196D8
 
   ! =====================================================================
-  !  SPECTROSCOPIC CONSTANTS
-  !
-  !  These are measured physical quantities, not fundamental constants.
-  !  Updated values and references are given where relevant.
+  !  SPECTROSCOPIC CONSTANTS  (measured, not fundamental)
   ! =====================================================================
 
-  ! Rydberg constant for infinite mass [cm⁻¹]
-  ! CODATA 2018: R_∞ = 109737.31568160(21)
-  ! For hydrogen: R_H = R_∞ × m_p/(m_e + m_p) = 109677.5774...
-  real*8, parameter :: RYDBERG_INF = 109737.31568D0   ! R_∞ [cm⁻¹]
-  real*8, parameter :: RYDBERG_H   = 109677.576D0     ! R_H [cm⁻¹]
+  ! Rydberg constants [cm⁻¹].  CODATA 2022.
+  !   R_∞ = 10 973 731.568 157 m⁻¹
+  !   R_H  = R_∞ × 1/(1 + m_e/m_p)  with m_p/m_e = 1836.152 673 426
+  !   R_He = R_∞ × M_He/(m_e + M_He) with ⁴He mass = 4.002 603 254 u
+  REAL(8), PARAMETER :: RYDBERG_INF = 109737.31568157D0
+  REAL(8), PARAMETER :: RYDBERG_H   = 109677.583403D0
+  REAL(8), PARAMETER :: RYDBERG_HE  = 109722.277609D0
 
-  ! H I ionization limit [cm⁻¹]  (observed, including quantum defect)
-  real*8, parameter :: ELIM_HI = 109678.764D0
+  ! H I ionization limit [cm⁻¹]  (observed, includes quantum defect)
+  REAL(8), PARAMETER :: ELIM_HI = 109678.764D0
 
-  ! Hydrogen ionization frequency [Hz]:  ν_∞ = R_H × c
-  real*8, parameter :: FREQ_RYDH = RYDBERG_H * CLIGHT
-  !                              = 3.288055...E15  (vs old 3.28805E15)
+  ! Hydrogen series ionization limits [cm⁻¹]: H_SERIES_LIMITS(n) is the
+  ! energy from level n to the continuum.  For n=1..8 these are the
+  ! observed values ELIM_HI - E_obs(n) (matching the hand-tabulated
+  ! Kurucz values).  For n=9..15 they agree with R_H/n² to <1 part in 10⁵
+  ! since Lamb shift and fine structure become negligible.
+  REAL(8), PARAMETER :: H_SERIES_LIMITS(15) = [ &
+    109678.764D0, 27419.659D0, 12186.462D0, 6854.871D0, 4387.113D0, &
+      3046.604D0,  2238.320D0,  1713.713D0, 1354.044D0, 1096.776D0, &
+       906.426D0,   761.650D0,   648.980D0,  559.579D0,  487.456D0 ]
 
-  ! He I Rydberg [cm⁻¹]:  R_He = R_∞ × M_He/(m_e + M_He) ≈ 109722.267
-  real*8, parameter :: RYDBERG_HE = 109722.267D0
+  ! Hydrogen ionization frequency [Hz]
+  REAL(8), PARAMETER :: FREQ_RYDH = RYDBERG_H * CLIGHT
+
+  ! Rydberg wavelength for hydrogen [Å] (= 1e8 / R_H_cm⁻¹).  Used to
+  ! compute hydrogen transition wavelengths: λ = RYD_ANG × (n·m)² / (m²-n²).
+  REAL(8), PARAMETER :: RYD_ANG   = 1.0D8 / RYDBERG_H
 
   ! H⁻ electron affinity [eV]
-  ! Lykke, Murray & Lineberger (1991, Phys. Rev. A 43, 6104):
+  !   Lykke, Murray & Lineberger (1991, PRA 43, 6104):
   !   E_A(H⁻) = 6082.99 ± 0.15 cm⁻¹ = 0.75419(2) eV
-  ! Previously used: 0.754209 eV (Hotop & Lineberger 1985)
-  real*8, parameter :: HMINUS_EA = 0.75419D0   ! [eV]
+  REAL(8), PARAMETER :: HMINUS_EA = 0.75419D0
 
 
   ! =====================================================================
   !  HOLTSMARK MICROFIELD DISTRIBUTION TABLE
   !
-  !  Q(beta) = probability that the electric microfield F < beta * F_0
-  !  at a test charge surrounded by randomly distributed perturber ions.
-  !  F_0 = 2.6031 * Z_p * e * (4*pi*N_ion/3)^(2/3) is the Holtsmark
-  !  normal field strength.
+  !  Q(β) = Prob(F < β F₀) for the Holtsmark microfield in a plasma,
+  !  used in the Hummer & Mihalas (1988) occupation-probability formalism:
+  !  the fraction of hydrogen level n that survives dissolution is
+  !  w_n = Q(β_crit) with β_crit = BETA_COEFF_HM88 / (n⁵ × N_e^(2/3)).
   !
-  !  Used for the Hummer & Mihalas (1988, ApJ 331, 794) occupation
-  !  probability formalism: the probability that hydrogen level n
-  !  survives dissolution is w_n = Q(beta_crit), where
-  !    beta_crit = BETA_COEFF_HM88 / (n^5 * N_e^(2/3))
-  !
-  !  Table: 150 points on a uniform log10(beta) grid from 0.01 to 50.
-  !  For beta < 0.01, Q ~ 0 (level fully bound).
-  !  For beta > 50,   Q ~ 1 (level fully dissolved / always survives).
+  !  Table: 150 points on a uniform log₁₀(β) grid from 0.01 to 50.
   !
   !  References:
-  !    Holtsmark, J. 1919, Ann. Phys. 363, 577
-  !    Hummer, D.G. & Mihalas, D. 1988, ApJ 331, 794
-  !    Nayfonov, A. et al. 1999, ApJ 526, 451
+  !    Holtsmark 1919, Ann. Phys. 363, 577
+  !    Hummer & Mihalas 1988, ApJ 331, 794
+  !    Nayfonov et al. 1999, ApJ 526, 451
   ! =====================================================================
-  integer, parameter :: NQ_HOLTSMARK = 150
-  real*8,  parameter :: LOG_BETA_MIN  = -2.0000000000000000D+00
-  real*8,  parameter :: LOG_BETA_MAX  = 1.6989700043360187D+00
-  real*8,  parameter :: LOG_BETA_STEP = 2.4825302042523617D-02
+  INTEGER, PARAMETER :: NQ_HOLTSMARK  = 150
+  REAL(8), PARAMETER :: LOG_BETA_MIN  = -2.0000000000000000D+00
+  REAL(8), PARAMETER :: LOG_BETA_MAX  =  1.6989700043360187D+00
+  REAL(8), PARAMETER :: LOG_BETA_STEP =  2.4825302042523617D-02
 
-  real*8,  parameter :: Q_HOLTSMARK(150) = [ &
-    1.414671303101461D-07, &
-    1.679306576215498D-07, &
-    1.993444994252022D-07, &
-    2.366346434794731D-07, &
-    2.809002805410456D-07, &
-    3.334461984807552D-07, &
-    3.958212340900693D-07, &
-    4.698639150426803D-07, &
-    5.577566360795190D-07, &
-    6.620899645927724D-07, &
-    7.859389687582573D-07, &
-    9.329538149374408D-07, &
-    1.107467300593689D-06, &
-    1.314622486716282D-06, &
-    1.560524184270007D-06, &
-    1.852418749731333D-06, &
-    2.198907475766682D-06, &
-    2.610199848759794D-06, &
-    3.098414113872032D-06, &
-    3.677933974566057D-06, &
-    4.365831897218437D-06, &
-    5.182371440131865D-06, &
-    6.151603336163127D-06, &
-    7.302072795786128D-06, &
-    8.667658741262937D-06, &
-    1.028856952546623D-05, &
-    1.221252424026525D-05, &
-    1.449615410836965D-05, &
-    1.720666483126171D-05, &
-    2.042380831343906D-05, &
-    2.424222111026057D-05, &
-    2.877419750061379D-05, &
-    3.415297755655442D-05, &
-    4.053664530978627D-05, &
-    4.811274949652059D-05, &
-    5.710377986116004D-05, &
-    6.777365615449882D-05, &
-    8.043541539930427D-05, &
-    9.546031643883215D-05, &
-    1.132886200658068D-04, &
-    1.344423491071419D-04, &
-    1.595403868046069D-04, &
-    1.893163349213092D-04, &
-    2.246396266107989D-04, &
-    2.665404747620448D-04, &
-    3.162393359894821D-04, &
-    3.751816855286531D-04, &
-    4.450790309992992D-04, &
-    5.279572453545271D-04, &
-    6.262134733849464D-04, &
-    7.426830638017916D-04, &
-    8.807182017925553D-04, &
-    1.044280166083684D-03, &
-    1.238047410111971D-03, &
-    1.467541967671182D-03, &
-    1.739277006102283D-03, &
-    2.060928688577077D-03, &
-    2.441535851096500D-03, &
-    2.891731333794821D-03, &
-    3.424009106941961D-03, &
-    4.053031566870220D-03, &
-    4.795981500493777D-03, &
-    5.672963167595142D-03, &
-    6.707456645870922D-03, &
-    7.926828918285955D-03, &
-    9.362904019250405D-03, &
-    1.105259272456321D-02, &
-    1.303857956034104D-02, &
-    1.537006106786488D-02, &
-    1.810352400480589D-02, &
-    2.130354516765621D-02, &
-    2.504358545069891D-02, &
-    2.940673929734126D-02, &
-    3.448638660516894D-02, &
-    4.038667732307838D-02, &
-    4.722275959985061D-02, &
-    5.512064100258095D-02, &
-    6.421655023415057D-02, &
-    7.465564600958080D-02, &
-    8.658990347532045D-02, &
-    1.001750012765402D-01, &
-    1.155660400501043D-01, &
-    1.329119530555128D-01, &
-    1.523485300474136D-01, &
-    1.739900743830450D-01, &
-    1.979198568471881D-01, &
-    2.241797192777529D-01, &
-    2.527594102861463D-01, &
-    2.835864859104609D-01, &
-    3.165178467055500D-01, &
-    3.513341604156768D-01, &
-    3.877384740815520D-01, &
-    4.253601858765986D-01, &
-    4.637651729352414D-01, &
-    5.024722401913855D-01, &
-    5.409752086892451D-01, &
-    5.787690154213567D-01, &
-    6.153773349921458D-01, &
-    6.503786770405923D-01, &
-    6.834278586173648D-01, &
-    7.142702953716408D-01, &
-    7.427476403869326D-01, &
-    7.687946986070335D-01, &
-    7.924289205182540D-01, &
-    8.137347922132799D-01, &
-    8.328458692792989D-01, &
-    8.499270198328847D-01, &
-    8.651588016097912D-01, &
-    8.787250560031417D-01, &
-    8.908040093261350D-01, &
-    9.015625910920573D-01, &
-    9.111533622086631D-01, &
-    9.197133565854327D-01, &
-    9.273641961484557D-01, &
-    9.342129682962188D-01, &
-    9.403534976718694D-01, &
-    9.458677646981941D-01, &
-    9.508273225009358D-01, &
-    9.552946289851881D-01, &
-    9.593242514728686D-01, &
-    9.629639386838167D-01, &
-    9.662555465715050D-01, &
-    9.692358425479507D-01, &
-    9.719372021216177D-01, &
-    9.743882111568676D-01, &
-    9.766141278943968D-01, &
-    9.786373698849190D-01, &
-    9.804778420731699D-01, &
-    9.821532811516551D-01, &
-    9.836795130160503D-01, &
-    9.850706740272015D-01, &
-    9.863394492399232D-01, &
-    9.874972091274948D-01, &
-    9.885541671623754D-01, &
-    9.895195463975206D-01, &
-    9.904015671946884D-01, &
-    9.912077851485863D-01, &
-    9.919449707318418D-01, &
-    9.926192297837247D-01, &
-    9.932361028219120D-01, &
-    9.938006248722731D-01, &
-    9.943173688128598D-01, &
-    9.947904964619882D-01, &
-    9.952237635494758D-01, &
-    9.956206036156809D-01, &
-    9.959840685797559D-01, &
-    9.963172215001466D-01, &
-    9.966224531295311D-01, &
-    9.969021568157113D-01, &
-    9.971585495409699D-01  ]
+  REAL(8), PARAMETER :: Q_HOLTSMARK(150) = [ &
+    1.414671303101461D-07, 1.679306576215498D-07, 1.993444994252022D-07, 2.366346434794731D-07, 2.809002805410456D-07, &
+    3.334461984807552D-07, 3.958212340900693D-07, 4.698639150426803D-07, 5.577566360795190D-07, 6.620899645927724D-07, &
+    7.859389687582573D-07, 9.329538149374408D-07, 1.107467300593689D-06, 1.314622486716282D-06, 1.560524184270007D-06, &
+    1.852418749731333D-06, 2.198907475766682D-06, 2.610199848759794D-06, 3.098414113872032D-06, 3.677933974566057D-06, &
+    4.365831897218437D-06, 5.182371440131865D-06, 6.151603336163127D-06, 7.302072795786128D-06, 8.667658741262937D-06, &
+    1.028856952546623D-05, 1.221252424026525D-05, 1.449615410836965D-05, 1.720666483126171D-05, 2.042380831343906D-05, &
+    2.424222111026057D-05, 2.877419750061379D-05, 3.415297755655442D-05, 4.053664530978627D-05, 4.811274949652059D-05, &
+    5.710377986116004D-05, 6.777365615449882D-05, 8.043541539930427D-05, 9.546031643883215D-05, 1.132886200658068D-04, &
+    1.344423491071419D-04, 1.595403868046069D-04, 1.893163349213092D-04, 2.246396266107989D-04, 2.665404747620448D-04, &
+    3.162393359894821D-04, 3.751816855286531D-04, 4.450790309992992D-04, 5.279572453545271D-04, 6.262134733849464D-04, &
+    7.426830638017916D-04, 8.807182017925553D-04, 1.044280166083684D-03, 1.238047410111971D-03, 1.467541967671182D-03, &
+    1.739277006102283D-03, 2.060928688577077D-03, 2.441535851096500D-03, 2.891731333794821D-03, 3.424009106941961D-03, &
+    4.053031566870220D-03, 4.795981500493777D-03, 5.672963167595142D-03, 6.707456645870922D-03, 7.926828918285955D-03, &
+    9.362904019250405D-03, 1.105259272456321D-02, 1.303857956034104D-02, 1.537006106786488D-02, 1.810352400480589D-02, &
+    2.130354516765621D-02, 2.504358545069891D-02, 2.940673929734126D-02, 3.448638660516894D-02, 4.038667732307838D-02, &
+    4.722275959985061D-02, 5.512064100258095D-02, 6.421655023415057D-02, 7.465564600958080D-02, 8.658990347532045D-02, &
+    1.001750012765402D-01, 1.155660400501043D-01, 1.329119530555128D-01, 1.523485300474136D-01, 1.739900743830450D-01, &
+    1.979198568471881D-01, 2.241797192777529D-01, 2.527594102861463D-01, 2.835864859104609D-01, 3.165178467055500D-01, &
+    3.513341604156768D-01, 3.877384740815520D-01, 4.253601858765986D-01, 4.637651729352414D-01, 5.024722401913855D-01, &
+    5.409752086892451D-01, 5.787690154213567D-01, 6.153773349921458D-01, 6.503786770405923D-01, 6.834278586173648D-01, &
+    7.142702953716408D-01, 7.427476403869326D-01, 7.687946986070335D-01, 7.924289205182540D-01, 8.137347922132799D-01, &
+    8.328458692792989D-01, 8.499270198328847D-01, 8.651588016097912D-01, 8.787250560031417D-01, 8.908040093261350D-01, &
+    9.015625910920573D-01, 9.111533622086631D-01, 9.197133565854327D-01, 9.273641961484557D-01, 9.342129682962188D-01, &
+    9.403534976718694D-01, 9.458677646981941D-01, 9.508273225009358D-01, 9.552946289851881D-01, 9.593242514728686D-01, &
+    9.629639386838167D-01, 9.662555465715050D-01, 9.692358425479507D-01, 9.719372021216177D-01, 9.743882111568676D-01, &
+    9.766141278943968D-01, 9.786373698849190D-01, 9.804778420731699D-01, 9.821532811516551D-01, 9.836795130160503D-01, &
+    9.850706740272015D-01, 9.863394492399232D-01, 9.874972091274948D-01, 9.885541671623754D-01, 9.895195463975206D-01, &
+    9.904015671946884D-01, 9.912077851485863D-01, 9.919449707318418D-01, 9.926192297837247D-01, 9.932361028219120D-01, &
+    9.938006248722731D-01, 9.943173688128598D-01, 9.947904964619882D-01, 9.952237635494758D-01, 9.956206036156809D-01, &
+    9.959840685797559D-01, 9.963172215001466D-01, 9.966224531295311D-01, 9.969021568157113D-01, 9.971585495409699D-01 ]
 
-  ! beta_crit(n, N_e) = BETA_COEFF_HM88 / (n^5 * N_e^(2/3))
-  ! Derived from Inglis-Teller critical field F_crit = Ry/(3*n^5*e*a_0)
-  ! and Holtsmark normal field F_0 = 2.6031*e*(4*pi*N_e/3)^(2/3)
-  real*8,  parameter :: BETA_COEFF_HM88 = 8.798905203085208D+14
+  ! β_crit(n, N_e) = BETA_COEFF_HM88 / (n⁵ × N_e^(2/3))
+  ! Derived from Inglis-Teller critical field and Holtsmark normal field.
+  REAL(8), PARAMETER :: BETA_COEFF_HM88 = 8.798905203085208D+14
 
-end module mod_constants
+END MODULE mod_constants
 
 
 !=========================================================================
@@ -550,236 +424,236 @@ end module mod_constants
 ! in this codebase.
 !=========================================================================
 
-module mod_partition_functions
+MODULE mod_partition_functions
 
-  use mod_parameters
-  implicit none
-  save
-  private
+  USE mod_parameters
+  IMPLICIT NONE
+  SAVE
+  PRIVATE
 
   ! --- Public API ---
-  public :: U_BC, U_BC_NEG, BC_HAS, BC_HAS_NEG
-  public :: set_bc_data_dir, init_bc_partition_functions
+  PUBLIC :: U_BC, U_BC_NEG, BC_HAS, BC_HAS_NEG
+  PUBLIC :: set_bc_data_dir, init_bc_partition_functions
 
   ! --- Table dimensions (upstream file is fixed-format) ---
-  integer, parameter :: NT_BC     = 42    ! number of temperature grid points
-  integer, parameter :: NZ_MAX    = 92    ! highest Z covered (U)
-  integer, parameter :: NION_MAX  = 3     ! stages I, II, III
-  integer, parameter :: NNEG_MAX  = 7     ! H-, C-, O-, F-, Si-, S-, Cl-
+  INTEGER, PARAMETER :: NT_BC     = 42    ! number of temperature grid points
+  INTEGER, PARAMETER :: NZ_MAX    = 92    ! highest Z covered (U)
+  INTEGER, PARAMETER :: NION_MAX  = 3     ! stages I, II, III
+  INTEGER, PARAMETER :: NNEG_MAX  = 7     ! H-, C-, O-, F-, Si-, S-, Cl-
 
   ! --- Cached data (loaded once) ---
-  real*8 :: T_GRID(NT_BC)                        ! temperature grid [K]
-  real*8 :: LOGT_GRID(NT_BC)                     ! ln(T) for interpolation
-  real*8 :: U_TAB(NT_BC, NZ_MAX, NION_MAX)       ! U(T, Z, ION)
-  real*8 :: LOGU_TAB(NT_BC, NZ_MAX, NION_MAX)    ! ln(U) precomputed
-  logical :: HAS_TAB(NZ_MAX, NION_MAX) = .false. ! coverage flag
+  REAL(8) :: T_GRID(NT_BC)                        ! temperature grid [K]
+  REAL(8) :: LOGT_GRID(NT_BC)                     ! ln(T) for interpolation
+  REAL(8) :: U_TAB(NT_BC, NZ_MAX, NION_MAX)       ! U(T, Z, ION)
+  REAL(8) :: LOGU_TAB(NT_BC, NZ_MAX, NION_MAX)    ! ln(U) precomputed
+  LOGICAL :: HAS_TAB(NZ_MAX, NION_MAX) = .FALSE. ! coverage flag
 
-  real*8 :: U_NEG_TAB(NT_BC, NNEG_MAX)           ! U(T) for negative ions
-  real*8 :: LOGU_NEG_TAB(NT_BC, NNEG_MAX)        ! ln(U) for negative ions
-  integer :: NEG_Z(NNEG_MAX) = 0                 ! parent atom Z per slot
-  logical :: HAS_NEG(NZ_MAX) = .false.           ! coverage flag by Z
-  integer :: NEG_SLOT(NZ_MAX) = 0                ! Z -> slot index
+  REAL(8) :: U_NEG_TAB(NT_BC, NNEG_MAX)           ! U(T) for negative ions
+  REAL(8) :: LOGU_NEG_TAB(NT_BC, NNEG_MAX)        ! ln(U) for negative ions
+  INTEGER :: NEG_Z(NNEG_MAX) = 0                 ! parent atom Z per slot
+  LOGICAL :: HAS_NEG(NZ_MAX) = .FALSE.           ! coverage flag by Z
+  INTEGER :: NEG_SLOT(NZ_MAX) = 0                ! Z -> slot index
 
-  logical :: INITIALIZED = .false.
+  LOGICAL :: INITIALIZED = .FALSE.
 
   ! --- Data directory (set by the caller before first use) ---
-  character(len=512) :: BC_DATADIR = './'
+  CHARACTER(len=512) :: BC_DATADIR = './'
 
-contains
+CONTAINS
 
 !-----------------------------------------------------------------------
 ! set_bc_data_dir(dir): stash the path where partfn_bc2016.dat lives.
 ! Should be called once at startup, before the first partition-function
 ! lookup.  If not called, defaults to './'.
 !-----------------------------------------------------------------------
-subroutine set_bc_data_dir(dir)
-  character(len=*), intent(in) :: dir
+SUBROUTINE set_bc_data_dir(dir)
+  CHARACTER(len=*), INTENT(IN) :: dir
   BC_DATADIR = dir
-end subroutine set_bc_data_dir
+END SUBROUTINE set_bc_data_dir
 
 !-----------------------------------------------------------------------
 ! Lazy initialization: read the B&C table from DATADIR/partfn_bc2016.dat
 ! on first need.  Parses comments, the title line, the species count,
 ! the 42-point T grid, and 284 species records.
 !-----------------------------------------------------------------------
-subroutine init_bc_partition_functions()
-  integer            :: LUN, IOS, IT, IZ, ION, NEG_IDX
-  integer            :: N_SPECIES, N_READ
-  character(len=4096) :: LINE
-  character(len=16)   :: LABEL
-  real*8             :: VALS(NT_BC)
+SUBROUTINE init_bc_partition_functions()
+  INTEGER            :: LUN, IOS, IT, IZ, ION, NEG_IDX
+  INTEGER            :: N_SPECIES, N_READ
+  CHARACTER(len=4096) :: LINE
+  CHARACTER(len=16)   :: LABEL
+  REAL(8)             :: VALS(NT_BC)
 
-  if (INITIALIZED) return
+  IF (INITIALIZED) RETURN
 
   LUN = 89
-  open(LUN, file=trim(BC_DATADIR)//'partfn_bc2016.dat', &
-       status='OLD', action='READ', iostat=IOS)
-  if (IOS /= 0) then
-    write(6,'(A,A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: cannot open ', &
+  OPEN(LUN, FILE=trim(BC_DATADIR)//'partfn_bc2016.dat', &
+       STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+  IF (IOS /= 0) THEN
+    WRITE(6,'(A,A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: cannot open ', &
          trim(BC_DATADIR)//'partfn_bc2016.dat'
-    stop 1
-  end if
+    STOP 1
+  END IF
 
   ! --- Skip header comments and blank lines to find the title line ---
-  do
-    read(LUN, '(A)', iostat=IOS) LINE
-    if (IOS /= 0) then
-      write(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: no title line found'
-      stop 1
-    end if
+  DO
+    READ(LUN, '(A)', IOSTAT=IOS) LINE
+    IF (IOS /= 0) THEN
+      WRITE(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: no title line found'
+      STOP 1
+    END IF
     LINE = adjustl(LINE)
-    if (len_trim(LINE) == 0) cycle
-    if (LINE(1:1) == '#')   cycle
+    IF (len_trim(LINE) == 0) CYCLE
+    IF (LINE(1:1) == '#')   CYCLE
     ! Title line is cosmetic; we just discard LINE here.
-    exit
-  end do
+    EXIT
+  END DO
 
   ! --- Read species count (next non-comment, non-blank line) ---
   N_SPECIES = 0
-  do
-    read(LUN, '(A)', iostat=IOS) LINE
-    if (IOS /= 0) then
-      write(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: missing species count'
-      stop 1
-    end if
+  DO
+    READ(LUN, '(A)', IOSTAT=IOS) LINE
+    IF (IOS /= 0) THEN
+      WRITE(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: missing species count'
+      STOP 1
+    END IF
     LINE = adjustl(LINE)
-    if (len_trim(LINE) == 0) cycle
-    if (LINE(1:1) == '#')   cycle
-    read(LINE, *, iostat=IOS) N_SPECIES
-    if (IOS /= 0 .or. N_SPECIES <= 0) then
-      write(6,'(A,A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: bad species count line: ', trim(LINE)
-      stop 1
-    end if
-    exit
-  end do
+    IF (len_trim(LINE) == 0) CYCLE
+    IF (LINE(1:1) == '#')   CYCLE
+    READ(LINE, *, IOSTAT=IOS) N_SPECIES
+    IF (IOS /= 0 .OR. N_SPECIES <= 0) THEN
+      WRITE(6,'(A,A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: bad species count line: ', trim(LINE)
+      STOP 1
+    END IF
+    EXIT
+  END DO
 
   ! --- Read T grid line: first two tokens are "T" and "[K]" ---
-  do
-    read(LUN, '(A)', iostat=IOS) LINE
-    if (IOS /= 0) then
-      write(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: missing T grid'
-      stop 1
-    end if
+  DO
+    READ(LUN, '(A)', IOSTAT=IOS) LINE
+    IF (IOS /= 0) THEN
+      WRITE(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: missing T grid'
+      STOP 1
+    END IF
     LINE = adjustl(LINE)
-    if (len_trim(LINE) == 0) cycle
-    if (LINE(1:1) == '#')   cycle
-    call parse_t_grid(LINE, T_GRID)
-    exit
-  end do
-  do IT = 1, NT_BC
+    IF (len_trim(LINE) == 0) CYCLE
+    IF (LINE(1:1) == '#')   CYCLE
+    CALL parse_t_grid(LINE, T_GRID)
+    EXIT
+  END DO
+  DO IT = 1, NT_BC
     LOGT_GRID(IT) = log(T_GRID(IT))
-  end do
+  END DO
 
   ! --- Now read species records.  Each non-blank, non-comment line is a
   !     record: <label> <v1> <v2> ... <v42>.  Label is e.g. "Fe_I", "Cr_II",
   !     "H-", "D_I".  Deuterium is ignored (not distinguished from H).  ---
   NEG_IDX = 0
   N_READ  = 0
-  do
-    read(LUN, '(A)', iostat=IOS) LINE
-    if (IOS /= 0) exit
+  DO
+    READ(LUN, '(A)', IOSTAT=IOS) LINE
+    IF (IOS /= 0) EXIT
     LINE = adjustl(LINE)
-    if (len_trim(LINE) == 0) cycle
-    if (LINE(1:1) == '#')   cycle
-    call parse_species_record(LINE, LABEL, VALS, IOS)
-    if (IOS /= 0) cycle
+    IF (len_trim(LINE) == 0) CYCLE
+    IF (LINE(1:1) == '#')   CYCLE
+    CALL parse_species_record(LINE, LABEL, VALS, IOS)
+    IF (IOS /= 0) CYCLE
     N_READ = N_READ + 1
     ! Classify the label and stash the data.
-    call classify_label(LABEL, IZ, ION)
-    if (IZ < 0) cycle                   ! deuterium or unrecognized -- skip
-    if (ION > 0) then
+    CALL classify_label(LABEL, IZ, ION)
+    IF (IZ < 0) CYCLE                   ! deuterium or unrecognized -- skip
+    IF (ION > 0) THEN
       ! Positive ion or neutral
-      if (IZ <= NZ_MAX .and. ION <= NION_MAX) then
+      IF (IZ <= NZ_MAX .AND. ION <= NION_MAX) THEN
         U_TAB(:, IZ, ION) = VALS(:)
         ! Precompute ln(U) for speed.  B&C values are strictly positive
         ! for every tabulated species at every T, but guard anyway.
-        do IT = 1, NT_BC
-          if (VALS(IT) > 0.0d0) then
+        DO IT = 1, NT_BC
+          IF (VALS(IT) > 0.0d0) THEN
             LOGU_TAB(IT, IZ, ION) = log(VALS(IT))
-          else
+          ELSE
             LOGU_TAB(IT, IZ, ION) = -huge(0.0d0)
-          end if
-        end do
-        HAS_TAB(IZ, ION) = .true.
-      end if
-    else
+          END IF
+        END DO
+        HAS_TAB(IZ, ION) = .TRUE.
+      END IF
+    ELSE
       ! Negative ion
       NEG_IDX = NEG_IDX + 1
-      if (NEG_IDX <= NNEG_MAX) then
+      IF (NEG_IDX <= NNEG_MAX) THEN
         U_NEG_TAB(:, NEG_IDX) = VALS(:)
-        do IT = 1, NT_BC
-          if (VALS(IT) > 0.0d0) then
+        DO IT = 1, NT_BC
+          IF (VALS(IT) > 0.0d0) THEN
             LOGU_NEG_TAB(IT, NEG_IDX) = log(VALS(IT))
-          else
+          ELSE
             LOGU_NEG_TAB(IT, NEG_IDX) = -huge(0.0d0)
-          end if
-        end do
+          END IF
+        END DO
         NEG_Z(NEG_IDX) = IZ
-        if (IZ >= 1 .and. IZ <= NZ_MAX) then
-          HAS_NEG(IZ) = .true.
+        IF (IZ >= 1 .AND. IZ <= NZ_MAX) THEN
+          HAS_NEG(IZ) = .TRUE.
           NEG_SLOT(IZ) = NEG_IDX
-        end if
-      end if
-    end if
-  end do
-  close(LUN)
+        END IF
+      END IF
+    END IF
+  END DO
+  CLOSE(LUN)
 
-  if (N_READ /= N_SPECIES) then
-    write(6,'(A,I5,A,I5)') ' INIT_BC_PARTITION_FUNCTIONS WARNING: read ', &
+  IF (N_READ /= N_SPECIES) THEN
+    WRITE(6,'(A,I5,A,I5)') ' INIT_BC_PARTITION_FUNCTIONS WARNING: read ', &
          N_READ, ' species but file header claimed ', N_SPECIES
-  end if
+  END IF
 
-  INITIALIZED = .true.
-end subroutine init_bc_partition_functions
+  INITIALIZED = .TRUE.
+END SUBROUTINE init_bc_partition_functions
 
 !-----------------------------------------------------------------------
 ! Parse the temperature grid line.  Expected form:
 !   "  T [K]   1.00000e-05   1.00000e-04   ... 1.00000e+04"
 ! That is, two leading tokens "T" and "[K]" followed by NT_BC values.
 !-----------------------------------------------------------------------
-subroutine parse_t_grid(LINE, TGRID)
-  character(len=*), intent(in)  :: LINE
-  real*8,           intent(out) :: TGRID(NT_BC)
+SUBROUTINE parse_t_grid(LINE, TGRID)
+  CHARACTER(len=*), INTENT(IN)  :: LINE
+  REAL(8),           INTENT(OUT) :: TGRID(NT_BC)
 
-  character(len=len(LINE)) :: BUF
-  integer :: I, IOS, POS
+  CHARACTER(len=len(LINE)) :: BUF
+  INTEGER :: I, IOS, POS
 
   BUF = LINE
   ! Strip leading "T" and "[K]" tokens, whatever the exact spacing.
   ! Locate the "]" of "[K]" and start reading numbers after it.
   POS = index(BUF, ']')
-  if (POS > 0) BUF = BUF(POS+1:)
-  read(BUF, *, iostat=IOS) (TGRID(I), I=1,NT_BC)
-  if (IOS /= 0) then
-    write(6,'(A,A)') ' PARSE_T_GRID ERROR on line: ', trim(LINE)
-    stop 1
-  end if
-end subroutine parse_t_grid
+  IF (POS > 0) BUF = BUF(POS+1:)
+  READ(BUF, *, IOSTAT=IOS) (TGRID(I), I=1,NT_BC)
+  IF (IOS /= 0) THEN
+    WRITE(6,'(A,A)') ' PARSE_T_GRID ERROR on line: ', trim(LINE)
+    STOP 1
+  END IF
+END SUBROUTINE parse_t_grid
 
 !-----------------------------------------------------------------------
 ! Parse a species record: "<label> <v1> <v2> ... <v42>".
 ! Returns IOS = 0 on success.
 !-----------------------------------------------------------------------
-subroutine parse_species_record(LINE, LABEL, VALS, IOS)
-  character(len=*),  intent(in)  :: LINE
-  character(len=*),  intent(out) :: LABEL
-  real*8,            intent(out) :: VALS(NT_BC)
-  integer,           intent(out) :: IOS
+SUBROUTINE parse_species_record(LINE, LABEL, VALS, IOS)
+  CHARACTER(len=*),  INTENT(IN)  :: LINE
+  CHARACTER(len=*),  INTENT(OUT) :: LABEL
+  REAL(8),            INTENT(OUT) :: VALS(NT_BC)
+  INTEGER,           INTENT(OUT) :: IOS
 
-  character(len=len(LINE)) :: BUF
-  integer :: I, POS
+  CHARACTER(len=len(LINE)) :: BUF
+  INTEGER :: I, POS
 
   BUF = adjustl(LINE)
   ! Label is the first whitespace-delimited token
   POS = scan(BUF, ' '//char(9))
-  if (POS <= 0) then
+  IF (POS <= 0) THEN
     IOS = 1
-    return
-  end if
+    RETURN
+  END IF
   LABEL = BUF(1:POS-1)
   BUF   = adjustl(BUF(POS+1:))
-  read(BUF, *, iostat=IOS) (VALS(I), I=1,NT_BC)
-end subroutine parse_species_record
+  READ(BUF, *, IOSTAT=IOS) (VALS(I), I=1,NT_BC)
+END SUBROUTINE parse_species_record
 
 !-----------------------------------------------------------------------
 ! Classify a species label into (IZ, ION) or negative-ion form.
@@ -789,55 +663,55 @@ end subroutine parse_species_record
 !   "H-", "C-", "O-", ...           -> IZ > 0, ION = 0 (negative ion)
 !   anything else                   -> IZ = -2 (skip, unrecognized)
 !-----------------------------------------------------------------------
-subroutine classify_label(LABEL, IZ, ION)
-  character(len=*), intent(in)  :: LABEL
-  integer,          intent(out) :: IZ
-  integer,          intent(out) :: ION
+SUBROUTINE classify_label(LABEL, IZ, ION)
+  CHARACTER(len=*), INTENT(IN)  :: LABEL
+  INTEGER,          INTENT(OUT) :: IZ
+  INTEGER,          INTENT(OUT) :: ION
 
-  integer :: POS_U, POS_M
-  character(len=8) :: SYM, ROMAN
+  INTEGER :: POS_U, POS_M
+  CHARACTER(len=8) :: SYM, ROMAN
 
   POS_U = index(LABEL, '_')
   POS_M = index(LABEL, '-')
 
-  if (POS_U > 0) then
+  IF (POS_U > 0) THEN
     ! Positive ion or neutral: "<sym>_<roman>"
     SYM   = LABEL(1:POS_U-1)
     ROMAN = LABEL(POS_U+1:)
-    if (trim(SYM) == 'D') then
+    IF (trim(SYM) == 'D') THEN
       IZ = -1   ! deuterium: skip
       ION = 0
-      return
-    end if
+      RETURN
+    END IF
     IZ  = element_Z(trim(SYM))
     ION = roman_to_int(trim(ROMAN))
-    if (IZ <= 0 .or. ION <= 0) then
+    IF (IZ <= 0 .OR. ION <= 0) THEN
       IZ = -2
       ION = 0
-    end if
-  else if (POS_M > 0 .and. POS_M == len_trim(LABEL)) then
+    END IF
+  ELSE IF (POS_M > 0 .AND. POS_M == len_trim(LABEL)) THEN
     ! Negative ion: "<sym>-"
     SYM = LABEL(1:POS_M-1)
     IZ  = element_Z(trim(SYM))
     ION = 0     ! negative-ion marker
-    if (IZ <= 0) then
+    IF (IZ <= 0) THEN
       IZ = -2
-    end if
-  else
+    END IF
+  ELSE
     IZ  = -2
     ION = 0
-  end if
-end subroutine classify_label
+  END IF
+END SUBROUTINE classify_label
 
 !-----------------------------------------------------------------------
 ! Map a chemical symbol to atomic number Z.  Case-sensitive (B&C uses
 ! standard mixed-case symbols: H, He, Li, ... U).
 !-----------------------------------------------------------------------
-function element_Z(SYM) result(IZ)
-  character(len=*), intent(in) :: SYM
-  integer :: IZ
+FUNCTION element_Z(SYM) RESULT(IZ)
+  CHARACTER(len=*), INTENT(IN) :: SYM
+  INTEGER :: IZ
 
-  character(len=3), parameter :: SYMBOLS(92) = [ &
+  CHARACTER(len=3), PARAMETER :: SYMBOLS(92) = [ &
     'H  ', 'He ', 'Li ', 'Be ', 'B  ', 'C  ', 'N  ', 'O  ', 'F  ', 'Ne ', &
     'Na ', 'Mg ', 'Al ', 'Si ', 'P  ', 'S  ', 'Cl ', 'Ar ', 'K  ', 'Ca ', &
     'Sc ', 'Ti ', 'V  ', 'Cr ', 'Mn ', 'Fe ', 'Co ', 'Ni ', 'Cu ', 'Zn ', &
@@ -848,92 +722,92 @@ function element_Z(SYM) result(IZ)
     'Lu ', 'Hf ', 'Ta ', 'W  ', 'Re ', 'Os ', 'Ir ', 'Pt ', 'Au ', 'Hg ', &
     'Tl ', 'Pb ', 'Bi ', 'Po ', 'At ', 'Rn ', 'Fr ', 'Ra ', 'Ac ', 'Th ', &
     'Pa ', 'U  ' ]
-  integer :: I
+  INTEGER :: I
 
   IZ = 0
-  do I = 1, 92
-    if (trim(SYMBOLS(I)) == SYM) then
+  DO I = 1, 92
+    IF (trim(SYMBOLS(I)) == SYM) THEN
       IZ = I
-      return
-    end if
-  end do
-end function element_Z
+      RETURN
+    END IF
+  END DO
+END FUNCTION element_Z
 
 !-----------------------------------------------------------------------
 ! Convert a Roman numeral string "I"/"II"/"III" to integer 1/2/3.
 ! Returns 0 on unrecognized input.
 !-----------------------------------------------------------------------
-function roman_to_int(ROMAN) result(ION)
-  character(len=*), intent(in) :: ROMAN
-  integer :: ION
-  select case (trim(ROMAN))
-  case ('I');   ION = 1
-  case ('II');  ION = 2
-  case ('III'); ION = 3
-  case default; ION = 0
-  end select
-end function roman_to_int
+FUNCTION roman_to_int(ROMAN) RESULT(ION)
+  CHARACTER(len=*), INTENT(IN) :: ROMAN
+  INTEGER :: ION
+  SELECT CASE (trim(ROMAN))
+  CASE ('I');   ION = 1
+  CASE ('II');  ION = 2
+  CASE ('III'); ION = 3
+  CASE DEFAULT; ION = 0
+  END SELECT
+END FUNCTION roman_to_int
 
 !-----------------------------------------------------------------------
 ! U_BC(IZ, ION, T): partition function for atom Z in ionization
 ! stage ION (1=neutral, 2=singly ionized, 3=doubly ionized) at
 ! temperature T.  Returns -1.0d0 if (IZ, ION) is not in B&C coverage.
 !-----------------------------------------------------------------------
-function U_BC(IZ, ION, T) result(U)
-  integer, intent(in) :: IZ, ION
-  real*8,  intent(in) :: T
-  real*8 :: U
+FUNCTION U_BC(IZ, ION, T) RESULT(U)
+  INTEGER, INTENT(IN) :: IZ, ION
+  REAL(8),  INTENT(IN) :: T
+  REAL(8) :: U
 
-  if (.not. INITIALIZED) call init_bc_partition_functions()
+  IF (.NOT. INITIALIZED) CALL init_bc_partition_functions()
 
   U = -1.0d0
-  if (IZ < 1 .or. IZ > NZ_MAX) return
-  if (ION < 1 .or. ION > NION_MAX) return
-  if (.not. HAS_TAB(IZ, ION)) return
+  IF (IZ < 1 .OR. IZ > NZ_MAX) RETURN
+  IF (ION < 1 .OR. ION > NION_MAX) RETURN
+  IF (.NOT. HAS_TAB(IZ, ION)) RETURN
   U = interp_log_linear_cached(T, U_TAB(:, IZ, ION), LOGU_TAB(:, IZ, ION))
-end function U_BC
+END FUNCTION U_BC
 
 !-----------------------------------------------------------------------
 ! U_BC_NEG(IZ, T): negative-ion partition function for the negative
 ! ion of atom Z (e.g., H- for IZ=1).  Returns -1.0d0 if not tabulated.
 !-----------------------------------------------------------------------
-function U_BC_NEG(IZ, T) result(U)
-  integer, intent(in) :: IZ
-  real*8,  intent(in) :: T
-  real*8 :: U
-  integer :: SLOT
+FUNCTION U_BC_NEG(IZ, T) RESULT(U)
+  INTEGER, INTENT(IN) :: IZ
+  REAL(8),  INTENT(IN) :: T
+  REAL(8) :: U
+  INTEGER :: SLOT
 
-  if (.not. INITIALIZED) call init_bc_partition_functions()
+  IF (.NOT. INITIALIZED) CALL init_bc_partition_functions()
 
   U = -1.0d0
-  if (IZ < 1 .or. IZ > NZ_MAX) return
-  if (.not. HAS_NEG(IZ)) return
+  IF (IZ < 1 .OR. IZ > NZ_MAX) RETURN
+  IF (.NOT. HAS_NEG(IZ)) RETURN
   SLOT = NEG_SLOT(IZ)
-  if (SLOT < 1 .or. SLOT > NNEG_MAX) return
+  IF (SLOT < 1 .OR. SLOT > NNEG_MAX) RETURN
   U = interp_log_linear_cached(T, U_NEG_TAB(:, SLOT), LOGU_NEG_TAB(:, SLOT))
-end function U_BC_NEG
+END FUNCTION U_BC_NEG
 
 !-----------------------------------------------------------------------
 ! Coverage predicates.
 !-----------------------------------------------------------------------
-function BC_HAS(IZ, ION) result(YES)
-  integer, intent(in) :: IZ, ION
-  logical :: YES
-  if (.not. INITIALIZED) call init_bc_partition_functions()
-  YES = .false.
-  if (IZ < 1 .or. IZ > NZ_MAX) return
-  if (ION < 1 .or. ION > NION_MAX) return
+FUNCTION BC_HAS(IZ, ION) RESULT(YES)
+  INTEGER, INTENT(IN) :: IZ, ION
+  LOGICAL :: YES
+  IF (.NOT. INITIALIZED) CALL init_bc_partition_functions()
+  YES = .FALSE.
+  IF (IZ < 1 .OR. IZ > NZ_MAX) RETURN
+  IF (ION < 1 .OR. ION > NION_MAX) RETURN
   YES = HAS_TAB(IZ, ION)
-end function BC_HAS
+END FUNCTION BC_HAS
 
-function BC_HAS_NEG(IZ) result(YES)
-  integer, intent(in) :: IZ
-  logical :: YES
-  if (.not. INITIALIZED) call init_bc_partition_functions()
-  YES = .false.
-  if (IZ < 1 .or. IZ > NZ_MAX) return
+FUNCTION BC_HAS_NEG(IZ) RESULT(YES)
+  INTEGER, INTENT(IN) :: IZ
+  LOGICAL :: YES
+  IF (.NOT. INITIALIZED) CALL init_bc_partition_functions()
+  YES = .FALSE.
+  IF (IZ < 1 .OR. IZ > NZ_MAX) RETURN
   YES = HAS_NEG(IZ)
-end function BC_HAS_NEG
+END FUNCTION BC_HAS_NEG
 
 !-----------------------------------------------------------------------
 ! Log-linear interpolation in T, using precomputed ln(U) values.
@@ -956,26 +830,26 @@ end function BC_HAS_NEG
 !               in practice for B&C data).
 !   LOGU_ARR -- precomputed ln(U_ARR), cached at init time.
 !-----------------------------------------------------------------------
-function interp_log_linear_cached(T, U_ARR, LOGU_ARR) result(U)
-  real*8, intent(in) :: T
-  real*8, intent(in) :: U_ARR(NT_BC)
-  real*8, intent(in) :: LOGU_ARR(NT_BC)
-  real*8 :: U
+FUNCTION interp_log_linear_cached(T, U_ARR, LOGU_ARR) RESULT(U)
+  REAL(8), INTENT(IN) :: T
+  REAL(8), INTENT(IN) :: U_ARR(NT_BC)
+  REAL(8), INTENT(IN) :: LOGU_ARR(NT_BC)
+  REAL(8) :: U
 
-  integer :: LO, HI, MID
-  real*8  :: LT, LT_LO, LT_HI, F, LU_LO, LU_HI
+  INTEGER :: LO, HI, MID
+  REAL(8)  :: LT, LT_LO, LT_HI, F, LU_LO, LU_HI
 
   ! Persistent hint: remember the bracket from the last call.
-  integer :: LAST_LO = 10
-  save    :: LAST_LO
+  INTEGER :: LAST_LO = 10
+  SAVE    :: LAST_LO
 
   ! --- Clamp below the grid (harmless; T_GRID(1) = 1e-5 K is unreachable
   !     for any stellar atmosphere, but cool-atmosphere callers occasionally
   !     probe a few hundred K outer boundary layers). ---
-  if (T <= T_GRID(1)) then
+  IF (T <= T_GRID(1)) THEN
     U = U_ARR(1)
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Hard ceiling at the top of the grid: NO extrapolation.
   !     Return the out-of-coverage sentinel so the caller can fall back
@@ -983,40 +857,40 @@ function interp_log_linear_cached(T, U_ARR, LOGU_ARR) result(U)
   !     Kurucz expression).  This is important for ATLAS convergence:
   !     blind log-linear extrapolation above 10,000 K gives wildly wrong
   !     partition functions for hot-star work. ---
-  if (T >= T_GRID(NT_BC)) then
+  IF (T >= T_GRID(NT_BC)) THEN
     U = -1.0d0
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Try the hint first: does T lie in the last bracket? ---
   LO = LAST_LO
-  if (LO < 1 .or. LO >= NT_BC) LO = 10
-  if (T >= T_GRID(LO) .and. T < T_GRID(LO+1)) then
+  IF (LO < 1 .OR. LO >= NT_BC) LO = 10
+  IF (T >= T_GRID(LO) .AND. T < T_GRID(LO+1)) THEN
     HI = LO + 1
-  else if (LO+1 < NT_BC .and. T >= T_GRID(LO+1) .and. T < T_GRID(LO+2)) then
+  ELSE IF (LO+1 < NT_BC .AND. T >= T_GRID(LO+1) .AND. T < T_GRID(LO+2)) THEN
     ! Common case: T moved up by one grid cell (next depth point)
     LO = LO + 1
     HI = LO + 1
     LAST_LO = LO
-  else if (LO > 1 .and. T >= T_GRID(LO-1) .and. T < T_GRID(LO)) then
+  ELSE IF (LO > 1 .AND. T >= T_GRID(LO-1) .AND. T < T_GRID(LO)) THEN
     ! T moved down by one grid cell
     LO = LO - 1
     HI = LO + 1
     LAST_LO = LO
-  else
+  ELSE
     ! Miss: bisect
     LO = 1
     HI = NT_BC
-    do while (HI - LO > 1)
+    DO WHILE (HI - LO > 1)
       MID = (LO + HI) / 2
-      if (T_GRID(MID) > T) then
+      IF (T_GRID(MID) > T) THEN
         HI = MID
-      else
+      ELSE
         LO = MID
-      end if
-    end do
+      END IF
+    END DO
     LAST_LO = LO
-  end if
+  END IF
 
   ! --- Log-linear interpolation using cached LOGU_ARR ---
   LT    = log(T)
@@ -1024,17 +898,17 @@ function interp_log_linear_cached(T, U_ARR, LOGU_ARR) result(U)
   LT_HI = LOGT_GRID(HI)
   F     = (LT - LT_LO) / (LT_HI - LT_LO)
 
-  if (U_ARR(LO) > 0.0d0 .and. U_ARR(HI) > 0.0d0) then
+  IF (U_ARR(LO) > 0.0d0 .AND. U_ARR(HI) > 0.0d0) THEN
     LU_LO = LOGU_ARR(LO)
     LU_HI = LOGU_ARR(HI)
     U = exp(LU_LO + F * (LU_HI - LU_LO))
-  else
+  ELSE
     ! Fallback linear-in-U (never occurs for B&C data in practice)
     U = U_ARR(LO) + F * (U_ARR(HI) - U_ARR(LO))
-  end if
-end function interp_log_linear_cached
+  END IF
+END FUNCTION interp_log_linear_cached
 
-end module mod_partition_functions
+END MODULE mod_partition_functions
 
 !=========================================================================
 ! mod_atlas_data: Shared arrays replacing all COMMON blocks
@@ -1042,62 +916,62 @@ end module mod_partition_functions
 !   All are consolidated here as module variables with SAVE attribute.
 !=========================================================================
 
-module mod_atlas_data
+MODULE mod_atlas_data
 
-  use mod_parameters
-  use mod_constants
-  use mod_partition_functions
-  implicit none
-  save
+  USE mod_parameters
+  USE mod_constants
+  USE mod_partition_functions
+  IMPLICIT NONE
+  SAVE
 
   ! --- Rosseland optical depth scale ---
   ! COMMON /ABROSS/
-  real*8  :: ABROSS(kw), TAUROS(kw)
+  REAL(8)  :: ABROSS(kw), TAUROS(kw)
 
   ! --- Total absorption and scattering ---
   ! COMMON /ABTOT/
-  real*8  :: ABTOT(kw), ALPHA(kw)
+  REAL(8)  :: ABTOT(kw), ALPHA(kw)
 
   ! --- Cool-star continuous opacities (C I, Mg I, Al I, Si I, Fe I) ---
   ! COMMON /ACOOL/
-  real*8  :: AC1(kw), AMG1(kw), AAL1(kw), ASI1(kw), AFE1(kw)
+  REAL(8)  :: AC1(kw), AMG1(kw), AAL1(kw), ASI1(kw), AFE1(kw)
   ! Per-species source functions: computed by C1OP/AL1OP/FE1OP/HE2OP
   ! but NOT consumed by KAPP, which follows the atlas12.for convention
   ! of weighting all metal/He continua by BNU.  Kept for potential
   ! future per-species source function treatment (e.g. NLTE departure
   ! coefficient hooks).
-  real*8  :: SAL1(kw), SFE1(kw), SHE2(kw), SC1(kw)
+  REAL(8)  :: SAL1(kw), SFE1(kw), SHE2(kw), SC1(kw)
 
   ! --- Lukewarm opacities (C II, N I, O I, Mg II, Si II, Ca II) ---
   ! COMMON /ALUKE/
-  real*8  :: AC2(kw), AN1(kw), AO1(kw), AMG2(kw), ASI2(kw), ACA2(kw)
+  REAL(8)  :: AC2(kw), AN1(kw), AO1(kw), AMG2(kw), ASI2(kw), ACA2(kw)
 
   ! --- Convection parameters ---
   ! COMMON /CONV/
-  real*8  :: DLTDLP(kw) = 0.0d0, HEATCP(kw) = 0.0d0, DLRDLT(kw) = 0.0d0, VELSND(kw) = 0.0d0
-  real*8  :: GRDADB(kw) = 0.0d0, HSCALE(kw) = 0.0d0, FLXCNV(kw) = 0.0d0, VCONV(kw) = 0.0d0
-  real*8  :: MIXLTH = 2.0d0, OVERWT = 0.0d0
-  real*8  :: FLXCNV0(kw), FLXCNV1(kw)
-  integer :: IFCONV = 1, NCONV = 30
+  REAL(8)  :: DLTDLP(kw) = 0.0d0, HEATCP(kw) = 0.0d0, DLRDLT(kw) = 0.0d0, VELSND(kw) = 0.0d0
+  REAL(8)  :: GRDADB(kw) = 0.0d0, HSCALE(kw) = 0.0d0, FLXCNV(kw) = 0.0d0, VCONV(kw) = 0.0d0
+  REAL(8)  :: MIXLTH = 2.0d0, OVERWT = 0.0d0
+  REAL(8)  :: FLXCNV0(kw), FLXCNV1(kw)
+  INTEGER :: IFCONV = 1, NCONV = 30
 
   ! --- NLTE departure coefficients ---
   ! COMMON /DEPART/
-  real*8  :: BHYD(kw, 6) = 1.0d0, BMIN(kw) = 1.0d0
-  integer :: NLTEON = 0
+  REAL(8)  :: BHYD(kw, 6) = 1.0d0, BMIN(kw) = 1.0d0
+  INTEGER :: NLTEON = 0
 
   ! --- Electron density ---
   ! COMMON /EDENS/
-  real*8  :: EDENS(kw)
-  integer :: IFEDNS
+  REAL(8)  :: EDENS(kw)
+  INTEGER :: IFEDNS
 
   ! --- Element abundances, atomic masses, labels ---
   ! COMMON /ELEM/
-  real*8       :: YABUND(99)
+  REAL(8)       :: YABUND(99)
   ! Default solar abundances: Anders & Grevesse (1989, Geochim. Cosmochim.
   ! Acta, 53, 197).  H and He are fractional number densities (H+He=1);
   ! Z >= 3 are log10(N_Z / N_total).  Elements with -20.00 have no
   ! astrophysically relevant abundance.
-  real*8       :: ABUND(99) = (/ &
+  REAL(8)       :: ABUND(99) = (/ &
   !   1 H        2 He
        0.911D0,  0.089D0, &
   !   3 Li       4 Be       5 B        6 C        7 N        8 O        9 F       10 Ne
@@ -1124,7 +998,7 @@ module mod_atlas_data
      -11.33D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -11.92D0, &
   !  91 Pa      92 U       93 Np      94 Pu      95 Am      96 Cm      97 Bk      98 Cf      99 Es
      -20.00D0, -12.51D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0/)
-  real*8       :: ATMASS(99) = (/ 1.008D0, 4.003D0, &
+  REAL(8)       :: ATMASS(99) = (/ 1.008D0, 4.003D0, &
    6.939D0,9.013D0,10.81D0,12.01D0,14.01D0,16.00D0,19.00D0,20.18D0,22.99D0,24.31D0, &
   26.98D0,28.09D0,30.98D0,32.07D0,35.45D0,39.95D0,39.10D0,40.08D0,44.96D0,47.90D0, &
   50.94D0,52.00D0,54.94D0,55.85D0,58.94D0,58.71D0,63.55D0,65.37D0,69.72D0,72.60D0, &
@@ -1135,7 +1009,7 @@ module mod_atlas_data
   181.0D0,183.9D0,186.3D0,190.2D0,192.2D0,195.1D0,197.0D0,200.6D0,204.4D0,207.2D0, &
   209.0D0,210.0D0,211.0D0,222.0D0,223.0D0,226.1D0,227.1D0,232.0D0,231.0D0,238.0D0, &
   237.0D0,244.0D0,243.0D0,247.0D0,247.0D0,251.0D0,254.0D0/)
-  character(2) :: ELEM(99) = (/ 'H ','He', &
+  CHARACTER(2) :: ELEM(99) = (/ 'H ','He', &
   'Li','Be','B ','C ','N ','O ','F ','Ne','Na','Mg', &
   'Al','Si','P ','S ','Cl','Ar','K ','Ca','Sc','Ti', &
   'V ','Cr','Mn','Fe','Co','Ni','Cu','Zn','Ga','Ge', &
@@ -1149,263 +1023,263 @@ module mod_atlas_data
 
   ! --- Radiative flux and flux derivatives ---
   ! COMMON /FLUX/
-  real*8  :: FLUX = 0.0d0, FLXERR(kw) = 0.0d0, FLXDRV(kw) = 0.0d0, FLXRAD(kw)
+  REAL(8)  :: FLUX = 0.0d0, FLXERR(kw) = 0.0d0, FLXDRV(kw) = 0.0d0, FLXRAD(kw)
 
   ! --- Free-format input parser state ---
   ! COMMON /FREE/
-  integer :: NUMCOL, LETCOL, LAST, MORE, IFFAIL, MAXPOW
+  INTEGER :: NUMCOL, LETCOL, LAST, MORE, IFFAIL, MAXPOW
 
   ! --- Current frequency point ---
   ! COMMON /FREQ/
-  real*8  :: FREQ, FREQLG, EHVKT(kw), STIM(kw), BNU(kw), WAVE, WAVENO
+  REAL(8)  :: FREQ, FREQLG, EHVKT(kw), STIM(kw), BNU(kw), WAVE, WAVENO
 
   ! --- Frequency set for opacity distribution functions ---
   ! COMMON /FRESET/
-  real*8  :: WAVESET(30000), RCOSET(30000)
-  integer :: NULO, NUHI, NUMNU = 0, NUSTEP
+  REAL(8)  :: WAVESET(30000), RCOSET(30000)
+  INTEGER :: NULO, NUHI, NUMNU = 0, NUSTEP
 
   ! --- Hydrogen bound-free opacity tables ---
   ! COMMON /H1TAB/
-  real*8  :: H0TAB(2001), H1TAB(2001), H2TAB(2001)
+  REAL(8)  :: H0TAB(2001), H1TAB(2001), H2TAB(2001)
 
   ! --- Geometric height scale ---
   ! COMMON /HEIGHT/
-  real*8  :: HEIGHT(kw)
+  REAL(8)  :: HEIGHT(kw)
 
   ! --- Control flags ---
   ! COMMON /IF/
-  integer :: IFCORR = 1, IFPRES = 1, IFSURF = 0, IFSCAT = 1, IFMOL = 1, IFREADLINES = 1
+  INTEGER :: IFCORR = 1, IFPRES = 1, IFSURF = 0, IFSCAT = 1, IFMOL = 1, IFREADLINES = 1
 
   ! ROSSTAB interpolation mode:
   !   1 = original bilinear (4-quadrant nearest neighbor)
   !   2 = Shepard (K-nearest, inverse-distance weighted, p=3)
-  integer :: IROSSTAB = 1
+  INTEGER :: IROSSTAB = 1
 
   ! --- Molecular equilibrium ---
   ! COMMON /IFEQUA/
-  real*8  :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
-  integer :: IFEQUA(101), KCOMPS(maxloc), LOCJ(max1), IDEQUA(maxeq)
-  integer :: NEQUA, NEQUA1, NEQNEQ, NUMMOL, NLOC
+  REAL(8)  :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
+  INTEGER :: IFEQUA(101), KCOMPS(maxloc), LOCJ(max1), IDEQUA(maxeq)
+  INTEGER :: NEQUA, NEQUA1, NEQNEQ, NUMMOL, NLOC
 
   ! --- Opacity control flags ---
   ! COMMON /IFOP/
-  integer :: IFOP(20) = (/1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,0,0/)
+  INTEGER :: IFOP(20) = (/1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,0,0/)
 
   ! --- Population control flag ---
   ! COMMON /IFPOP/
-  integer :: IFPOP
+  INTEGER :: IFPOP
 
   ! --- Line data integer header words ---
   ! COMMON /IIIIIII/ (renamed LINEREC) — packed binary line-data record
-  integer    :: IWL
-  integer*2  :: IELION, IELO, IGFLOG, IGR, IGS, IGW
+  INTEGER    :: IWL
+  INTEGER(2)  :: IELION, IELO, IGFLOG, IGR, IGS, IGW
 
   ! --- Isotope fractional abundances ---
   ! COMMON /ISOTOPE/
-  real*8  :: ISOTOPE(10, 2, mion)
+  REAL(8)  :: ISOTOPE(10, 2, mion)
 
   ! --- Iteration control ---
   ! COMMON /ITER/
-  integer :: ITER, ifprnt(60) = 2, ifpnch(60) = 0, NUMITS = 0
+  INTEGER :: ITER, ifprnt(60) = 2, ifpnch(60) = 0, NUMITS = 0
 
   ! --- Title and header data ---
   ! COMMON /JUNK/
-  character(1) :: TITLE(74) = ' '
-  real*8  :: XSCALE = 1.0d0
-  character(4) :: WLTE = 'LTE '
-  character(256) :: DATADIR    ! Path to data files (from $ATLAS12)
-  integer :: INPUTDATA
+  CHARACTER(1) :: TITLE(74) = ' '
+  REAL(8)  :: XSCALE = 1.0d0
+  CHARACTER(4) :: WLTE = 'LTE '
+  CHARACTER(256) :: DATADIR    ! Path to data files (from $ATLAS12)
+  INTEGER :: INPUTDATA
 
   ! --- Flag set if SYNTHE is running ---
-  integer :: IFSYNTHE = 0
+  INTEGER :: IFSYNTHE = 0
 
   ! --- Flag set if SYNTHE should emit .mol/.linform output files ---
   ! Gated by the more_output CLI argument.  NMOLEC checks IFMOLOUT to
   ! decide whether to write its molecular-density table to unit 35.
-  integer :: IFMOLOUT = 0
+  INTEGER :: IFMOLOUT = 0
 
   ! --- Radiative transfer J-coefficient matrix ---
   ! COMMON /MATXJ/
-  real*8  :: COEFJ(51, 51)
+  REAL(8)  :: COEFJ(51, 51)
 
   ! --- Radiative transfer H-coefficient matrix ---
   ! COMMON /MATXH/
-  real*8  :: COEFH(51, 51)
+  REAL(8)  :: COEFH(51, 51)
 
   ! --- Angular quadrature ---
   ! COMMON /MUS/
-  real*8  :: ANGLE(20), SURFI(20) = 0.0d0
-  integer :: NMU = 1
+  REAL(8)  :: ANGLE(20), SURFI(20) = 0.0d0
+  INTEGER :: NMU = 1
 
   ! --- Individual continuous opacity sources ---
   ! COMMON /OPS/
-  real*8  :: AHYD(kw), AH2P(kw), AHMIN(kw), SIGH(kw)
-  real*8  :: AHE1(kw), AHE2(kw), AHEMIN(kw), SIGHE(kw)
-  real*8  :: ACOOL(kw), ALUKE(kw), AHOT(kw)
-  real*8  :: SIGEL(kw), SIGH2(kw), AHLINE(kw), ALINES(kw), SIGLIN(kw)
-  real*8  :: AXLINE(kw), SIGXL(kw), AXCONT(kw), SIGX(kw)
-  real*8  :: SHYD(kw), SHMIN(kw), SHLINE(kw), SXLINE(kw), SXCONT(kw)
+  REAL(8)  :: AHYD(kw), AH2P(kw), AHMIN(kw), SIGH(kw)
+  REAL(8)  :: AHE1(kw), AHE2(kw), AHEMIN(kw), SIGHE(kw)
+  REAL(8)  :: ACOOL(kw), ALUKE(kw), AHOT(kw)
+  REAL(8)  :: SIGEL(kw), SIGH2(kw), AHLINE(kw), ALINES(kw), SIGLIN(kw)
+  REAL(8)  :: AXLINE(kw), SIGXL(kw), AXCONT(kw), SIGX(kw)
+  REAL(8)  :: SHYD(kw), SHMIN(kw), SHLINE(kw), SXLINE(kw), SXCONT(kw)
 
   ! --- Total opacity ---
   ! COMMON /OPTOT/
-  real*8  :: ACONT(kw), SCONT(kw), ALINE(kw), SLINE(kw)
-  real*8  :: SIGMAC(kw), SIGMAL(kw)
+  REAL(8)  :: ACONT(kw), SCONT(kw), ALINE(kw), SLINE(kw)
+  REAL(8)  :: SIGMAC(kw), SIGMAL(kw)
 
   ! --- Ionization potentials ---
   ! COMMON /POTION/
-  real*8  :: POTION(999), POTIONSUM(999)
+  REAL(8)  :: POTION(999), POTIONSUM(999)
 
   ! --- Total pressure ---
   ! COMMON /PTOTAL/
-  real*8  :: PTOTAL(kw)
+  REAL(8)  :: PTOTAL(kw)
 
   ! --- Output control ---
   ! COMMON /PUT/
-  real*8  :: PUT
-  integer :: IPUT
+  REAL(8)  :: PUT
+  INTEGER :: IPUT
 
   ! --- Zero-point pressure and radiation field ---
   ! COMMON /PZERO/
-  real*8  :: PZERO, PCON, PRADK0, PTURB0
-  real*8  :: KNU(kw), PRADK(kw), RADEN(kw)
+  REAL(8)  :: PZERO, PCON, PRADK0, PTURB0
+  REAL(8)  :: KNU(kw), PRADK(kw), RADEN(kw)
 
   ! --- Radiation pressure ---
   ! COMMON /RAD/
-  real*8  :: ACCRAD(kw) = 0.0d0, PRAD(kw) = 0.0d0
+  REAL(8)  :: ACCRAD(kw) = 0.0d0, PRAD(kw) = 0.0d0
 
   ! --- Column mass depth scale ---
   ! COMMON /RHOX/
-  real*8  :: RHOX(kw)
-  integer :: NRHOX = 0
+  REAL(8)  :: RHOX(kw)
+  INTEGER :: NRHOX = 0
 
   ! --- Mean intensity diagnostic ---
   ! COMMON /RR/
-  real*8  :: RJMINSNU(kw), RDIAGJNU(kw)
+  REAL(8)  :: RJMINSNU(kw), RDIAGJNU(kw)
 
   ! --- Thermodynamic state (pressure, electron density, etc.) ---
   ! COMMON /STATE/
-  real*8  :: P(kw), XNE(kw), XNATOM(kw), RHO(kw), CHARGESQ(kw)
+  REAL(8)  :: P(kw), XNE(kw), XNATOM(kw), RHO(kw), CHARGESQ(kw)
 
   ! --- Depth integration step parameters ---
   ! COMMON /STEPLG/
-  real*8  :: STEPLG = 0.125d0, TAU1LG = -6.875d0
-  integer :: KRHOX = 0
+  REAL(8)  :: STEPLG = 0.125d0, TAU1LG = -6.875d0
+  INTEGER :: KRHOX = 0
 
   ! --- Continuous opacity table ---
   ! COMMON /TABCONT/
-  real*8  :: TABCONT(kw, 344)
-  real*8  :: WAVETAB(344)
-  integer :: IWAVETAB(344)
+  REAL(8)  :: TABCONT(kw, 344)
+  REAL(8)  :: WAVETAB(344)
+  INTEGER :: IWAVETAB(344)
 
   ! --- Log lookup table (replaced array with function) ---
   ! COMMON /TABLOG/ removed — now computed inline via TABLOG()
 
   ! --- Optical depth, source function, flux moments ---
   ! COMMON /TAUSHJ/
-  real*8  :: TAUNU(kw), SNU(kw), HNU(kw), JNU(kw), JMINS(kw)
+  REAL(8)  :: TAUNU(kw), SNU(kw), HNU(kw), JNU(kw), JMINS(kw)
 
   ! --- Standard optical depth scale ---
   ! COMMON /TAUSTD/
-  real*8  :: TAUSTD(kw)
+  REAL(8)  :: TAUSTD(kw)
 
   ! --- Effective temperature and gravity ---
   ! COMMON /TEFF/
-  real*8  :: TEFF = 0.0d0, GRAV = 0.0d0, GLOG
+  REAL(8)  :: TEFF = 0.0d0, GRAV = 0.0d0, GLOG
 
   ! --- Temperature and derived quantities ---
   ! COMMON /TEMP/
-  real*8  :: T(kw), TKEV(kw), TK(kw), HKT(kw), HCKT(kw), TLOG(kw)
-  integer :: ITEMP
+  REAL(8)  :: T(kw), TKEV(kw), TK(kw), HKT(kw), HCKT(kw), TLOG(kw)
+  INTEGER :: ITEMP
 
   ! --- Temperature smoothing ---
   ! COMMON /TSMOOTH/
-  integer :: J1SMOOTH = 0, J2SMOOTH = 0
-  real*8  :: WTJM1 = 0.3d0, WTJ = 0.4d0, WTJP1 = 0.3d0, TSMOOTH(kw)
+  INTEGER :: J1SMOOTH = 0, J2SMOOTH = 0
+  REAL(8)  :: WTJM1 = 0.3d0, WTJ = 0.4d0, WTJP1 = 0.3d0, TSMOOTH(kw)
 
   ! --- Turbulent pressure ---
   ! COMMON /TURBPR/
-  real*8  :: VTURB(kw) = 0.0d0, PTURB(kw) = 0.0d0, TRBFDG = 0.0d0, TRBCON = 0.0d0, TRBPOW = 0.0d0, TRBSND = 0.0d0
-  integer :: IFTURB = 0
+  REAL(8)  :: VTURB(kw) = 0.0d0, PTURB(kw) = 0.0d0, TRBFDG = 0.0d0, TRBCON = 0.0d0, TRBPOW = 0.0d0, TRBSND = 0.0d0
+  INTEGER :: IFTURB = 0
 
   ! --- Wavelength grid control ---
   ! COMMON /WAVEY/
-  real*8  :: WBEGIN, DELTAW
-  integer :: IFWAVE = 0
+  REAL(8)  :: WBEGIN, DELTAW
+  INTEGER :: IFWAVE = 0
 
   ! --- Current line data ---
   ! COMMON /WWWWWWW/ (renamed LINEPARAM) — packed line-parameter record
-  real*8  :: WLVAC
-  integer :: NELION
-  real*8  :: CGF, ELO, GAMMAR, GAMMAS, GAMMAW
+  REAL(8)  :: WLVAC
+  INTEGER :: NELION
+  REAL(8)  :: CGF, ELO, GAMMAR, GAMMAS, GAMMAW
 
   ! --- Depth-dependent abundances ---
   ! COMMON /XABUND/
-  real*8  :: XABUND(kw, 99), WTMOLE(kw), XRELATIVE(99) = 0.D0
+  REAL(8)  :: XABUND(kw, 99), WTMOLE(kw), XRELATIVE(99) = 0.D0
 
   ! --- Isotope fractions and masses ---
   ! COMMON /XISO/
-  real*8  :: XISO(10, mion), AMASSISO(10, mion)
+  REAL(8)  :: XISO(10, mion), AMASSISO(10, mion)
 
   ! --- Line opacity distribution ---
   ! COMMON /XLINES/
-  real*8  :: XLINES(kw, 30000)
+  REAL(8)  :: XLINES(kw, 30000)
 
   ! --- Ion number densities ---
   ! COMMON /XNF/
-  real*8  :: XNF(kw, mion), XNFP(kw, mion), XNH2(kw)
+  REAL(8)  :: XNF(kw, mion), XNFP(kw, mion), XNH2(kw)
 
   ! --- Doppler-broadened line opacity ---
   ! COMMON /XNFDOP/
-  real*8  :: XNFDOP(kw, mion), DOPPLE(kw, mion)
+  REAL(8)  :: XNFDOP(kw, mion), DOPPLE(kw, mion)
 
   ! --- Molecular number densities ---
   ! COMMON /XNMOL/
-  real*8  :: XNMOL(kw, maxmol), XNFPMOL(kw, maxmol)
+  REAL(8)  :: XNMOL(kw, maxmol), XNFPMOL(kw, maxmol)
 
   ! Flag: set to 1 after MOLEC has read molecular data from INPUTDATA
   ! (or when NMOLEC has populated the arrays directly, skipping the read).
-  integer :: MOLEC_IREAD = 0
+  INTEGER :: MOLEC_IREAD = 0
 
   ! --- Saved number densities for equilibrium ---
   ! COMMON /XNSAVE/
-  real*8  :: XNSAVE(kw, maxeq)
+  REAL(8)  :: XNSAVE(kw, maxeq)
 
   ! --- In-memory line data storage (replaces fort.12 I/O) ---
-  integer*4, allocatable :: LINEDATA(:,:)   ! (4, NLINES_STORED)
-  integer :: NLINES_STORED = 0
+  INTEGER(4), ALLOCATABLE :: LINEDATA(:,:)   ! (4, NLINES_STORED)
+  INTEGER :: NLINES_STORED = 0
 
   ! --- Stehlé MMM hydrogen Stark broadening tables ---
   ! Preprocessed from Stehlé & Hutcheon (1999) and Stehlé & Fouquet (2010).
   ! Loaded by INIT_STARK_TABLES; used by STARK_MMM.
-  integer, parameter :: NSTARK_SERIES = 4         ! Ly, Ba, Pa, Br
-  integer, parameter :: NSTARK_DALPHA = 60        ! Δα grid points
-  integer, parameter :: NSTARK_TEMPS  = 10        ! temperature grid points
-  integer, parameter :: NSTARK_DENS_MAX = 20      ! max density grid points
+  INTEGER, PARAMETER :: NSTARK_SERIES = 4         ! Ly, Ba, Pa, Br
+  INTEGER, PARAMETER :: NSTARK_DALPHA = 60        ! Δα grid points
+  INTEGER, PARAMETER :: NSTARK_TEMPS  = 10        ! temperature grid points
+  INTEGER, PARAMETER :: NSTARK_DENS_MAX = 20      ! max density grid points
 
-  type :: stark_series_t
-    integer :: n_lower                             ! lower quantum number
-    integer :: n_upper_min, n_upper_max            ! upper quantum number range
-    integer :: n_transitions                       ! = n_upper_max - n_upper_min + 1
-    integer :: n_dens                              ! actual number of density points
-    real*8  :: density_grid(NSTARK_DENS_MAX)       ! Ne [cm^-3]
-    real*8  :: temp_grid(NSTARK_TEMPS)             ! T [K]
-    real*8  :: log_dalpha_grid(NSTARK_DALPHA)      ! log10(Δα)
-    integer, allocatable :: max_dens_idx(:)        ! (n_transitions) highest valid density
-    real*8,  allocatable :: k_alpha(:)             ! (n_transitions) asymptotic wing constant
-    real*8,  allocatable :: profiles(:,:,:,:)      ! (NSTARK_DALPHA, NSTARK_TEMPS, n_dens, n_transitions)
-    logical :: loaded = .false.
-  end type stark_series_t
+  TYPE :: stark_series_t
+    INTEGER :: n_lower                             ! lower quantum number
+    INTEGER :: n_upper_min, n_upper_max            ! upper quantum number range
+    INTEGER :: n_transitions                       ! = n_upper_max - n_upper_min + 1
+    INTEGER :: n_dens                              ! actual number of density points
+    REAL(8)  :: density_grid(NSTARK_DENS_MAX)       ! Ne [cm^-3]
+    REAL(8)  :: temp_grid(NSTARK_TEMPS)             ! T [K]
+    REAL(8)  :: log_dalpha_grid(NSTARK_DALPHA)      ! log10(Δα)
+    INTEGER, ALLOCATABLE :: max_dens_idx(:)        ! (n_transitions) highest valid density
+    REAL(8),  ALLOCATABLE :: k_alpha(:)             ! (n_transitions) asymptotic wing constant
+    REAL(8),  ALLOCATABLE :: profiles(:,:,:,:)      ! (NSTARK_DALPHA, NSTARK_TEMPS, n_dens, n_transitions)
+    LOGICAL :: loaded = .FALSE.
+  END TYPE stark_series_t
 
-  type(stark_series_t), target :: STEHLE_DATA(NSTARK_SERIES)
-  logical :: STEHLE_TABLES_LOADED = .false.
+  TYPE(stark_series_t), TARGET :: STEHLE_DATA(NSTARK_SERIES)
+  LOGICAL :: STEHLE_TABLES_LOADED = .FALSE.
 
-contains
+CONTAINS
 
   ! Unpack LINEREC(4) record into module line-data variables
   ! Replaces the removed EQUIVALENCE (LINEREC(1),IWL)
-  subroutine UNPACK_LINEDATA(III)
-    integer*4, intent(in) :: III(4)
-    integer*2 :: pair(2)
+  SUBROUTINE UNPACK_LINEDATA(III)
+    INTEGER(4), INTENT(IN) :: III(4)
+    INTEGER(2) :: pair(2)
     IWL = III(1)
     pair = TRANSFER(III(2), pair)
     IELION = pair(1)
@@ -1416,13 +1290,13 @@ contains
     pair = TRANSFER(III(4), pair)
     IGS    = pair(1)
     IGW    = pair(2)
-  end subroutine UNPACK_LINEDATA
+  END SUBROUTINE UNPACK_LINEDATA
 
   ! Pack module line-data variables back into LINEREC(4) record
   ! For use before WRITE(12) LINEREC when variables have been modified
-  subroutine PACK_LINEDATA(III)
-    integer*4, intent(out) :: III(4)
-    integer*2 :: pair(2)
+  SUBROUTINE PACK_LINEDATA(III)
+    INTEGER(4), INTENT(OUT) :: III(4)
+    INTEGER(2) :: pair(2)
     III(1) = IWL
     pair(1) = IELION; pair(2) = IELO
     III(2) = TRANSFER(pair, III(2))
@@ -1430,19 +1304,19 @@ contains
     III(3) = TRANSFER(pair, III(3))
     pair(1) = IGS; pair(2) = IGW
     III(4) = TRANSFER(pair, III(4))
-  end subroutine PACK_LINEDATA
+  END SUBROUTINE PACK_LINEDATA
 
   ! Pack variables into LINEPARAM(4) matching F77 COMMON /LINEPARAM/ layout:
   ! LINEPARAM(1) = WLVAC (REAL*8)
   ! LINEPARAM(2) = [NELION (INTEGER*4), CGF (REAL*4)]
   ! LINEPARAM(3) = [ELO (REAL*4), GAMMAR (REAL*4)]
   ! LINEPARAM(4) = [GAMMAS (REAL*4), GAMMAW (REAL*4)]
-  subroutine PACK_LINEPARAM(W, WLVAC_in, NELION_in, CGF_in, ELO_in, GAMMAR_in, GAMMAS_in, GAMMAW_in)
-    real*8, intent(out) :: W(4)
-    real*8, intent(in) :: WLVAC_in
-    integer, intent(in) :: NELION_in
-    real*4, intent(in) :: CGF_in, ELO_in, GAMMAR_in, GAMMAS_in, GAMMAW_in
-    real*4 :: pair(2)
+  SUBROUTINE PACK_LINEPARAM(W, WLVAC_in, NELION_in, CGF_in, ELO_in, GAMMAR_in, GAMMAS_in, GAMMAW_in)
+    REAL(8), INTENT(OUT) :: W(4)
+    REAL(8), INTENT(IN) :: WLVAC_in
+    INTEGER, INTENT(IN) :: NELION_in
+    REAL(4), INTENT(IN) :: CGF_in, ELO_in, GAMMAR_in, GAMMAS_in, GAMMAW_in
+    REAL(4) :: pair(2)
     W(1) = WLVAC_in
     pair(1) = TRANSFER(NELION_in, 1.0)
     pair(2) = CGF_in
@@ -1453,15 +1327,15 @@ contains
     pair(1) = GAMMAS_in
     pair(2) = GAMMAW_in
     W(4) = TRANSFER(pair, 1.0D0)
-  end subroutine PACK_LINEPARAM
+  END SUBROUTINE PACK_LINEPARAM
 
   ! Unpack LINEPARAM(4) into variables matching F77 COMMON /LINEPARAM/ layout
-  subroutine UNPACK_LINEPARAM(W, WLVAC_out, NELION_out, CGF_out, ELO_out, GAMMAR_out, GAMMAS_out, GAMMAW_out)
-    real*8, intent(in) :: W(4)
-    real*8, intent(out) :: WLVAC_out
-    integer, intent(out) :: NELION_out
-    real*4, intent(out) :: CGF_out, ELO_out, GAMMAR_out, GAMMAS_out, GAMMAW_out
-    real*4 :: pair(2)
+  SUBROUTINE UNPACK_LINEPARAM(W, WLVAC_out, NELION_out, CGF_out, ELO_out, GAMMAR_out, GAMMAS_out, GAMMAW_out)
+    REAL(8), INTENT(IN) :: W(4)
+    REAL(8), INTENT(OUT) :: WLVAC_out
+    INTEGER, INTENT(OUT) :: NELION_out
+    REAL(4), INTENT(OUT) :: CGF_out, ELO_out, GAMMAR_out, GAMMAS_out, GAMMAW_out
+    REAL(4) :: pair(2)
     WLVAC_out = W(1)
     pair = TRANSFER(W(2), pair)
     NELION_out = TRANSFER(pair(1), 1)
@@ -1472,12 +1346,12 @@ contains
     pair = TRANSFER(W(4), pair)
     GAMMAS_out = pair(1)
     GAMMAW_out = pair(2)
-  end subroutine UNPACK_LINEPARAM
+  END SUBROUTINE UNPACK_LINEPARAM
 
-  elemental real*8 function TABLOG(I)
-    integer*2, intent(in) :: I
+  ELEMENTAL REAL(8) FUNCTION TABLOG(I)
+    INTEGER(2), INTENT(IN) :: I
     TABLOG = 10.D0**((I-16384)*.001D0)
-  end function TABLOG
+  END FUNCTION TABLOG
 
 
 !=========================================================================
@@ -1500,77 +1374,77 @@ contains
 
 SUBROUTINE PUTOUT(MODE)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: MODE
+  INTEGER, INTENT(IN) :: MODE
 
   ! --- Local variables ---
-  real*8  :: HSURF, TAUEND
-  real*8  :: HLAM, HLAMLG, HLAMMG, HNULG, HNUMG
-  real*8  :: FLXCNVRATIO(kw)
-  real*8  :: SURFIN(20)       ! Note: SURFIN accumulation was disabled in original
+  REAL(8)  :: HSURF, TAUEND
+  REAL(8)  :: HLAM, HLAMLG, HLAMMG, HNULG, HNUMG
+  REAL(8)  :: FLXCNVRATIO(kw)
+  REAL(8)  :: SURFIN(20)       ! Note: SURFIN accumulation was disabled in original
                                ! code (opacity-sampling replaced frequency groups).
                                ! SURFI from JOSH holds the actual surface intensity.
-  integer :: J, I, IZ, MU, JTAU1
+  INTEGER :: J, I, IZ, MU, JTAU1
 
   ! Persistent state across calls (NU and IFHEAD survive between MODE=1 and MODE=2-4)
-  integer, save :: NU = 0
-  integer, save :: IFHEAD = 0
+  INTEGER, SAVE :: NU = 0
+  INTEGER, SAVE :: IFHEAD = 0
 
   ! =================================================================
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING PUTOUT'
-  select case (MODE)
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING PUTOUT'
+  SELECT CASE (MODE)
 
   ! =================================================================
   ! MODE 1 — Write column headings to output and punch files
   ! =================================================================
-  case (1)
+  CASE (1)
 
-    if (IFPRNT(ITER) == 0) return
+    IF (IFPRNT(ITER) == 0) RETURN
     IFHEAD = 0
     NU = NULO - NUSTEP
 
     ! Write header to surface flux file (unit 8)
-    if (IFPNCH(ITER) < 2) return
-    write(8, '("TEFF ",F7.0,"  GRAVITY",F8.4,1X,A4 / "TITLE ",74A1)') &
+    IF (IFPNCH(ITER) < 2) RETURN
+    WRITE(8, '("TEFF ",F7.0,"  GRAVITY",F8.4,1X,A4 / "TITLE ",74A1)') &
       TEFF, GLOG, WLTE, TITLE
 
     ! For intensity mode (IFSURF=2), also write angle grid
-    if (IFSURF /= 2) return
-    write(8, '(I3," ANGLES",10F7.4 / 10X,10F7.4)') NMU, (ANGLE(MU), MU=1,NMU)
+    IF (IFSURF /= 2) RETURN
+    WRITE(8, '(I3," ANGLES",10F7.4 / 10X,10F7.4)') NMU, (ANGLE(MU), MU=1,NMU)
 
   ! =================================================================
   ! MODE 2,3,4 — Print flux/intensity at current wavelength point
   ! =================================================================
-  case (2, 3, 4)
+  CASE (2, 3, 4)
 
     NU = NU + NUSTEP
     HSURF = HNU(1)
     TAUEND = log10(TAUNU(NRHOX))
-    if (HSURF <= 0.0D0) HSURF = 1.0D-50
+    IF (HSURF <= 0.0D0) HSURF = 1.0D-50
 
     ! --- Detailed frequency-by-frequency output (print level >= 2) ---
-    if (IFPRNT(ITER) >= 2.AND.IDEBUG == 1) then
+    IF (IFPRNT(ITER) >= 2.AND.IDEBUG == 1) THEN
 
       ! Find first depth where optical depth exceeds unity
       JTAU1 = NRHOX
-      do J = 1, NRHOX
-        if (TAUNU(J) > 1.0D0) then
+      DO J = 1, NRHOX
+        IF (TAUNU(J) > 1.0D0) THEN
           JTAU1 = J
-          exit
-        end if
-      end do
+          EXIT
+        END IF
+      END DO
       TAUEND = log10(TAUNU(NRHOX))
 
       ! --- Flux output format (IFSURF = 0 or 1) ---
-      if (IFSURF == 0 .or. IFSURF == 1) then
-        if (IFHEAD == 0) then
-          write(6, 101)
-101       format('1', ///// 10X, 'WAVE', 7X, 'HLAMBDA', 7X, 'LOG H', 7X, 'MAG', &
+      IF (IFSURF == 0 .OR. IFSURF == 1) THEN
+        IF (IFHEAD == 0) THEN
+          WRITE(6, 101)
+101       FORMAT('1', ///// 10X, 'WAVE', 7X, 'HLAMBDA', 7X, 'LOG H', 7X, 'MAG', &
             10X, 'FREQUENCY', 8X, 'HNU', 10X, 'LOG H', 7X, 'MAG', 2X, 'TAUONE', &
             ' TAUNU')
-        end if
+        END IF
         IFHEAD = 1
 
         ! Convert H_nu to H_lambda and compute magnitudes
@@ -1580,85 +1454,85 @@ SUBROUTINE PUTOUT(MODE)
         HLAMMG = -2.5D0 * HLAMLG
         HNUMG  = -2.5D0 * HNULG
 
-        write(6, 401) NU, WAVE, HLAM, HLAMLG, HLAMMG, &
+        WRITE(6, 401) NU, WAVE, HLAM, HLAMLG, HLAMMG, &
                        FREQ, HSURF, HNULG, HNUMG, JTAU1, TAUEND, NU
-401     format(I6, F10.3, 1PE13.4, 0PF12.5, F10.3, 1PE20.6, E13.4, &
+401     FORMAT(I6, F10.3, 1PE13.4, 0PF12.5, F10.3, 1PE20.6, E13.4, &
           0PF12.5, F10.3, I6, F6.2, I6)
 
         ! Write tau(nu) profile to diagnostic file (unit 50)
-        write(50, "(I6,F12.3,(100F10.4))") NU, WAVE, &
+        WRITE(50, "(I6,F12.3,(100F10.4))") NU, WAVE, &
           (log10(TAUNU(J)), J=1,NRHOX)
-      end if
+      END IF
 
       ! --- Intensity output format (IFSURF = 2) ---
-      if (IFSURF == 2) then
-        if (IFHEAD == 0) then
-          write(6, 102)
-102       format('1', ///// 10X, 'WAVE', 5X, 'FREQUENCY', 3X, 'TAUONE TAUNU', &
+      IF (IFSURF == 2) THEN
+        IF (IFHEAD == 0) THEN
+          WRITE(6, 102)
+102       FORMAT('1', ///// 10X, 'WAVE', 5X, 'FREQUENCY', 3X, 'TAUONE TAUNU', &
             5('   MU  INTENSITY '))
-        end if
+        END IF
         IFHEAD = 1
 
-        write(6, 406) NU, WAVE, FREQ, JTAU1, TAUEND, &
+        WRITE(6, 406) NU, WAVE, FREQ, JTAU1, TAUEND, &
                        (ANGLE(MU), SURFIN(MU), MU=1,NMU)
-406     format(I6, F9.3, 1PE15.6, I6, 0PF6.2, 5(0PF7.4, 1PE10.3) / &
+406     FORMAT(I6, F9.3, 1PE15.6, I6, 0PF6.2, 5(0PF7.4, 1PE10.3) / &
           (42X, 5(0PF7.4, 1PE10.3)))
-      end if
+      END IF
 
-    end if  ! IFPRNT >= 2
+    END IF  ! IFPRNT >= 2
 
     ! --- Write to punch file (unit 8) ---
-    if (IFPNCH(ITER) < 2) return
-    if (IFSURF > 2) return
+    IF (IFPNCH(ITER) < 2) RETURN
+    IF (IFSURF > 2) RETURN
 
-    if (IFSURF == 2) then
+    IF (IFSURF == 2) THEN
       ! Intensity mode: write surface intensity at all angles
-      write(8, 416) NU, WAVE, FREQ, (SURFIN(MU), MU=1,NMU)
-416   format('INTENSITY', I5, F9.2, 1PE15.6 / (1P8E10.3))
-      if (NU == NUHI) write(8, 416)
-    else
+      WRITE(8, 416) NU, WAVE, FREQ, (SURFIN(MU), MU=1,NMU)
+416   FORMAT('INTENSITY', I5, F9.2, 1PE15.6 / (1P8E10.3))
+      IF (NU == NUHI) WRITE(8, 416)
+    ELSE
       ! Flux mode: write wavelength (in nm) and Eddington flux H_nu
-      write(8, '(F13.2,E13.4)') WAVE * 10.0D0, HSURF
-    end if
+      WRITE(8, '(F13.2,E13.4)') WAVE * 10.0D0, HSURF
+    END IF
 
   ! =================================================================
   ! MODE 5 — End-of-iteration summary and model punch output
   ! =================================================================
-  case (5)
+  CASE (5)
 
     ! --- Print iteration summary tables to screen ---
-    if (IFPRNT(ITER) /= 0) then
+    IF (IFPRNT(ITER) /= 0) THEN
 
-       if (IDEBUG == 1) then
+       IF (IDEBUG == 1) THEN
           ! Convection and structure parameters vs. depth
-          write(6, 501) (J, RHOX(J), PTOTAL(J), PTURB(J), GRDADB(J), DLTDLP(J), &
+          WRITE(6, 501) (J, RHOX(J), PTOTAL(J), PTURB(J), GRDADB(J), DLTDLP(J), &
                VELSND(J), DLRDLT(J), HEATCP(J), HSCALE(J), VCONV(J), FLXCNV(J), &
                J=1,NRHOX)
-501       format(///, '       RHOX       PTOTAL     PTURB      GRDADB', &
+501       FORMAT(///, '       RHOX       PTOTAL     PTURB      GRDADB', &
                '     DLTDLP     VELSND     DLRDLT     HEATCP     HSCALE     VCONV', &
                '     FLXCNV            ', / (I3, 1P11E11.3))
           
           ! Number densities: H I, H II, He I, He II, He III + turbulent velocity
-          write(6, 503) (J, XNATOM(J), RADEN(J), PRADK(J), XNFP(J,1), XNFP(J,2), &
+          WRITE(6, 503) (J, XNATOM(J), RADEN(J), PRADK(J), XNFP(J,1), XNFP(J,2), &
                XNFP(J,3), XNFP(J,4), XNFP(J,5), VTURB(J), &
                FLXCNV0(J), FLXCNV1(J), J=1,NRHOX)
-503       format(///, '      XNATOM      RADEN      PRADK     XNFPH1', &
+503       FORMAT(///, '      XNATOM      RADEN      PRADK     XNFPH1', &
                '    XNFPH2     XNFPHE1    XNFPHE2    XNFPHE3     VTURB', &
                / (I3, 1P11E11.3))
        
-       endif
+       ENDIF
 
       ! Compute convective flux fraction at each depth
-      do J = 1, NRHOX
-        if (IFCORR == 0) FLXRAD(J) = FLUX - FLXCNV(J)
+      DO J = 1, NRHOX
+        IF (IFCORR == 0) FLXRAD(J) = FLUX - FLXCNV(J)
         FLXCNVRATIO(J) = FLXCNV(J) / (FLXCNV(J) + FLXRAD(J))
-      end do
+      END DO
 
       ! Full model atmosphere table to unit 66
-      write(66, 542) (J, RHOX(J), T(J), P(J), XNE(J), RHO(J), ABROSS(J), &
+      WRITE(66, 542) (J, RHOX(J), T(J), P(J), XNE(J), RHO(J), ABROSS(J), &
         HEIGHT(J), TAUROS(J), FLXCNVRATIO(J), ACCRAD(J), FLXERR(J), FLXDRV(J), &
         J=1,NRHOX)
-542   format('0', 35X, 'ELECTRON', 11X, &
+542   FORMAT('0', 35X, 'ELECTRON', 11X, &
         'ROSSELAND    HEIGHT   ROSSELAND   FRACTION  RADIATIVE', &
         '         PERCENT FLUX', / &
         '       RHOX      TEMP    PRESSURE    NUMBER', &
@@ -1666,45 +1540,45 @@ SUBROUTINE PUTOUT(MODE)
         '    CONV FLUX  ACCELERATION', &
         '   ERROR   DERIV', / (I3, 1PE10.3, 0PF9.1, 1P8E11.3, 2P2E11.3))
 
-    end if  ! IFPRNT
+    END IF  ! IFPRNT
 
     ! --- Write model to punch file (unit 7) ---
-    if (IFPNCH(ITER) == 0) return
+    IF (IFPNCH(ITER) == 0) RETURN
 
     ! Model parameters and abundances
-    write(7, '("TEFF ",F7.0,"  GRAVITY",F8.4,1X,A4)') TEFF, GLOG, WLTE
-    write(7, '("TITLE ",74A1)') TITLE
+    WRITE(7, '("TEFF ",F7.0,"  GRAVITY",F8.4,1X,A4)') TEFF, GLOG, WLTE
+    WRITE(7, '("TITLE ",74A1)') TITLE
 
     ! Abundance table with relative offsets
-    write(7, 553) ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
+    WRITE(7, 553) ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
       (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,99)
-553 format(' ABUNDANCE TABLE' / '    1', A2, F10.6, '       2', A2, F10.6 &
+553 FORMAT(' ABUNDANCE TABLE' / '    1', A2, F10.6, '       2', A2, F10.6 &
       / (5(I5, A2, F7.3, F6.3)))
 
     ! Model structure: column mass, T, P, N_e, kappa_Ross, g_rad, v_turb,
     !                  convective flux, convective velocity
-    write(7, 554) NRHOX, (RHOX(J), T(J), P(J), XNE(J), ABROSS(J), ACCRAD(J), &
+    WRITE(7, 554) NRHOX, (RHOX(J), T(J), P(J), XNE(J), ABROSS(J), ACCRAD(J), &
       VTURB(J), FLXCNV(J), VCONV(J), J=1,NRHOX)
-554 format('READ DECK6', I3, &
+554 FORMAT('READ DECK6', I3, &
       '     RHOX         T         P       XNE', &
       '     ABROSS    ACCRAD     VTURB    FLXCNV     VCONV' &
       / (13X, 1PE12.5, 0PF10.2, 1P7E10.3))
 
     ! Surface radiation pressure constant
-    write(7, '("PRADK",1PE11.4)') PRADK0
+    WRITE(7, '("PRADK",1PE11.4)') PRADK0
 
     ! NLTE departure coefficients (if NLTE mode is on)
-    if (NLTEON /= 0) then
-      write(7, 556) NRHOX, (RHOX(J), (BHYD(J,I), I=1,6), BMIN(J), J=1,NRHOX)
-556   format('READ DEPARTURE COEFFICIENTS', I3, ' RHOX  BHYD 1-6  BMIN' &
+    IF (NLTEON /= 0) THEN
+      WRITE(7, 556) NRHOX, (RHOX(J), (BHYD(J,I), I=1,6), BMIN(J), J=1,NRHOX)
+556   FORMAT('READ DEPARTURE COEFFICIENTS', I3, ' RHOX  BHYD 1-6  BMIN' &
         / (1PE11.4, 0P7F9.4))
-    end if
+    END IF
 
     ! Signal completion
-    write(7, '("BEGIN",20X,"ITERATION ",I3," COMPLETED")') ITER
-    close(UNIT=7)
+    WRITE(7, '("BEGIN",20X,"ITERATION ",I3," COMPLETED")') ITER
+    CLOSE(UNIT=7)
 
-  end select
+  END SELECT
 
 END SUBROUTINE PUTOUT
 
@@ -1736,183 +1610,183 @@ END SUBROUTINE PUTOUT
 
 SUBROUTINE TCORR(MODE, RCOWT)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  integer, intent(in)  :: MODE
-  real*8,  intent(in)  :: RCOWT   ! quadrature weight for current frequency
+  INTEGER, INTENT(IN)  :: MODE
+  REAL(8),  INTENT(IN)  :: RCOWT   ! quadrature weight for current frequency
 
   ! --- Named constants ---
   ! SIGMA_SB and FOURPI now from mod_constants
-  real*8, parameter :: EULER_M1  = 0.922784335098467D0  ! 1 - gamma_Euler + ln(2)
-  real*8, parameter :: RDIAGJ_FLOOR = 1.0D-30    ! prevent division by zero
-  real*8, parameter :: ABROSS_FLOOR = 1.0D-30    ! prevent division by zero
-  real*8, parameter :: DEL_FLOOR    = 1.0D-10    ! prevent division by zero in superadiabatic excess
+  REAL(8), PARAMETER :: EULER_M1  = 0.922784335098467D0  ! 1 - gamma_Euler + ln(2)
+  REAL(8), PARAMETER :: RDIAGJ_FLOOR = 1.0D-30    ! prevent division by zero
+  REAL(8), PARAMETER :: ABROSS_FLOOR = 1.0D-30    ! prevent division by zero
+  REAL(8), PARAMETER :: DEL_FLOOR    = 1.0D-10    ! prevent division by zero in superadiabatic excess
 
   ! --- Persistent locals (accumulate across MODE 1→2→3 calls) ---
-  real*8, save :: RJMINS(kw)   ! integrated opacity-weighted (J - S)
-  real*8, save :: RDABH(kw)    ! integrated flux divergence term
-  real*8, save :: RDIAGJ(kw)   ! integrated diagonal Lambda-operator response
-  real*8, save :: OLDT1(kw)    ! previous iteration's total correction (for damping)
+  REAL(8), SAVE :: RJMINS(kw)   ! integrated opacity-weighted (J - S)
+  REAL(8), SAVE :: RDABH(kw)    ! integrated flux divergence term
+  REAL(8), SAVE :: RDIAGJ(kw)   ! integrated diagonal Lambda-operator response
+  REAL(8), SAVE :: OLDT1(kw)    ! previous iteration's total correction (for damping)
 
   ! --- MODE 2 locals ---
-  real*8  :: DABTOT(kw)        ! d(kappa_tot)/d(RHOX)
-  real*8  :: TERM1, TERM2, D, EX, DIAGJ, DBDT
+  REAL(8)  :: DABTOT(kw)        ! d(kappa_tot)/d(RHOX)
+  REAL(8)  :: TERM1, TERM2, D, EX, DIAGJ, DBDT
 
   ! --- MODE 3 locals: derivatives and gradients ---
-  real*8  :: DTDRHX(kw)        ! dT/d(RHOX)
-  real*8  :: DDLT(kw)          ! d(nabla)/d(RHOX)
-  real*8  :: DABROS(kw)        ! d(kappa_Ross)/d(RHOX)
+  REAL(8)  :: DTDRHX(kw)        ! dT/d(RHOX)
+  REAL(8)  :: DDLT(kw)          ! d(nabla)/d(RHOX)
+  REAL(8)  :: DABROS(kw)        ! d(kappa_Ross)/d(RHOX)
 
   ! --- MODE 3 locals: convection ---
-  real*8  :: CNVFLX(kw)        ! local copy of convective flux (smoothed)
-  real*8  :: SMOOTH(kw)        ! smoothing buffer for convective flux
-  real*8  :: DDEL(kw)          ! convective response factor (1 + D/(D+DEL))/DEL
-  real*8  :: HRATIO(kw)        ! convective-to-total flux ratio
-  real*8  :: DEL, VCO, FLUXCO, TAUB, CNVFL
+  REAL(8)  :: CNVFLX(kw)        ! local copy of convective flux (smoothed)
+  REAL(8)  :: SMOOTH(kw)        ! smoothing buffer for convective flux
+  REAL(8)  :: DDEL(kw)          ! convective response factor (1 + D/(D+DEL))/DEL
+  REAL(8)  :: HRATIO(kw)        ! convective-to-total flux ratio
+  REAL(8)  :: DEL, VCO, FLUXCO, TAUB, CNVFL
 
   ! --- MODE 3 locals: flux correction ---
-  real*8  :: CODRHX(kw)        ! integrand for G(tau) integrating factor
-  real*8  :: G(kw)             ! integrating factor exp(integral of CODRHX)
-  real*8  :: GFLUX(kw)         ! G * (flux error) / (flux response)
-  real*8  :: DTAU(kw)          ! integrated tau correction
-  real*8  :: DTFLUX(kw)        ! flux-constancy temperature correction
+  REAL(8)  :: CODRHX(kw)        ! integrand for G(tau) integrating factor
+  REAL(8)  :: G(kw)             ! integrating factor exp(integral of CODRHX)
+  REAL(8)  :: GFLUX(kw)         ! G * (flux error) / (flux response)
+  REAL(8)  :: DTAU(kw)          ! integrated tau correction
+  REAL(8)  :: DTFLUX(kw)        ! flux-constancy temperature correction
 
   ! --- MODE 3 locals: Lambda correction ---
-  real*8  :: DTLAMB(kw)        ! Lambda-iteration temperature correction
-  real*8  :: DTSURF(kw)        ! surface boundary correction
-  real*8  :: DTCONV(kw)        ! convective flux correction (Crivellari-Simonneau)
-  real*8  :: T1(kw)            ! total correction
-  real*8  :: TEFF25            ! clamp: Teff/25
-  real*8  :: DTSUR             ! surface correction magnitude
-  real*8  :: DUM(kw), TINTEG(kw), TAV
-  real*8  :: TONE_ARR(1), TTWO_ARR(1), XNEW_TMP(1)
+  REAL(8)  :: DTLAMB(kw)        ! Lambda-iteration temperature correction
+  REAL(8)  :: DTSURF(kw)        ! surface boundary correction
+  REAL(8)  :: DTCONV(kw)        ! convective flux correction (Crivellari-Simonneau)
+  REAL(8)  :: T1(kw)            ! total correction
+  REAL(8)  :: TEFF25            ! clamp: Teff/25
+  REAL(8)  :: DTSUR             ! surface correction magnitude
+  REAL(8)  :: DUM(kw), TINTEG(kw), TAV
+  REAL(8)  :: TONE_ARR(1), TTWO_ARR(1), XNEW_TMP(1)
 
   ! --- MODE 3 locals: convective adiabatic sweep ---
-  real*8  :: T_SWEEP(kw)       ! corrected T for adiabatic integration
-  real*8  :: DT_RAD            ! radiative correction at a layer
-  real*8  :: DT_ADIAB          ! adiabatic sweep correction at a layer
-  real*8  :: DLNP              ! Δln P between adjacent layers
-  real*8  :: T_ADIAB           ! adiabatic extrapolation temperature
-  real*8  :: FCONV_RATIO       ! convective flux fraction at a depth
-  integer :: JANCHOR           ! shallowest convective layer (anchor)
+  REAL(8)  :: T_SWEEP(kw)       ! corrected T for adiabatic integration
+  REAL(8)  :: DT_RAD            ! radiative correction at a layer
+  REAL(8)  :: DT_ADIAB          ! adiabatic sweep correction at a layer
+  REAL(8)  :: DLNP              ! Δln P between adjacent layers
+  REAL(8)  :: T_ADIAB           ! adiabatic extrapolation temperature
+  REAL(8)  :: FCONV_RATIO       ! convective flux fraction at a depth
+  INTEGER :: JANCHOR           ! shallowest convective layer (anchor)
 
   ! --- MODE 3 locals: RHOX correction / remapping ---
-  real*8  :: TPLUS(kw), TNEW1(kw), TNEW2(kw), PRDNEW(kw)
-  real*8  :: AB1(kw), PTOT1(kw), P1(kw)
-  real*8  :: AB2(kw), PTOT2(kw), P2(kw)
-  real*8  :: PPP(kw), RRR(kw), DRHOX(kw)
-  real*8  :: REMAP(kw, 10)     ! buffer for MAP1 remapping
+  REAL(8)  :: TPLUS(kw), TNEW1(kw), TNEW2(kw), PRDNEW(kw)
+  REAL(8)  :: AB1(kw), PTOT1(kw), P1(kw)
+  REAL(8)  :: AB2(kw), PTOT2(kw), P2(kw)
+  REAL(8)  :: PPP(kw), RRR(kw), DRHOX(kw)
+  REAL(8)  :: REMAP(kw, 10)     ! buffer for MAP1 remapping
 
   ! --- Scalar temps ---
-  integer :: J, I, K, IDUM, IFUDGE, JCONV
-  real*8  :: ABROSS_safe
+  INTEGER :: J, I, K, IDUM, IFUDGE, JCONV
+  REAL(8)  :: ABROSS_safe
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING TCORR'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING TCORR'
 
   !=====================================================================
   ! MODE 1: Zero frequency-integral accumulators
   !=====================================================================
-  if (MODE == 1) then
+  IF (MODE == 1) THEN
 
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       RJMINS(J) = 0.0D0
       RDABH(J)  = 0.0D0
       RDIAGJ(J) = 0.0D0
       FLXRAD(J) = 0.0D0
-    end do
-    return
+    END DO
+    RETURN
 
   !=====================================================================
   ! MODE 2: Accumulate frequency integrals at current wavelength
   !=====================================================================
-  else if (MODE == 2) then
+  ELSE IF (MODE == 2) THEN
 
     ! --- Opacity gradient term: d(ln kappa)/d(RHOX) * H_nu ---
-    call DERIV(RHOX, ABTOT, DABTOT, NRHOX)
-    do J = 1, NRHOX
+    CALL DERIV(RHOX, ABTOT, DABTOT, NRHOX)
+    DO J = 1, NRHOX
       RDABH(J)  = RDABH(J) + DABTOT(J) / ABTOT(J) * HNU(J) * RCOWT
       RJMINSNU(J) = ABTOT(J) * JMINS(J) * RCOWT
       RJMINS(J) = RJMINS(J) + RJMINSNU(J)
       FLXRAD(J) = FLXRAD(J) + HNU(J) * RCOWT
-    end do
+    END DO
 
     ! --- Diagonal Lambda operator: sum kappa * (Lambda_diag - 1) * (1-eps) * dB/dT ---
     !     Lambda_diag is computed from E_3 exponential integrals of the
     !     monochromatic optical depth increments between adjacent layers.
     TERM2 = 0.0D0
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       TERM1 = TERM2
 
       ! Optical depth increment to next layer
-      if (J /= NRHOX) then
+      IF (J /= NRHOX) THEN
         D = TAUNU(J+1) - TAUNU(J)
-      end if
+      END IF
       D = max(1.0D-10, D)
 
-      if (D <= 0.01D0) then
+      IF (D <= 0.01D0) THEN
         ! Small optical depth: Taylor series for E_3 integral
         ! TERM2 ≈ (1 - gamma + ln2 - lnD)*D/4 + D^2/12 - D^3/96 + D^4/720
         TERM2 = (EULER_M1 - log(D)) * D / 4.0D0 &
               + D**2 / 12.0D0 - D**3 / 96.0D0 + D**4 / 720.0D0
-      else
+      ELSE
         ! Standard E_3 path
         EX = 0.0D0
-        if (D < 10.0D0) EX = EXPI(3, D)
+        IF (D < 10.0D0) EX = EXPI(3, D)
         ! Cool-star stability patch: suppress E_3 for narrow Dtau range
-        if (TEFF <= 4250.0D0 .and. D > 0.005D0 .and. D < 0.02D0) EX = 0.0D0
+        IF (TEFF <= 4250.0D0 .AND. D > 0.005D0 .AND. D < 0.02D0) EX = 0.0D0
         TERM2 = 0.5D0 * (D + EX - 0.5D0) / D
-      end if
+      END IF
 
       DIAGJ = TERM1 + TERM2
 
       ! dB_nu/dT = B_nu * h*nu / (kT^2) / (1 - e^{-h*nu/kT})
-      if (NUMNU == 1) then
+      IF (NUMNU == 1) THEN
         DBDT = FLUX * 16.0D0 / T(J)
-      else
+      ELSE
         ! Guard: STIM = 1 - exp(-hv/kT) can vanish in Rayleigh-Jeans limit
         DBDT = BNU(J) * FREQ * HKT(J) / T(J) / max(STIM(J), 1.0D-30)
-      end if
+      END IF
 
       ! Accumulate: kappa * (Lambda_diag - 1) / (1 - eps*Lambda_diag) * (1-eps) * dB/dT
       RDIAGJNU(J) = ABTOT(J) * (DIAGJ - 1.0D0) &
                    / (1.0D0 - ALPHA(J) * DIAGJ) &
                    * (1.0D0 - ALPHA(J)) * DBDT * RCOWT
       RDIAGJ(J) = RDIAGJ(J) + RDIAGJNU(J)
-    end do
-    return
+    END DO
+    RETURN
 
-  end if
+  END IF
 
   !=====================================================================
   ! MODE 3: Compute and apply temperature corrections
   !=====================================================================
 
   ! --- Compute needed derivatives ---
-  call DERIV(RHOX, T, DTDRHX, NRHOX)
-  call DERIV(RHOX, DLTDLP, DDLT, NRHOX)
-  call DERIV(RHOX, ABROSS, DABROS, NRHOX)
+  CALL DERIV(RHOX, T, DTDRHX, NRHOX)
+  CALL DERIV(RHOX, DLTDLP, DDLT, NRHOX)
+  CALL DERIV(RHOX, ABROSS, DABROS, NRHOX)
 
   !---------------------------------------------------------------------
   ! (A) Prepare smoothed convective flux
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     CNVFLX(J) = 0.0D0
-    if (IFCONV == 1 .and. J >= 3) CNVFLX(J) = FLXCNV(J)
-  end do
+    IF (IFCONV == 1 .AND. J >= 3) CNVFLX(J) = FLXCNV(J)
+  END DO
 
   ! 1-2-1 smoothing filter on convective flux (interior points)
-  do J = 2, NRHOX - 1
+  DO J = 2, NRHOX - 1
     SMOOTH(J) = 0.25D0 * CNVFLX(J-1) + 0.50D0 * CNVFLX(J) + 0.25D0 * CNVFLX(J+1)
-  end do
+  END DO
   ! Asymmetric boundary kernel at deepest layer: 75-25 split
   SMOOTH(NRHOX) = 0.75D0 * CNVFLX(NRHOX) + 0.25D0 * CNVFLX(NRHOX-1)
-  do J = 2, NRHOX
+  DO J = 2, NRHOX
     CNVFLX(J) = SMOOTH(J)
     FLXCNV(J) = CNVFLX(J)
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! (B) Build integrating factor for flux correction
@@ -1923,7 +1797,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! Initialize DDEL for all layers (safe default for non-convective case)
   DDEL(:) = 1.0D0
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ABROSS_safe = max(ABROSS(J), ABROSS_FLOOR)
     RDABH(J) = RDABH(J) - FLXRAD(J) * DABROS(J) / ABROSS_safe
 
@@ -1931,39 +1805,39 @@ SUBROUTINE TCORR(MODE, RCOWT)
     DEL  = 1.0D0
     D    = 0.0D0
 
-    if (CNVFLX(J) > 0.0D0 .and. FLXCNV0(J) > 0.0D0) then
+    IF (CNVFLX(J) > 0.0D0 .AND. FLXCNV0(J) > 0.0D0) THEN
       DEL = DLTDLP(J) - GRDADB(J)
       DEL = max(DEL, DEL_FLOOR)
 
       VCO = 0.5D0 * MIXLTH * sqrt(max(-0.5D0 * PTOTAL(J) / RHO(J) * DLRDLT(J), 0.0D0))
       FLUXCO = 0.5D0 * RHO(J) * HEATCP(J) * T(J) * MIXLTH / FOURPI
 
-      if (MIXLTH > 0.0D0 .and. VCO > 0.0D0) then
+      IF (MIXLTH > 0.0D0 .AND. VCO > 0.0D0) THEN
         D = 8.0D0 * SIGMA_SB * T(J)**4 &
           / (ABROSS_safe * HSCALE(J) * RHO(J)) / (FLUXCO * FOURPI) / VCO
-      end if
+      END IF
 
       TAUB = ABROSS_safe * RHO(J) * MIXLTH * HSCALE(J)
       D = D * TAUB**2 / (2.0D0 + TAUB**2)
       D = D**2 / 2.0D0
       DDEL(J) = (1.0D0 + D / (D + DEL)) / DEL
-    end if
+    END IF
 
     ! Only include convective coupling when it's significant
     CNVFL = 0.0D0
-    if (max(FLXRAD(J), 1.0D-30) > 0.0D0) then
-      if (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) > 1.0D-3 .and. &
-          FLXCNV0(J) / max(FLXRAD(J), 1.0D-30) > 1.0D-3) then
+    IF (max(FLXRAD(J), 1.0D-30) > 0.0D0) THEN
+      IF (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) > 1.0D-3 .AND. &
+          FLXCNV0(J) / max(FLXRAD(J), 1.0D-30) > 1.0D-3) THEN
         CNVFL = CNVFLX(J)
-      end if
-    end if
+      END IF
+    END IF
 
     CODRHX(J) = (RDABH(J) &
                + CNVFL * (DTDRHX(J) / T(J) * (1.0D0 - 9.0D0 * D / (D + DEL)) &
                         + 1.5D0 * DDLT(J) / DEL * (1.0D0 + D / (D + DEL)))) &
               / (FLXRAD(J) + CNVFLX(J) * 1.5D0 * DLTDLP(J) / DEL &
                            * (1.0D0 + D / (D + DEL)))
-  end do
+  END DO
 
   ! Force zero at boundary (no correction at outermost layers)
   CODRHX(1) = 0.0D0
@@ -1980,29 +1854,29 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !     DTAU integral and corrupts DTFLUX at all depths. Weight GFLUX
   !     by (1 - f_conv) so deep convective layers contribute negligibly.
   !---------------------------------------------------------------------
-  call INTEG(RHOX, CODRHX, G, NRHOX, 0.0D0)
-  do J = 1, NRHOX
+  CALL INTEG(RHOX, CODRHX, G, NRHOX, 0.0D0)
+  DO J = 1, NRHOX
     G(J) = exp(G(J))
     GFLUX(J) = G(J) * (FLXRAD(J) + CNVFLX(J) - FLUX) &
              / (FLXRAD(J) + CNVFLX(J) * 1.5D0 * DLTDLP(J) * DDEL(J))
 
     ! Suppress GFLUX in convection-dominated layers (with hysteresis)
-    if (IFCONV == 1 .and. &
-        (CNVFLX(J) > 0.0D0 .or. FLXCNV0(J) > 0.0D0)) then
+    IF (IFCONV == 1 .AND. &
+        (CNVFLX(J) > 0.0D0 .OR. FLXCNV0(J) > 0.0D0)) THEN
       FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
                   / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
       GFLUX(J) = GFLUX(J) * (1.0D0 - FCONV_RATIO)
-    end if
-  end do
+    END IF
+  END DO
 
-  call INTEG(TAUROS, GFLUX, DTAU, NRHOX, 0.0D0)
-  do J = 1, NRHOX
+  CALL INTEG(TAUROS, GFLUX, DTAU, NRHOX, 0.0D0)
+  DO J = 1, NRHOX
     DTAU(J) = DTAU(J) / G(J)
     ! Clamp tau correction to ±tau/3 to prevent overshooting
     DTAU(J) = max(-TAUROS(J) / 3.0D0, min(TAUROS(J) / 3.0D0, DTAU(J)))
     ABROSS_safe = max(ABROSS(J), ABROSS_FLOOR)
     DTFLUX(J) = -DTAU(J) * DTDRHX(J) / ABROSS_safe
-  end do
+  END DO
 
   TEFF25 = TEFF / 25.0D0
 
@@ -2015,15 +1889,15 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !---------------------------------------------------------------------
   DTCONV(:) = 0.0D0
 
-  if (IFCONV == 1) then
-    do J = 1, NRHOX
-      if (CNVFLX(J) > 0.0D0 .or. FLXCNV0(J) > 0.0D0) then
+  IF (IFCONV == 1) THEN
+    DO J = 1, NRHOX
+      IF (CNVFLX(J) > 0.0D0 .OR. FLXCNV0(J) > 0.0D0) THEN
         FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
                     / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
         DTFLUX(J) = DTFLUX(J) * (1.0D0 - FCONV_RATIO)
-      end if
-    end do
-  end if
+      END IF
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! (D) DTLAMB: Lambda-iteration correction (optically thin layers)
@@ -2032,27 +1906,27 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !---------------------------------------------------------------------
 
   ! Flux error as percentage
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     FLXERR(J) = (FLXRAD(J) + CNVFLX(J) - FLUX) / FLUX * 100.0D0
-  end do
-  call DERIV(TAUROS, FLXERR, FLXDRV, NRHOX)
+  END DO
+  CALL DERIV(TAUROS, FLXERR, FLXDRV, NRHOX)
 
   ! Find first layer where convection becomes significant
   ! (used to safely bound the DTLAMB backward-damping reach)
   JCONV = NRHOX + 1
-  do J = 1, NRHOX
-    if (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) >= 1.0D-5 .or. TAUROS(J) >= 1.0D0) then
+  DO J = 1, NRHOX
+    IF (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) >= 1.0D-5 .OR. TAUROS(J) >= 1.0D0) THEN
       JCONV = J
-      exit
-    end if
-  end do
+      EXIT
+    END IF
+  END DO
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ! In radiative layers, replace flux derivative with thermal imbalance
-    if (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) < 1.0D-5) then
+    IF (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) < 1.0D-5) THEN
       ABROSS_safe = max(ABROSS(J), ABROSS_FLOOR)
       FLXDRV(J) = RJMINS(J) / ABROSS_safe / FLUX * 100.0D0
-    end if
+    END IF
 
     ! Lambda correction: DT = -(dF/dtau) / (dRDIAGJ) * kappa_Ross
     DTLAMB(J) = -FLXDRV(J) * FLUX / 100.0D0 &
@@ -2061,17 +1935,17 @@ SUBROUTINE TCORR(MODE, RCOWT)
 
     ! Zero DTLAMB in convective / optically thick layers, and
     ! damp preceding layers to ensure smooth transition
-    if (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) >= 1.0D-5 .or. TAUROS(J) >= 1.0D0) then
+    IF (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) >= 1.0D-5 .OR. TAUROS(J) >= 1.0D0) THEN
       DTLAMB(J) = 0.0D0
       ! Damp 5 preceding layers (with bounds check)
-      do K = 1, 5
-        if (J - K >= 1) DTLAMB(J - K) = DTLAMB(J - K) / 2.0D0
-      end do
-    end if
+      DO K = 1, 5
+        IF (J - K >= 1) DTLAMB(J - K) = DTLAMB(J - K) / 2.0D0
+      END DO
+    END IF
 
     ! Clamp to ±Teff/25
     DTLAMB(J) = max(-TEFF25, min(TEFF25, DTLAMB(J)))
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! (E) DTSURF: surface boundary correction
@@ -2081,24 +1955,24 @@ SUBROUTINE TCORR(MODE, RCOWT)
   DTSUR = (FLUX - FLXRAD(1)) / FLUX * 0.25D0 * T(1)
   DTSUR = max(-TEFF25, min(TEFF25, DTSUR))
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     DUM(J) = DTFLUX(J) + DTLAMB(J)
-  end do
-  call INTEG(TAUROS, DUM, TINTEG, NRHOX, 0.0D0)
+  END DO
+  CALL INTEG(TAUROS, DUM, TINTEG, NRHOX, 0.0D0)
   XNEW_TMP(1) = 0.1D0
   IDUM = MAP1(TAUROS, TINTEG, NRHOX, XNEW_TMP, TONE_ARR, 1)
   XNEW_TMP(1) = 2.0D0
   IDUM = MAP1(TAUROS, TINTEG, NRHOX, XNEW_TMP, TTWO_ARR, 1)
 
   TAV = (TTWO_ARR(1) - TONE_ARR(1)) / 2.0D0
-  if (DTSUR * TAV <= 0.0D0) TAV = 0.0D0
-  if (abs(TAV) > abs(DTSUR)) TAV = DTSUR
+  IF (DTSUR * TAV <= 0.0D0) TAV = 0.0D0
+  IF (abs(TAV) > abs(DTSUR)) TAV = DTSUR
   DTSUR = DTSUR - TAV
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     DTSURF(J) = DTSUR
     HRATIO(J) = CNVFLX(J) / (CNVFLX(J) + max(FLXRAD(J), 1.0D-30))
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! (E2) DTCONV: convective temperature correction via adiabatic sweep
@@ -2113,35 +1987,35 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !           adiabatic sweep at high f_conv
   !---------------------------------------------------------------------
 
-  if (IFCONV == 1) then
+  IF (IFCONV == 1) THEN
 
     ! --- Find anchor: shallowest layer with convective flux ---
     JANCHOR = 0
-    do J = 1, NRHOX
-      if (CNVFLX(J) > 0.0D0 .or. FLXCNV0(J) > 0.0D0) then
+    DO J = 1, NRHOX
+      IF (CNVFLX(J) > 0.0D0 .OR. FLXCNV0(J) > 0.0D0) THEN
         JANCHOR = J
-        exit
-      end if
-    end do
+        EXIT
+      END IF
+    END DO
 
     ! --- Adiabatic sweep from anchor downward ---
-    if (JANCHOR > 0) then
+    IF (JANCHOR > 0) THEN
       ! Anchor gets normal radiative corrections only (DTCONV=0 there).
       ! T_SWEEP tracks the corrected temperature for integration.
       T_SWEEP(JANCHOR) = T(JANCHOR) + DTFLUX(JANCHOR) &
                        + DTLAMB(JANCHOR) + DTSURF(JANCHOR)
 
-      do J = JANCHOR + 1, NRHOX
+      DO J = JANCHOR + 1, NRHOX
         ! Convective fraction at this layer (with hysteresis)
-        if (CNVFLX(J) > 0.0D0 .or. FLXCNV0(J) > 0.0D0) then
+        IF (CNVFLX(J) > 0.0D0 .OR. FLXCNV0(J) > 0.0D0) THEN
           FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
                       / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
-        else
+        ELSE
           FCONV_RATIO = 0.0D0
-        end if
+        END IF
 
-        if (FCONV_RATIO > 0.0D0 .and. PTOTAL(J) > 0.0D0 &
-            .and. PTOTAL(J-1) > 0.0D0) then
+        IF (FCONV_RATIO > 0.0D0 .AND. PTOTAL(J) > 0.0D0 &
+            .AND. PTOTAL(J-1) > 0.0D0) THEN
           ! Adiabatic extrapolation from corrected layer above
           DLNP = log(PTOTAL(J) / PTOTAL(J-1))
           T_ADIAB = T_SWEEP(J-1) * exp(GRDADB(J) * DLNP)
@@ -2165,20 +2039,20 @@ SUBROUTINE TCORR(MODE, RCOWT)
           ! Update sweep temperature to reflect what we actually apply
           ! so next layer integrates from the right place
           T_SWEEP(J) = T(J) + DT_RAD + DTCONV(J)
-        else
+        ELSE
           ! Non-convective layer below anchor: no DTCONV, pass through
           T_SWEEP(J) = T(J) + DTFLUX(J) + DTLAMB(J) + DTSURF(J)
-        end if
-      end do
-    end if
-  end if
+        END IF
+      END DO
+    END IF
+  END IF
 
   !---------------------------------------------------------------------
   ! (F) Total correction and iteration damping
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     T1(J) = DTFLUX(J) + DTLAMB(J) + DTSURF(J) + DTCONV(J)
-  end do
+  END DO
 
   ! Iteration damping: compare current correction T1 against previous
   ! iteration's correction OLDT1 to detect convergence behavior.
@@ -2186,117 +2060,117 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !   Same sign, growing    → cap at previous magnitude (prevent runaway)
   !   Sign flip             → damp by 0.5x (oscillation control)
   ! Skip damping on first iteration only (no history).
-  do J = 1, NRHOX
-    if (ITER == 1) then
+  DO J = 1, NRHOX
+    IF (ITER == 1) THEN
       ! No damping — accept raw correction
-    else if (OLDT1(J) * T1(J) > 0.0D0) then
+    ELSE IF (OLDT1(J) * T1(J) > 0.0D0) THEN
       ! Same sign as previous iteration
-      if (abs(T1(J)) < abs(OLDT1(J))) then
+      IF (abs(T1(J)) < abs(OLDT1(J))) THEN
         ! Shrinking: accelerate by 25%
         T1(J) = T1(J) * 1.25D0
-      else
+      ELSE
         ! Growing: cap at previous magnitude to prevent runaway
         T1(J) = sign(abs(OLDT1(J)), T1(J))
-      end if
-    else if (OLDT1(J) * T1(J) < 0.0D0) then
+      END IF
+    ELSE IF (OLDT1(J) * T1(J) < 0.0D0) THEN
       ! Sign flip: damp by 50%
       T1(J) = T1(J) * 0.5D0
-    end if
+    END IF
     OLDT1(J) = T1(J)
-  end do
+  END DO
 
   ! Diagnostic output (after damping, so T1 reflects what is actually applied)
-  if (IFPRNT(ITER) /= 0) then
-    write(67, 100) (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), &
+  IF (IFPRNT(ITER) /= 0) THEN
+    WRITE(67, 100) (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), &
                     DTSURF(J), DTFLUX(J), DTCONV(J), T1(J), HRATIO(J), &
                     FLXERR(J), FLXDRV(J), DLTDLP(J), GRDADB(J), J=1,NRHOX)
-100 format('0', 2X, 'lgTAUROS', 6X, 'T', 6X, &
+100 FORMAT('0', 2X, 'lgTAUROS', 6X, 'T', 6X, &
       'DTLAMB   DTSURF   DTFLUX   DTCONV', 5X, &
       'T1   CONV/TOTAL      ERROR     DERIV   NABLA  NABLA_AD', / &
       (I3, F8.3, F10.1, 5F9.1, 1X, 1PE11.3, 1X, &
        0P, 2F10.3, 2F8.4))
     flush(67)
-  end if
+  END IF
 
   !---------------------------------------------------------------------
   ! (G) Compute RHOX correction to maintain constant TAUROS grid
   !     Uses finite-difference: run TTAUP with T and T+DT, compare
   !     total pressures to infer needed RHOX adjustment.
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TPLUS(J)  = T(J) + T1(J)
     TAUSTD(J) = 10.0D0**(TAU1LG + (J - 1) * STEPLG)
-  end do
+  END DO
 
   IDUM = MAP1(TAUROS, T,    NRHOX, TAUSTD, TNEW1,  NRHOX)
   IDUM = MAP1(TAUROS, PRAD, NRHOX, TAUSTD, PRDNEW, NRHOX)
-  call TTAUP(TNEW1, TAUSTD, AB1, PTOT1, P1, PRDNEW, PTURB, VTURB, GRAV, NRHOX)
+  CALL TTAUP(TNEW1, TAUSTD, AB1, PTOT1, P1, PRDNEW, PTURB, VTURB, GRAV, NRHOX)
 
   IDUM = MAP1(TAUROS, TPLUS, NRHOX, TAUSTD, TNEW2, NRHOX)
-  call TTAUP(TNEW2, TAUSTD, AB2, PTOT2, P2, PRDNEW, PTURB, VTURB, GRAV, NRHOX)
+  CALL TTAUP(TNEW2, TAUSTD, AB2, PTOT2, P2, PRDNEW, PTURB, VTURB, GRAV, NRHOX)
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     PPP(J) = (PTOT2(J) - PTOT1(J)) / PTOT1(J)
-  end do
+  END DO
   IDUM = MAP1(TAUSTD, PPP, NRHOX, TAUROS, RRR, NRHOX)
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     DRHOX(J) = RRR(J) * RHOX(J)
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! (H) Apply temperature correction
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
      !apply damping to the temperature correction
     ! T1(J) = sign(min(abs(T1(J)), 0.02D0 * T(J)), T1(J))
      T(J) = T(J) + T1(J)
-  end do
+  END DO
 
   ! Optional smoothing
-  if (J1SMOOTH > 0) then
-    do J = J1SMOOTH, J2SMOOTH
+  IF (J1SMOOTH > 0) THEN
+    DO J = J1SMOOTH, J2SMOOTH
       TSMOOTH(J) = WTJM1 * T(J-1) + WTJ * T(J) + WTJP1 * T(J+1)
-    end do
-    do J = J1SMOOTH, J2SMOOTH
+    END DO
+    DO J = J1SMOOTH, J2SMOOTH
       T(J) = TSMOOTH(J)
-    end do
-  end if
+    END DO
+  END IF
 
   ! Force monotonicity: T must increase inward
-  do I = 2, NRHOX
+  DO I = 2, NRHOX
     J = NRHOX + 1 - I
     T(J) = min(T(J), T(J+1) - 1.0D0)
-  end do
+  END DO
 
   ! Floor temperature options
   ! various opacity tables only extend to 2000K
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
      T(J) = max(T(J), 2000.0D0)
     ! T(J) = max(T(J),0.7*TEFF)
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! (I) Recompute thermodynamic quantities from corrected T
   !---------------------------------------------------------------------
   IFUDGE = 0
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TK(J)   = KBOL * T(J)
     HKT(J)  = HPLANCK / TK(J)
     HCKT(J) = HKT(J) * CLIGHT
-    TKEV(J) = 8.6171D-5 * T(J)
+    TKEV(J) = KBOL_EV * T(J)
     TLOG(J) = log(T(J))
-  end do
+  END DO
 
-  if (IFUDGE == 1) return
+  IF (IFUDGE == 1) RETURN
 
   !---------------------------------------------------------------------
   ! (J) Apply RHOX correction and remap atmosphere onto standard
   !     Rosseland optical depth grid TAUSTD
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     RHOX(J) = RHOX(J) + DRHOX(J)
-  end do
+  END DO
 
   ! Remap all atmospheric quantities from old TAUROS onto TAUSTD
   IDUM = MAP1(TAUROS, RHOX,   NRHOX, TAUSTD, REMAP(1,1),  NRHOX)
@@ -2312,20 +2186,20 @@ SUBROUTINE TCORR(MODE, RCOWT)
 
   ! Guard: if TAUROS grid starts deeper than TAUSTD, extrapolated
   ! ABROSS can go negative. Fix by clamping to surface value.
-  do J = 1, NRHOX
-    if (TAUROS(1) > TAUSTD(J) .and. REMAP(J,5) < 0.0D0) then
+  DO J = 1, NRHOX
+    IF (TAUROS(1) > TAUSTD(J) .AND. REMAP(J,5) < 0.0D0) THEN
       REMAP(J,5) = ABROSS(1)
-    end if
-  end do
+    END IF
+  END DO
 
   ! Copy remapped values back to module arrays
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     RHOX(J)   = REMAP(J, 1)
     T(J)      = REMAP(J, 2)
     TK(J)     = KBOL * T(J)
     HKT(J)    = HPLANCK / TK(J)
     HCKT(J)   = HKT(J) * CLIGHT
-    TKEV(J)   = 8.6171D-5 * T(J)
+    TKEV(J)   = KBOL_EV * T(J)
     TLOG(J)   = log(T(J))
     P(J)      = REMAP(J, 3)
     XNE(J)    = REMAP(J, 4)
@@ -2335,22 +2209,22 @@ SUBROUTINE TCORR(MODE, RCOWT)
     VTURB(J)  = REMAP(J, 7)
     BMIN(J)   = REMAP(J, 8)
     PTURB(J)  = REMAP(J, 9)
-  end do
+  END DO
 
   ! Remap hydrogen NLTE departure coefficients
-  do I = 1, 6
+  DO I = 1, 6
     IDUM = MAP1(TAUROS, BHYD(1,I), NRHOX, TAUSTD, REMAP(1,1), NRHOX)
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       BHYD(J,I) = REMAP(J, 1)
-    end do
-  end do
+    END DO
+  END DO
 
   ! Replace old TAUROS with the standard grid
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TAUROS(J) = TAUSTD(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE TCORR
 
@@ -2384,54 +2258,54 @@ END SUBROUTINE TCORR
 
 SUBROUTINE STATEQ(MODE, RCOWT)
   
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  integer, intent(in) :: MODE
-  real*8,  intent(in) :: RCOWT    ! quadrature weight for current frequency
+  INTEGER, INTENT(IN) :: MODE
+  REAL(8),  INTENT(IN) :: RCOWT    ! quadrature weight for current frequency
 
   ! --- Number of bound levels in the model atom ---
-  integer, parameter :: NLEV = 6   ! bound levels solved explicitly
-  integer, parameter :: NATOM = 8  ! total levels (6 bound + H+ + H-)
+  INTEGER, PARAMETER :: NLEV = 6   ! bound levels solved explicitly
+  INTEGER, PARAMETER :: NATOM = 8  ! total levels (6 bound + H+ + H-)
 
   ! --- Persistent locals (accumulate across MODE 1 → 2 → 3) ---
-  real*8, save :: QRADIK(kw, NLEV)  ! radiative photoionization rates (level i → continuum)
-  real*8, save :: QRADKI(kw, NLEV)  ! radiative recombination rates (continuum → level i)
-  real*8, save :: DQRAD(kw, NLEV)   ! dQ_recomb/dT (for first-order T correction)
-  real*8, save :: QRDHMK(kw)        ! H- radiative detachment rate (H- → H + e)
-  real*8, save :: QRDKHM(kw)        ! H- radiative attachment rate (H + e → H-)
-  real*8, save :: DQRD(kw)          ! dQ_Hminus_attach/dT
-  real*8, save :: TOLD(kw)          ! temperature at MODE=1 (for dT correction)
+  REAL(8), SAVE :: QRADIK(kw, NLEV)  ! radiative photoionization rates (level i → continuum)
+  REAL(8), SAVE :: QRADKI(kw, NLEV)  ! radiative recombination rates (continuum → level i)
+  REAL(8), SAVE :: DQRAD(kw, NLEV)   ! dQ_recomb/dT (for first-order T correction)
+  REAL(8), SAVE :: QRDHMK(kw)        ! H- radiative detachment rate (H- → H + e)
+  REAL(8), SAVE :: QRDKHM(kw)        ! H- radiative attachment rate (H + e → H-)
+  REAL(8), SAVE :: DQRD(kw)          ! dQ_Hminus_attach/dT
+  REAL(8), SAVE :: TOLD(kw)          ! temperature at MODE=1 (for dT correction)
 
   ! --- MODE 2 locals ---
-  real*8  :: HCONT(NLEV)         ! hydrogen bound-free cross-sections at current freq
-  real*8  :: HMINBF              ! H- bound-free cross-section at current freq
-  real*8  :: RFRWT               ! 4*pi / (h*nu) * RCOWT — rate prefactor
-  real*8  :: HVC                 ! 2*h*nu*(nu/c)^2 — stimulated emission correction
-  real*8  :: RJ, RJE, RJEDT     ! rate building blocks at each depth
+  REAL(8)  :: HCONT(NLEV)         ! hydrogen bound-free cross-sections at current freq
+  REAL(8)  :: HMINBF              ! H- bound-free cross-section at current freq
+  REAL(8)  :: RFRWT               ! 4*pi / (h*nu) * RCOWT — rate prefactor
+  REAL(8)  :: HVC                 ! 2*h*nu*(nu/c)^2 — stimulated emission correction
+  REAL(8)  :: RJ, RJE, RJEDT     ! rate building blocks at each depth
 
   ! --- MODE 3 locals ---
-  real*8  :: QCOLL(NATOM, NATOM) ! electron collision rate matrix
-  real*8  :: A(NLEV, NLEV)       ! rate equation matrix (destroyed by SOLVIT)
-  real*8  :: RIGHT(NLEV)         ! RHS vector → solution vector
-  integer :: IPIVOT(NLEV)        ! pivot scratch for SOLVIT
-  real*8  :: DT                  ! temperature change since MODE 1
-  real*8  :: THETA               ! 5040/T (excitation temperature parameter)
-  real*8  :: TH                  ! ionization potential / kT = 13.595 / T_eV
-  real*8  :: Y, Z_lev            ! real-valued level indices
-  real*8  :: GIK, X0, Q          ! collision rate intermediates
-  real*8  :: QELECT              ! H- collisional detachment by electrons
-  real*8  :: QASSOC              ! H- associative detachment (H + H → H2 + e)
-  real*8  :: QCHARG              ! H- charge exchange (H- + H+ → 2H)
-  real*8  :: DENOM               ! denominator for BMIN (with guard)
+  REAL(8)  :: QCOLL(NATOM, NATOM) ! electron collision rate matrix
+  REAL(8)  :: A(NLEV, NLEV)       ! rate equation matrix (destroyed by SOLVIT)
+  REAL(8)  :: RIGHT(NLEV)         ! RHS vector → solution vector
+  INTEGER :: IPIVOT(NLEV)        ! pivot scratch for SOLVIT
+  REAL(8)  :: DT                  ! temperature change since MODE 1
+  REAL(8)  :: THETA               ! 5040/T (excitation temperature parameter)
+  REAL(8)  :: TH                  ! ionization potential / kT = 13.595 / T_eV
+  REAL(8)  :: Y, Z_lev            ! real-valued level indices
+  REAL(8)  :: GIK, X0, Q          ! collision rate intermediates
+  REAL(8)  :: QELECT              ! H- collisional detachment by electrons
+  REAL(8)  :: QASSOC              ! H- associative detachment (H + H → H2 + e)
+  REAL(8)  :: QCHARG              ! H- charge exchange (H- + H+ → 2H)
+  REAL(8)  :: DENOM               ! denominator for BMIN (with guard)
 
   ! --- Loop indices ---
-  integer :: I, J, K, L, N
+  INTEGER :: I, J, K, L, N
 
   ! --- Oscillator strengths for bound-bound transitions ---
   ! F(I,K) = oscillator strength for transition I → K
   ! From Peterson (1968); upper triangle only (F is symmetric by convention here)
-  real*8, parameter :: F(NATOM, NATOM) = reshape( [ &
+  REAL(8), PARAMETER :: F(NATOM, NATOM) = reshape( [ &
     0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,   &
     0.4162D0, 0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,   &
     0.07910D0,0.6408D0, 0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,    0.0D0,   &
@@ -2446,32 +2320,32 @@ SUBROUTINE STATEQ(MODE, RCOWT)
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING STATEQ'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING STATEQ'
 
   !=====================================================================
   ! MODE 1: Zero radiative rate accumulators and save current temperature
   !=====================================================================
-  if (MODE == 1) then
+  IF (MODE == 1) THEN
 
-    do I = 1, NLEV
-      do J = 1, NRHOX
+    DO I = 1, NLEV
+      DO J = 1, NRHOX
         QRADIK(J, I) = 0.0D0
         QRADKI(J, I) = 0.0D0
         DQRAD(J, I)  = 0.0D0
-      end do
-    end do
-    do J = 1, NRHOX
+      END DO
+    END DO
+    DO J = 1, NRHOX
       TOLD(J)   = T(J)
       QRDHMK(J) = 0.0D0
       QRDKHM(J) = 0.0D0
       DQRD(J)   = 0.0D0
-    end do
-    return
+    END DO
+    RETURN
 
   !=====================================================================
   ! MODE 2: Accumulate radiative rates at current frequency
   !=====================================================================
-  else if (MODE == 2) then
+  ELSE IF (MODE == 2) THEN
 
     ! Rate prefactor: (4*pi / h*nu) * quadrature weight
     RFRWT = FOURPI / HPLANCK * RCOWT / FREQ
@@ -2480,22 +2354,22 @@ SUBROUTINE STATEQ(MODE, RCOWT)
     HVC = 2.0D0 * HPLANCK * FREQ * (FREQ / CLIGHT)**2
 
     ! Hydrogen bound-free cross-sections for levels 2-6
-    do N = 2, NLEV
+    DO N = 2, NLEV
       HCONT(N) = COULX(N, FREQ, 1.0D0)
-    end do
+    END DO
 
     ! H- bound-free cross-section (polynomial fit)
     HMINBF = 0.0D0
-    if (FREQ > 1.8259D14 .and. FREQ < 2.111D14) then
+    IF (FREQ > 1.8259D14 .AND. FREQ < 2.111D14) THEN
       HMINBF = 3.695D-16 + (-1.251D-1 + 1.052D13 / FREQ) / FREQ
-    end if
-    if (FREQ >= 2.111D14) then
+    END IF
+    IF (FREQ >= 2.111D14) THEN
       HMINBF = 6.801D-20 + (5.358D-3 + (1.481D13 &
              + (-5.519D27 + 4.808D41 / FREQ) / FREQ) / FREQ) / FREQ
-    end if
+    END IF
 
     ! Accumulate rates at each depth
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       ! RJ  = (4*pi*J_nu / h*nu) * weight — photoionization driver
       ! RJE = (4*pi*e^{-hv/kT} * (J_nu + 2hv^3/c^2) / h*nu) * weight — recombination
       ! RJEDT = d(RJE)/dT — temperature derivative for MODE 3 correction
@@ -2504,20 +2378,20 @@ SUBROUTINE STATEQ(MODE, RCOWT)
       RJEDT = RJE * HKT(J) * FREQ / T(J)
 
       ! Hydrogen levels 2-6 (level 1 has no photoionization at these frequencies)
-      do I = 2, NLEV
+      DO I = 2, NLEV
         QRADIK(J, I) = QRADIK(J, I) + HCONT(I) * RJ
         QRADKI(J, I) = QRADKI(J, I) + HCONT(I) * RJE
         DQRAD(J, I)  = DQRAD(J, I)  + HCONT(I) * RJEDT
-      end do
+      END DO
 
       ! H- rates
       QRDHMK(J) = QRDHMK(J) + HMINBF * RJ
       QRDKHM(J) = QRDKHM(J) + HMINBF * RJE
       DQRD(J)   = DQRD(J)   + HMINBF * RJEDT
-    end do
-    return
+    END DO
+    RETURN
 
-  end if
+  END IF
 
   !=====================================================================
   ! MODE 3: Compute collision rates, solve rate equations, update BHYD/BMIN
@@ -2526,14 +2400,14 @@ SUBROUTINE STATEQ(MODE, RCOWT)
   !-------------------------------------------------------------------
   ! (A) H- departure coefficient: detailed balance of formation/destruction
   !-------------------------------------------------------------------
-  if (IFPRNT(ITER) > 0) then
-    write(6, 201)
-201 format('1', /////, 36X, 'HMINUS STATISTICAL EQUILIBRIUM' / &
+  IF (IFPRNT(ITER) > 0) THEN
+    WRITE(6, 201)
+201 FORMAT('1', /////, 36X, 'HMINUS STATISTICAL EQUILIBRIUM' / &
       10X, 'RHOX', 7X, 'QELECT', 6X, 'QASSOC', 6X, 'QCHARG', &
       6X, 'QRDKHM', 6X, 'QRDHMK', 7X, 'BMIN')
-  end if
+  END IF
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     DT    = T(J) - TOLD(J)
     THETA = THETA_COEFF / T(J)
 
@@ -2553,19 +2427,19 @@ SUBROUTINE STATEQ(MODE, RCOWT)
     DENOM = QRDHMK(J) + QELECT + QASSOC + QCHARG
     BMIN(J) = (QRDKHM(J) + QELECT + QASSOC + QCHARG) / max(DENOM, 1.0D-30)
 
-    if (IFPRNT(ITER) > 0) then
-      write(6, 211) J, RHOX(J), QELECT, QASSOC, QCHARG, &
+    IF (IFPRNT(ITER) > 0) THEN
+      WRITE(6, 211) J, RHOX(J), QELECT, QASSOC, QCHARG, &
                      QRDKHM(J), QRDHMK(J), BMIN(J)
-211   format(I5, 1P6E12.3, 0PF10.4)
-    end if
-  end do
+211   FORMAT(I5, 1P6E12.3, 0PF10.4)
+    END IF
+  END DO
 
   !-------------------------------------------------------------------
   ! (B) Hydrogen 6-level atom: build and solve rate equations
   !-------------------------------------------------------------------
-  if (IFPRNT(ITER) > 0) then
-    write(6, 31)
-31  format('1', /////, 30X, &
+  IF (IFPRNT(ITER) > 0) THEN
+    WRITE(6, 31)
+31  FORMAT('1', /////, 30X, &
       'STATISTICAL EQUILIBRIUM RATES    RATE=SIGN(ALOG10(MAX(ABS(RATE*1.E20),1.)),RATE)', /, &
       '0 RAD   1-K   K-1   2-K   K-2   3-K   K-3   4-K   K-4   5-K', &
       '   K-5   6-K   K-6   COLL  1-K   2-K   3-K   4-K   5-K   6-K   5-8', &
@@ -2573,23 +2447,23 @@ SUBROUTINE STATEQ(MODE, RCOWT)
       '  COLL  1-2   1-3   1-4   1-5   1-6   1-7   2-3   2-4   2-5', &
       '   2-6   2-7   3-4   3-5   3-6   3-7   4-5   4-6   4-7   5-6   5-7', &
       '   6-7  ')
-  end if
+  END IF
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     DT = T(J) - TOLD(J)
     TH = 13.595D0 / TKEV(J)    ! chi_H / kT
 
     !--- Electron collision rates ---
     ! Diagonal: bound-free collisional ionization
     ! Off-diagonal: bound-bound collisional excitation/de-excitation
-    do I = 1, NATOM
+    DO I = 1, NATOM
       Y = dble(I)
 
       ! Bound-free collisional ionization rate (Seaton-like)
       QCOLL(I, I) = 2.2D-8 * Y**3 / sqrt(TH) * exp(-TH / Y**2) * XNE(J)
 
-      if (I < NATOM) then
-        do K = I + 1, NATOM
+      IF (I < NATOM) THEN
+        DO K = I + 1, NATOM
           Z_lev = dble(K)
           GIK = 1.0D0 / Y**2 - 1.0D0 / Z_lev**2
           X0  = TH * GIK
@@ -2601,15 +2475,15 @@ SUBROUTINE STATEQ(MODE, RCOWT)
           QCOLL(I, K) = Q * XNE(J)
           ! Detailed balance: reverse rate includes Boltzmann factor
           QCOLL(K, I) = QCOLL(I, K) * (Y / Z_lev)**2 * exp(X0)
-        end do
-      end if
-    end do
+        END DO
+      END IF
+    END DO
 
     !--- Assemble 6x6 rate matrix ---
     ! A(I,I) = total destruction rate for level I (radiative + collisional)
     ! A(I,K) = -collisional rate I → K (off-diagonal, K ≠ I)
     ! RIGHT(I) = total formation rate for level I from continuum/H-
-    do I = 1, NLEV
+    DO I = 1, NLEV
       ! Start diagonal with radiative ionization rate
       A(I, I) = QRADIK(J, I)
 
@@ -2620,61 +2494,61 @@ SUBROUTINE STATEQ(MODE, RCOWT)
       RIGHT(I) = QRADKI(J, I) + QCOLL(I, I) + QCOLL(I, 7) + QCOLL(I, 8)
 
       ! Add all collisional rates to diagonal (total destruction)
-      do K = 1, NATOM
+      DO K = 1, NATOM
         A(I, I) = A(I, I) + QCOLL(I, K)
-      end do
+      END DO
 
       ! Off-diagonal: collisional coupling between bound levels
-      if (I < NLEV) then
-        do K = I + 1, NLEV
+      IF (I < NLEV) THEN
+        DO K = I + 1, NLEV
           A(I, K) = -QCOLL(I, K)
           A(K, I) = -QCOLL(K, I)
-        end do
-      end if
-    end do
+        END DO
+      END IF
+    END DO
 
     !--- Solve for departure coefficients ---
-    call SOLVIT(A, NLEV, RIGHT, IPIVOT)
-    do L = 1, NLEV
+    CALL SOLVIT(A, NLEV, RIGHT, IPIVOT)
+    DO L = 1, NLEV
       BHYD(J, L) = RIGHT(L)
-    end do
+    END DO
 
     !--- Diagnostic output (log-scaled rates) ---
-    if (IFPRNT(ITER) > 1) then
+    IF (IFPRNT(ITER) > 1) THEN
       ! Convert rates to sign-preserving log scale for display
-      do I = 1, NLEV
+      DO I = 1, NLEV
         QRADKI(J, I) = sign(log10(max(abs(QRADKI(J, I) * 1.0D20), 1.0D0)), &
                              QRADKI(J, I))
         QRADIK(J, I) = sign(log10(max(abs(QRADIK(J, I) * 1.0D20), 1.0D0)), &
                              QRADIK(J, I))
-      end do
-      do I = 1, NATOM
-        do K = 1, NATOM
+      END DO
+      DO I = 1, NATOM
+        DO K = 1, NATOM
           QCOLL(I, K) = sign(log10(max(abs(QCOLL(I, K) * 1.0D20), 1.0D0)), &
                               QCOLL(I, K))
-        end do
-      end do
+        END DO
+      END DO
 
-      write(6, 100) J, (QRADIK(J, I), QRADKI(J, I), I=1,NLEV), &
+      WRITE(6, 100) J, (QRADIK(J, I), QRADKI(J, I), I=1,NLEV), &
                         (QCOLL(I, I), I=1,NLEV), QCOLL(5, 8), QCOLL(6, 8)
-100   format('0', I5, 12F6.2, 6X, 8F6.2)
-      write(6, 110) (QCOLL(1, K), K=2,7), (QCOLL(2, K), K=3,7), &
+100   FORMAT('0', I5, 12F6.2, 6X, 8F6.2)
+      WRITE(6, 110) (QCOLL(1, K), K=2,7), (QCOLL(2, K), K=3,7), &
                     (QCOLL(3, K), K=4,7), (QCOLL(4, K), K=5,7), &
                     (QCOLL(5, K), K=6,7), QCOLL(6, 7)
-110   format(6X, 21F6.2)
-    end if
+110   FORMAT(6X, 21F6.2)
+    END IF
 
-  end do  ! depth loop
+  END DO  ! depth loop
 
   !-------------------------------------------------------------------
   ! (C) Print final departure coefficients
   !-------------------------------------------------------------------
-  write(6, 170) (J, RHOX(J), (BHYD(J, I), I=1,NLEV), J=1,NRHOX)
-170 format('1', /////, 30X, 'STATISTICAL EQUILIBRIUM FOR HYDROGEN' / &
+  WRITE(6, 170) (J, RHOX(J), (BHYD(J, I), I=1,NLEV), J=1,NRHOX)
+170 FORMAT('1', /////, 30X, 'STATISTICAL EQUILIBRIUM FOR HYDROGEN' / &
       15X, 'RHOX', 10X, 'B1', 8X, 'B2', 8X, 'B3', 8X, 'B4', 8X, 'B5', 8X, 'B6', / &
       (8X, I2, 1PE11.4, 1X, 0P, 6F10.4))
 
-  return
+  RETURN
 
 END SUBROUTINE STATEQ
 
@@ -2707,42 +2581,42 @@ END SUBROUTINE STATEQ
 
 SUBROUTINE RADIAP(MODE, RCOWT)
   
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  integer, intent(in) :: MODE
-  real*8,  intent(in) :: RCOWT    ! quadrature weight for current frequency
+  INTEGER, INTENT(IN) :: MODE
+  REAL(8),  INTENT(IN) :: RCOWT    ! quadrature weight for current frequency
 
   ! --- Named constants: FOURPI_OVER_C now from mod_constants ---
 
   ! --- Persistent local: frequency-integrated flux (for error scaling) ---
-  real*8, save :: H_TOTAL(kw)    ! integrated Eddington flux at each depth
+  REAL(8), SAVE :: H_TOTAL(kw)    ! integrated Eddington flux at each depth
 
   ! --- Local variables ---
-  real*8  :: ERRORMAX            ! max flux ratio (for stability scaling)
-  integer :: J
+  REAL(8)  :: ERRORMAX            ! max flux ratio (for stability scaling)
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING RADIAP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING RADIAP'
 
   !=====================================================================
   ! MODE 1: Zero frequency-integral accumulators
   !=====================================================================
-  if (MODE == 1) then
+  IF (MODE == 1) THEN
 
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       H_TOTAL(J) = 0.0D0
       RADEN(J)   = 0.0D0
       ACCRAD(J)  = 0.0D0
-    end do
+    END DO
     PRADK0 = 0.0D0
-    return
+    RETURN
 
   !=====================================================================
   ! MODE 2: Accumulate frequency integrals at current wavelength
   !=====================================================================
-  else if (MODE == 2) then
+  ELSE IF (MODE == 2) THEN
 
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       ! Mean radiation energy density: J_nu * weight
       RADEN(J) = RADEN(J) + JNU(J) * RCOWT
 
@@ -2751,13 +2625,13 @@ SUBROUTINE RADIAP(MODE, RCOWT)
 
       ! Radiative acceleration: kappa_nu * H_nu * weight
       ACCRAD(J) = ACCRAD(J) + ABTOT(J) * HNU(J) * RCOWT
-    end do
+    END DO
 
     ! Surface K-integral (second moment, = radiation pressure at tau=0)
     PRADK0 = PRADK0 + KNU(1) * RCOWT
-    return
+    RETURN
 
-  end if
+  END IF
 
   !=====================================================================
   ! MODE 3: Convert to physical units and integrate for P_rad
@@ -2768,7 +2642,7 @@ SUBROUTINE RADIAP(MODE, RCOWT)
   !   RADEN:  sum(J_nu * dnu) → (4*pi/c) * J = radiation energy density
   !   ACCRAD: sum(kappa * H_nu * dnu) → (4*pi/c) * kappa * H = radiative acceleration
   ERRORMAX = 0.0D0
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     RADEN(J)  = RADEN(J) * FOURPI_OVER_C
     ACCRAD(J) = ACCRAD(J) * FOURPI_OVER_C
 
@@ -2776,27 +2650,27 @@ SUBROUTINE RADIAP(MODE, RCOWT)
     ! (FLUX = sigma*Teff^4 / 4*pi), the radiative acceleration is
     ! artificially scaled down to prevent runaway radiation pressure
     ! in early iterations with large flux errors.
-    if (H_TOTAL(J) / FLUX > 1.0D0) then
+    IF (H_TOTAL(J) / FLUX > 1.0D0) THEN
       ACCRAD(J) = ACCRAD(J) * FLUX / H_TOTAL(J)
-    end if
+    END IF
     ERRORMAX = max(ERRORMAX, H_TOTAL(J) / FLUX)
-  end do
+  END DO
 
   ! Same scaling for surface K-integral
   PRADK0 = PRADK0 * FOURPI_OVER_C
-  if (ERRORMAX > 1.0D0) PRADK0 = PRADK0 / ERRORMAX
+  IF (ERRORMAX > 1.0D0) PRADK0 = PRADK0 / ERRORMAX
 
   ! Integrate radiative acceleration inward to get radiation pressure:
   !   P_rad(RHOX) = integral from 0 to RHOX of ACCRAD * dRHOX
   ! with boundary value ACCRAD(1)*RHOX(1) (linear extrapolation to surface)
-  call INTEG(RHOX, ACCRAD, PRAD, NRHOX, ACCRAD(1) * RHOX(1))
+  CALL INTEG(RHOX, ACCRAD, PRAD, NRHOX, ACCRAD(1) * RHOX(1))
 
   ! Total radiation pressure = depth-integrated + surface boundary term
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     PRADK(J) = PRAD(J) + PRADK0
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE RADIAP
 
@@ -2824,48 +2698,48 @@ END SUBROUTINE RADIAP
 
 SUBROUTINE ROSS(MODE, RCOWT)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: MODE
-  real*8,  intent(in) :: RCOWT
+  INTEGER, INTENT(IN) :: MODE
+  REAL(8),  INTENT(IN) :: RCOWT
 
   ! --- Local variables ---
-  real*8  :: DBDT
-  integer :: J
+  REAL(8)  :: DBDT
+  INTEGER :: J
 
   ! FOUR_SIGMA_OVER_PI now from mod_constants
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING ROSS'
-  select case (MODE)
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING ROSS'
+  SELECT CASE (MODE)
 
   ! --- MODE 1: Zero the Rosseland mean accumulator ---
-  case (1)
-    do J = 1, NRHOX
+  CASE (1)
+    DO J = 1, NRHOX
       ABROSS(J) = 0.0D0
-    end do
+    END DO
 
   ! --- MODE 2: Accumulate (dB_nu/dT) / kappa_nu at current frequency ---
-  case (2)
-    do J = 1, NRHOX
+  CASE (2)
+    DO J = 1, NRHOX
       ! dB_nu/dT = B_nu * (h*nu/kT) / T / (1 - e^{-h*nu/kT})
       !          = BNU * FREQ * HKT / T / STIM
       DBDT = BNU(J) * FREQ * HKT(J) / T(J) / STIM(J)
       ! Single-frequency fallback: use total dB/dT = (4*sigma/pi)*T^3
-      if (NUMNU == 1) DBDT = FOUR_SIGMA_OVER_PI * T(J)**3
+      IF (NUMNU == 1) DBDT = FOUR_SIGMA_OVER_PI * T(J)**3
       ABROSS(J) = ABROSS(J) + DBDT / ABTOT(J) * RCOWT
-    end do
+    END DO
 
   ! --- MODE 3: Finalize — compute kappa_Ross and tau_Ross scale ---
-  case (3)
+  CASE (3)
     ! Convert accumulated sum to Rosseland mean opacity:
     !   kappa_Ross = (4*sigma/pi)*T^3 / sum[ (dB/dT)/kappa_nu * dnu ]
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       ABROSS(J) = FOUR_SIGMA_OVER_PI * T(J)**3 / ABROSS(J)
-    end do
+    END DO
     ! Integrate kappa_Ross over column mass to get Rosseland optical depth
-    call INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1) * RHOX(1))
+    CALL INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1) * RHOX(1))
 
-  end select
+  END SELECT
 
 END SUBROUTINE ROSS
 
@@ -2895,29 +2769,29 @@ END SUBROUTINE ROSS
 
 SUBROUTINE DERIV(X, F, DFDX, N)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in)  :: N
-  real*8,  intent(in)  :: X(*), F(*)
-  real*8,  intent(out) :: DFDX(*)
+  INTEGER, INTENT(IN)  :: N
+  REAL(8),  INTENT(IN)  :: X(*), F(*)
+  REAL(8),  INTENT(OUT) :: DFDX(*)
 
   ! --- Local variables ---
-  real*8  :: S, SCALE, D_RIGHT, D_LEFT, T_RIGHT, T_LEFT
-  integer :: J
+  REAL(8)  :: S, SCALE, D_RIGHT, D_LEFT, T_RIGHT, T_LEFT
+  INTEGER :: J
 
   ! --- Endpoint derivatives: one-sided finite differences ---
   DFDX(1) = (F(2) - F(1)) / (X(2) - X(1))
   DFDX(N) = (F(N) - F(N-1)) / (X(N) - X(N-1))
-  if (N == 2) return
+  IF (N == 2) RETURN
 
   ! --- Sign of the X spacing (handles decreasing grids) ---
   S = abs(X(2) - X(1)) / (X(2) - X(1))
 
   ! --- Interior points: tangent half-angle averaging ---
-  do J = 2, N - 1
+  DO J = 2, N - 1
     ! Normalization scale to prevent overflow
     SCALE = max(abs(F(J-1)), abs(F(J)), abs(F(J+1))) / abs(X(J))
-    if (SCALE == 0.0D0) SCALE = 1.0D0
+    IF (SCALE == 0.0D0) SCALE = 1.0D0
 
     ! Scaled right and left finite-difference slopes
     D_RIGHT = (F(J+1) - F(J)) / (X(J+1) - X(J)) / SCALE
@@ -2929,7 +2803,7 @@ SUBROUTINE DERIV(X, F, DFDX, N)
 
     ! Tangent addition formula: tan(a+b) = (tan(a)+tan(b))/(1-tan(a)*tan(b))
     DFDX(J) = (T_RIGHT + T_LEFT) / (1.0D0 - T_RIGHT * T_LEFT) * SCALE
-  end do
+  END DO
 
 END SUBROUTINE DERIV
 
@@ -2960,29 +2834,29 @@ END SUBROUTINE DERIV
 
 SUBROUTINE INTEG(X, F, FINT, N, START)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in)  :: N
-  real*8,  intent(in)  :: X(*), F(*), START
-  real*8,  intent(out) :: FINT(*)
+  INTEGER, INTENT(IN)  :: N
+  REAL(8),  INTENT(IN)  :: X(*), F(*), START
+  REAL(8),  INTENT(OUT) :: FINT(*)
 
   ! --- Local variables ---
-  real*8  :: A(kw), B(kw), C(kw)
-  real*8  :: XLO, XHI
-  integer :: I
+  REAL(8)  :: A(kw), B(kw), C(kw)
+  REAL(8)  :: XLO, XHI
+  INTEGER :: I
 
   ! Fit piecewise parabolas to F(X)
-  call PARCOE(F, X, A, B, C, N)
+  CALL PARCOE(F, X, A, B, C, N)
 
   ! Integrate by summing the analytic parabolic integrals
   FINT(1) = START
-  do I = 1, N - 1
+  DO I = 1, N - 1
     XLO = X(I)
     XHI = X(I+1)
     FINT(I+1) = FINT(I) + (A(I) + B(I) * 0.5D0 * (XHI + XLO) &
                 + C(I) / 3.0D0 * ((XHI + XLO) * XHI + XLO * XLO)) &
                 * (XHI - XLO)
-  end do
+  END DO
 
 END SUBROUTINE INTEG
 
@@ -3020,15 +2894,15 @@ END SUBROUTINE INTEG
 
 SUBROUTINE PARCOE(F, X, A, B, C, N)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in)  :: N
-  real*8,  intent(in)  :: F(*), X(*)
-  real*8,  intent(out) :: A(*), B(*), C(*)
+  INTEGER, INTENT(IN)  :: N
+  REAL(8),  INTENT(IN)  :: F(*), X(*)
+  REAL(8),  INTENT(OUT) :: A(*), B(*), C(*)
 
   ! --- Local variables ---
-  real*8  :: D, WT
-  integer :: J
+  REAL(8)  :: D, WT
+  INTEGER :: J
 
   ! --- Step 1: Endpoint linear fits (C = 0) ---
   C(1) = 0.0D0
@@ -3039,31 +2913,31 @@ SUBROUTINE PARCOE(F, X, A, B, C, N)
   B(N) = (F(N) - F(N-1)) / (X(N) - X(N-1))
   A(N) = F(N) - X(N) * B(N)
 
-  if (N == 2) return
+  IF (N == 2) RETURN
 
   ! --- N = 3: use linear interpolation on both intervals ---
   !     Copy last-interval linear fit to the middle point.
   !     (Returning early prevents the post-loop code from accessing
   !     out-of-bounds F(4) and X(4).)
-  if (N == 3) then
+  IF (N == 3) THEN
     A(2) = A(3)
     B(2) = B(3)
     C(2) = C(3)
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Step 2: Parabolic fits at interior points (N >= 4) ---
   !     For each interior point J, fit a parabola through
   !     (X_{J-1}, F_{J-1}), (X_J, F_J), (X_{J+1}, F_{J+1}).
   !     C(J) is the second divided difference (curvature term).
-  do J = 2, N - 1
+  DO J = 2, N - 1
     D = (F(J) - F(J-1)) / (X(J) - X(J-1))
     C(J) = F(J+1) / ((X(J+1) - X(J)) * (X(J+1) - X(J-1))) &
          - F(J)   / ((X(J) - X(J-1))   * (X(J+1) - X(J)))   &
          + F(J-1) / ((X(J) - X(J-1))   * (X(J+1) - X(J-1)))
     B(J) = D - (X(J) + X(J-1)) * C(J)
     A(J) = F(J-1) - X(J-1) * D + X(J) * X(J-1) * C(J)
-  end do
+  END DO
 
   ! --- Step 3: Override first two interior points with linear fits ---
   !     These are replaced before the smoothing pass so that the
@@ -3080,14 +2954,14 @@ SUBROUTINE PARCOE(F, X, A, B, C, N)
   !     Where curvature is non-zero, blend with the right neighbor's
   !     coefficients. The weight WT = |C_{J+1}| / (|C_{J+1}| + |C_J|)
   !     favors the smoother (lower curvature) side.
-  do J = 2, N - 1
-    if (C(J) /= 0.0D0) then
+  DO J = 2, N - 1
+    IF (C(J) /= 0.0D0) THEN
       WT = abs(C(J+1)) / (abs(C(J+1)) + abs(C(J)))
       A(J) = A(J+1) + WT * (A(J) - A(J+1))
       B(J) = B(J+1) + WT * (B(J) - B(J+1))
       C(J) = C(J+1) + WT * (C(J) - C(J+1))
-    end if
-  end do
+    END IF
+  END DO
 
   ! --- Step 5: Penultimate point inherits endpoint linear fit ---
   A(N-1) = A(N)
@@ -3120,65 +2994,65 @@ END SUBROUTINE PARCOE
 
 FUNCTION MAP1(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in)  :: NOLD, NNEW
-  real*8,  intent(in)  :: XOLD(*), FOLD(*), XNEW(*)
-  real*8,  intent(out) :: FNEW(*)
-  integer              :: MAP1
+  INTEGER, INTENT(IN)  :: NOLD, NNEW
+  REAL(8),  INTENT(IN)  :: XOLD(*), FOLD(*), XNEW(*)
+  REAL(8),  INTENT(OUT) :: FNEW(*)
+  INTEGER              :: MAP1
 
   ! --- Local variables ---
-  real*8  :: A, B, C                   ! Current interpolation coefficients
-  real*8  :: ABAC, BBAC, CBAC          ! Backward parabola coefficients
-  real*8  :: AFOR, BFOR, CFOR          ! Forward parabola coefficients
-  real*8  :: D, WT
-  integer :: K, L, LL, L1, L2
-  logical :: past_right_edge           ! True if XNEW(K) is beyond XOLD(NOLD)
+  REAL(8)  :: A, B, C                   ! Current interpolation coefficients
+  REAL(8)  :: ABAC, BBAC, CBAC          ! Backward parabola coefficients
+  REAL(8)  :: AFOR, BFOR, CFOR          ! Forward parabola coefficients
+  REAL(8)  :: D, WT
+  INTEGER :: K, L, LL, L1, L2
+  LOGICAL :: past_right_edge           ! True if XNEW(K) is beyond XOLD(NOLD)
 
   L  = 2     ! Pointer into XOLD: XNEW(K) is in [XOLD(L-1), XOLD(L)]
   LL = 0     ! Previous L value (0 = no coefficients computed yet)
 
-  do K = 1, NNEW
+  DO K = 1, NNEW
 
     ! -----------------------------------------------------------------
     ! Step 1: Advance L to bracket XNEW(K) in [XOLD(L-1), XOLD(L)]
     ! -----------------------------------------------------------------
-    past_right_edge = .false.
-    do while (XNEW(K) >= XOLD(L))
+    past_right_edge = .FALSE.
+    DO WHILE (XNEW(K) >= XOLD(L))
       L = L + 1
-      if (L > NOLD) then
+      IF (L > NOLD) THEN
         ! Beyond right edge of old grid — use boundary linear fit
-        past_right_edge = .true.
-        exit
-      end if
-    end do
+        past_right_edge = .TRUE.
+        EXIT
+      END IF
+    END DO
 
     ! -----------------------------------------------------------------
     ! Step 2: If still in the same interval, reuse existing coefficients
     ! -----------------------------------------------------------------
-    if (.not. past_right_edge .and. L == LL) then
+    IF (.NOT. past_right_edge .AND. L == LL) THEN
       FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-      cycle
-    end if
+      CYCLE
+    END IF
 
     ! -----------------------------------------------------------------
     ! Step 3: Boundary cases — use linear interpolation
     !         (L=2,3: too few points to the left for a parabola;
     !          past right edge: linear extrapolation from last two points)
     ! -----------------------------------------------------------------
-    if (L <= 3 .or. past_right_edge) then
+    IF (L <= 3 .OR. past_right_edge) THEN
       L = min(NOLD, L)
-      if (.not. past_right_edge .and. L == LL) then
+      IF (.NOT. past_right_edge .AND. L == LL) THEN
         FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-        cycle
-      end if
+        CYCLE
+      END IF
       C = 0.0D0
       B = (FOLD(L) - FOLD(L-1)) / (XOLD(L) - XOLD(L-1))
       A = FOLD(L) - XOLD(L) * B
       LL = L
       FNEW(K) = A + B * XNEW(K)
-      cycle
-    end if
+      CYCLE
+    END IF
 
     ! -----------------------------------------------------------------
     ! Step 4: Interior — compute backward parabola through (L-2, L-1, L)
@@ -3186,11 +3060,11 @@ FUNCTION MAP1(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
     L1 = L - 1
 
     ! Check if we can reuse the previous forward parabola as backward
-    if (L == LL + 1 .and. L /= 3 .and. L /= 4) then
+    IF (L == LL + 1 .AND. L /= 3 .AND. L /= 4) THEN
       CBAC = CFOR
       BBAC = BFOR
       ABAC = AFOR
-    else
+    ELSE
       ! Compute fresh backward parabola
       L2 = L - 2
       D = (FOLD(L1) - FOLD(L2)) / (XOLD(L1) - XOLD(L2))
@@ -3200,17 +3074,17 @@ FUNCTION MAP1(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
            / (XOLD(L1) - XOLD(L2))
       BBAC = D - (XOLD(L1) + XOLD(L2)) * CBAC
       ABAC = FOLD(L2) - XOLD(L2) * D + XOLD(L1) * XOLD(L2) * CBAC
-    end if
+    END IF
 
     ! -----------------------------------------------------------------
     ! Step 5: At right edge (L=NOLD) — use backward parabola only
     ! -----------------------------------------------------------------
-    if (L >= NOLD) then
+    IF (L >= NOLD) THEN
       A = ABAC;  B = BBAC;  C = CBAC
       LL = L
       FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-      cycle
-    end if
+      CYCLE
+    END IF
 
     ! -----------------------------------------------------------------
     ! Step 6: Compute forward parabola through (L-1, L, L+1) and blend
@@ -3225,7 +3099,7 @@ FUNCTION MAP1(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
 
     ! Curvature-weighted blend: favor the less curved parabola
     WT = 0.0D0
-    if (abs(CFOR) /= 0.0D0) WT = abs(CFOR) / (abs(CFOR) + abs(CBAC))
+    IF (abs(CFOR) /= 0.0D0) WT = abs(CFOR) / (abs(CFOR) + abs(CBAC))
     A = AFOR + WT * (ABAC - AFOR)
     B = BFOR + WT * (BBAC - BFOR)
     C = CFOR + WT * (CBAC - CFOR)
@@ -3236,7 +3110,7 @@ FUNCTION MAP1(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
     ! -----------------------------------------------------------------
     FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
 
-  end do
+  END DO
 
   MAP1 = LL - 1
 
@@ -3289,110 +3163,110 @@ END FUNCTION MAP1
 
 SUBROUTINE SOLVIT(A, N, B, IPIVOT)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in)    :: N
-  real*8,  intent(inout) :: A(N,N), B(N)
-  integer, intent(out)   :: IPIVOT(N)
+  INTEGER, INTENT(IN)    :: N
+  REAL(8),  INTENT(INOUT) :: A(N,N), B(N)
+  INTEGER, INTENT(OUT)   :: IPIVOT(N)
 
   ! --- Local variables ---
-  real*8  :: PIVOT, T, C
-  integer :: I, J, K, M
+  REAL(8)  :: PIVOT, T, C
+  INTEGER :: I, J, K, M
 
   ! Threshold for treating a pivot as effectively zero.
   ! Machine epsilon for REAL*8 is ~2.2e-16; we use a generous threshold
   ! relative to the column's maximum element to catch near-singular cases.
-  real*8, parameter :: PIVOT_TOL = 1.0D-30
+  REAL(8), PARAMETER :: PIVOT_TOL = 1.0D-30
 
   ! =================================================================
   ! Phase 1: LU factorization with partial pivoting
   ! =================================================================
 
-  do I = 1, N - 1
+  DO I = 1, N - 1
 
     ! --- (a) Find pivot: row with largest |A(K,I)| for K >= I ---
     M = I
-    do K = I + 1, N
-      if (abs(A(K,I)) > abs(A(M,I))) M = K
-    end do
+    DO K = I + 1, N
+      IF (abs(A(K,I)) > abs(A(M,I))) M = K
+    END DO
     IPIVOT(I) = M
 
     ! --- (b) Swap rows I and M for columns I+1..N ---
     !     Column I is not swapped; its entries are handled implicitly
     !     through the multiplier computation below.
-    if (M /= I) then
-      do K = I + 1, N
+    IF (M /= I) THEN
+      DO K = I + 1, N
         T = A(I,K)
         A(I,K) = A(M,K)
         A(M,K) = T
-      end do
-    end if
+      END DO
+    END IF
 
     ! --- (c) Store reciprocal pivot on diagonal ---
-    if (abs(A(M,I)) < PIVOT_TOL) then
-      write(6,'(A,I4,A,1PE12.4)') &
+    IF (abs(A(M,I)) < PIVOT_TOL) THEN
+      WRITE(6,'(A,I4,A,1PE12.4)') &
         ' SOLVIT: near-singular matrix at column ', I, &
         ', pivot = ', A(M,I)
       A(M,I) = sign(PIVOT_TOL, A(M,I))
-    end if
+    END IF
     PIVOT = 1.0D0 / A(M,I)
     A(M,I) = A(I,I)
     A(I,I) = PIVOT
 
     ! --- (d) Compute multipliers L(K,I) = A(K,I) / pivot ---
-    do K = I + 1, N
+    DO K = I + 1, N
       A(K,I) = A(K,I) * PIVOT
-    end do
+    END DO
 
     ! --- (e) Eliminate: update submatrix A(I+1:N, I+1:N) ---
-    do J = I + 1, N
+    DO J = I + 1, N
       C = A(I,J)
-      if (C == 0.0D0) cycle
-      do K = I + 1, N
+      IF (C == 0.0D0) CYCLE
+      DO K = I + 1, N
         A(K,J) = A(K,J) - A(K,I) * C
-      end do
-    end do
+      END DO
+    END DO
 
-  end do
+  END DO
 
   ! Reciprocal of the last pivot
-  if (abs(A(N,N)) < PIVOT_TOL) then
-    write(6,'(A,I4,A,1PE12.4)') &
+  IF (abs(A(N,N)) < PIVOT_TOL) THEN
+    WRITE(6,'(A,I4,A,1PE12.4)') &
       ' SOLVIT: near-singular matrix at column ', N, &
       ', pivot = ', A(N,N)
     A(N,N) = sign(PIVOT_TOL, A(N,N))
-  end if
+  END IF
   A(N,N) = 1.0D0 / A(N,N)
 
   ! =================================================================
   ! Phase 2: Forward substitution — apply row swaps and L^{-1} to B
   ! =================================================================
 
-  do I = 1, N - 1
+  DO I = 1, N - 1
     M = IPIVOT(I)
-    if (M /= I) then
+    IF (M /= I) THEN
       T = B(M)
       B(M) = B(I)
       B(I) = T
-    end if
+    END IF
     C = B(I)
-    do K = I + 1, N
+    DO K = I + 1, N
       B(K) = B(K) - A(K,I) * C
-    end do
-  end do
+    END DO
+  END DO
 
   ! =================================================================
   ! Phase 3: Back substitution — apply U^{-1} to B
   ! =================================================================
   !   A(J,J) stores 1/U(J,J); A(K,J) for K<J stores U(K,J).
 
-  do J = N, 2, -1
+  DO J = N, 2, -1
     B(J) = B(J) * A(J,J)
     C = B(J)
-    do K = 1, J - 1
+    DO K = 1, J - 1
       B(K) = B(K) - A(K,J) * C
-    end do
-  end do
+    END DO
+  END DO
   B(1) = B(1) * A(1,1)
 
 END SUBROUTINE SOLVIT
@@ -3411,15 +3285,15 @@ END SUBROUTINE SOLVIT
 
 SUBROUTINE DUMP_ARRAY(LABEL, ARR, N)
 
-  implicit none
+  IMPLICIT NONE
 
-  character(*), intent(in) :: LABEL
-  real*8,       intent(in) :: ARR(*)
-  integer,      intent(in) :: N
+  CHARACTER(*), INTENT(IN) :: LABEL
+  REAL(8),       INTENT(IN) :: ARR(*)
+  INTEGER,      INTENT(IN) :: N
 
-  integer :: I
+  INTEGER :: I
 
-  write(6, '(A6,1P10E12.4 / (7X,10E12.4))') LABEL, (ARR(I), I=1,N)
+  WRITE(6, '(A6,1P10E12.4 / (7X,10E12.4))') LABEL, (ARR(I), I=1,N)
 
 END SUBROUTINE DUMP_ARRAY
 
@@ -3449,81 +3323,81 @@ END SUBROUTINE DUMP_ARRAY
 
 FUNCTION ROSSTAB(TEMP, PRESSURE, V)
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8, intent(in) :: TEMP, PRESSURE, V
-  real*8             :: ROSSTAB
+  REAL(8), INTENT(IN) :: TEMP, PRESSURE, V
+  REAL(8)             :: ROSSTAB
 
   ! --- Table storage (persistent across calls) ---
-  integer, parameter :: MAXTAB = kw * 60
+  INTEGER, PARAMETER :: MAXTAB = kw * 60
 
-  real*8,  save :: ROSS(MAXTAB)     ! log10(kappa_Ross)
-  real*8,  save :: TABT(MAXTAB)     ! normalized log10(T)
-  real*8,  save :: TABP(MAXTAB)     ! normalized log10(P)
-  real*8,  save :: ZEROT, ZEROP     ! normalization offsets
-  real*8,  save :: SLOPET, SLOPEP   ! normalization ranges
-  integer, save :: NROSS = 0        ! number of entries in table
+  REAL(8),  SAVE :: ROSS(MAXTAB)     ! log10(kappa_Ross)
+  REAL(8),  SAVE :: TABT(MAXTAB)     ! normalized log10(T)
+  REAL(8),  SAVE :: TABP(MAXTAB)     ! normalized log10(P)
+  REAL(8),  SAVE :: ZEROT, ZEROP     ! normalization offsets
+  REAL(8),  SAVE :: SLOPET, SLOPEP   ! normalization ranges
+  INTEGER, SAVE :: NROSS = 0        ! number of entries in table
 
   ! --- Shepard parameters ---
-  integer, parameter :: KFIT = 12          ! nearest neighbors
-  real*8,  parameter :: SHEP_PHALF = 1.5D0 ! p/2 where p=3
-  real*8,  parameter :: SHEP_EPS = 1.0D-12 ! softening
+  INTEGER, PARAMETER :: KFIT = 12          ! nearest neighbors
+  REAL(8),  PARAMETER :: SHEP_PHALF = 1.5D0 ! p/2 where p=3
+  REAL(8),  PARAMETER :: SHEP_EPS = 1.0D-12 ! softening
 
   ! --- Local variables ---
-  real*8  :: TEMPLOG, PRESSLOG      ! normalized query coordinates
-  real*8  :: DT, DP, RADIUS2        ! displacement and distance
-  real*8  :: R, RWT, W              ! interpolated result, weights
+  REAL(8)  :: TEMPLOG, PRESSLOG      ! normalized query coordinates
+  REAL(8)  :: DT, DP, RADIUS2        ! displacement and distance
+  REAL(8)  :: R, RWT, W              ! interpolated result, weights
 
   ! Bilinear variables
-  real*8  :: RMIN_PP, RMIN_PM, RMIN_MP, RMIN_MM
-  integer :: IDX_PP,  IDX_PM,  IDX_MP,  IDX_MM
-  real*8  :: DIST_PP, DIST_PM, DIST_MP, DIST_MM
-  real*8  :: TPP, PPP, RPP, TPM, PPM, RPM
-  real*8  :: TMP, PMP, RMP, TMM, PMM, RMM
-  real*8  :: R_HIPRESS, R_LOPRESS
-  real*8  :: P_HIPRESS, P_LOPRESS
+  REAL(8)  :: RMIN_PP, RMIN_PM, RMIN_MP, RMIN_MM
+  INTEGER :: IDX_PP,  IDX_PM,  IDX_MP,  IDX_MM
+  REAL(8)  :: DIST_PP, DIST_PM, DIST_MP, DIST_MM
+  REAL(8)  :: TPP, PPP, RPP, TPM, PPM, RPM
+  REAL(8)  :: TMP, PMP, RMP, TMM, PMM, RMM
+  REAL(8)  :: R_HIPRESS, R_LOPRESS
+  REAL(8)  :: P_HIPRESS, P_LOPRESS
 
   ! Shepard variables
-  real*8  :: DIST2(KFIT)
-  integer :: KIDX(KFIT)
-  real*8  :: DMAX2
-  integer :: KMAX, KFOUND
+  REAL(8)  :: DIST2(KFIT)
+  INTEGER :: KIDX(KFIT)
+  REAL(8)  :: DMAX2
+  INTEGER :: KMAX, KFOUND
 
-  integer :: I, J, K
+  INTEGER :: I, J, K
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING ROSSTAB'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING ROSSTAB'
 
   ! =================================================================
   ! MODE 1: STORE — append current kappa_Ross profile to table
   ! =================================================================
 
-  if (TEMP <= 0.0D0) then
+  IF (TEMP <= 0.0D0) THEN
 
-    if (NROSS == 0) then
+    IF (NROSS == 0) THEN
       ZEROT  = log10(T(1))
       ZEROP  = log10(P(1))
       SLOPET = log10(T(NRHOX)) - ZEROT
       SLOPEP = log10(P(NRHOX)) - ZEROP
-    end if
+    END IF
 
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       NROSS = NROSS + 1
-      if (NROSS > MAXTAB) then
-        write(6,*) 'ROSSTAB ERROR: table overflow, NROSS =', NROSS
+      IF (NROSS > MAXTAB) THEN
+        WRITE(6,*) 'ROSSTAB ERROR: table overflow, NROSS =', NROSS
         NROSS = MAXTAB
-        exit
-      end if
+        EXIT
+      END IF
       TABT(NROSS) = (log10(T(J)) - ZEROT) / SLOPET
       TABP(NROSS) = (log10(P(J)) - ZEROP) / SLOPEP
       ROSS(NROSS) = log10(ABROSS(J))
-      if (IDEBUG == 1) &
-        write(6, '(" ROSSTAB",I5,F10.1,F10.5,1PE12.3,0PF10.5,F10.5)') &
+      IF (IDEBUG == 1) &
+        WRITE(6, '(" ROSSTAB",I5,F10.1,F10.5,1PE12.3,0PF10.5,F10.5)') &
         NROSS, T(J), TABT(NROSS), P(J), TABP(NROSS), ROSS(NROSS)
-    end do
+    END DO
 
     ROSSTAB = 0.0D0
-    return
-  end if
+    RETURN
+  END IF
 
   ! =================================================================
   ! MODE 2: LOOKUP
@@ -3535,43 +3409,43 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
   ! -----------------------------------------------------------------
   ! IROSSTAB = 1: Original bilinear (4-quadrant nearest neighbor)
   ! -----------------------------------------------------------------
-  if (IROSSTAB == 1) then
+  IF (IROSSTAB == 1) THEN
 
     RMIN_PP = 1.0D30;  IDX_PP = 0
     RMIN_PM = 1.0D30;  IDX_PM = 0
     RMIN_MP = 1.0D30;  IDX_MP = 0
     RMIN_MM = 1.0D30;  IDX_MM = 0
 
-    do I = 1, NROSS
+    DO I = 1, NROSS
       DT = TABT(I) - TEMPLOG
       DP = TABP(I) - PRESSLOG
       RADIUS2 = DT**2 + DP**2
 
-      if (DT >= 0.0D0) then
-        if (DP >= 0.0D0) then
-          if (RADIUS2 < RMIN_PP) then
+      IF (DT >= 0.0D0) THEN
+        IF (DP >= 0.0D0) THEN
+          IF (RADIUS2 < RMIN_PP) THEN
             RMIN_PP = RADIUS2;  IDX_PP = I
-          end if
-        else
-          if (RADIUS2 < RMIN_PM) then
+          END IF
+        ELSE
+          IF (RADIUS2 < RMIN_PM) THEN
             RMIN_PM = RADIUS2;  IDX_PM = I
-          end if
-        end if
-      else
-        if (DP >= 0.0D0) then
-          if (RADIUS2 < RMIN_MP) then
+          END IF
+        END IF
+      ELSE
+        IF (DP >= 0.0D0) THEN
+          IF (RADIUS2 < RMIN_MP) THEN
             RMIN_MP = RADIUS2;  IDX_MP = I
-          end if
-        else
-          if (RADIUS2 < RMIN_MM) then
+          END IF
+        ELSE
+          IF (RADIUS2 < RMIN_MM) THEN
             RMIN_MM = RADIUS2;  IDX_MM = I
-          end if
-        end if
-      end if
-    end do
+          END IF
+        END IF
+      END IF
+    END DO
 
-    if (IDX_PP /= 0 .and. IDX_PM /= 0 .and. &
-        IDX_MP /= 0 .and. IDX_MM /= 0) then
+    IF (IDX_PP /= 0 .AND. IDX_PM /= 0 .AND. &
+        IDX_MP /= 0 .AND. IDX_MM /= 0) THEN
 
       TPP = TABT(IDX_PP);  PPP = TABP(IDX_PP);  RPP = ROSS(IDX_PP)
       TPM = TABT(IDX_PM);  PPM = TABP(IDX_PM);  RPM = ROSS(IDX_PM)
@@ -3592,7 +3466,7 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
         + (P_HIPRESS - PRESSLOG) * R_LOPRESS) &
         / (P_HIPRESS - P_LOPRESS)
 
-    else
+    ELSE
 
       DIST_PP = sqrt(RMIN_PP) + 1.0D-5
       DIST_PM = sqrt(RMIN_PM) + 1.0D-5
@@ -3607,54 +3481,54 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
          + ROSS(max(1, IDX_MP)) / DIST_MP &
          + ROSS(max(1, IDX_MM)) / DIST_MM) / RWT
 
-    end if
+    END IF
 
   ! -----------------------------------------------------------------
   ! IROSSTAB = 2: Shepard (K-nearest, p=3)
   ! -----------------------------------------------------------------
-  else
+  ELSE
 
     KFOUND = 0
     DMAX2  = 0.0D0
     KMAX   = 1
 
-    do I = 1, NROSS
+    DO I = 1, NROSS
       DT = TABT(I) - TEMPLOG
       DP = TABP(I) - PRESSLOG
       RADIUS2 = DT * DT + DP * DP
 
-      if (KFOUND < KFIT) then
+      IF (KFOUND < KFIT) THEN
         KFOUND = KFOUND + 1
         DIST2(KFOUND) = RADIUS2
         KIDX(KFOUND)  = I
-        if (RADIUS2 > DMAX2) then
+        IF (RADIUS2 > DMAX2) THEN
           DMAX2 = RADIUS2
           KMAX  = KFOUND
-        end if
-      else if (RADIUS2 < DMAX2) then
+        END IF
+      ELSE IF (RADIUS2 < DMAX2) THEN
         DIST2(KMAX) = RADIUS2
         KIDX(KMAX)  = I
         DMAX2 = DIST2(1)
         KMAX  = 1
-        do K = 2, KFIT
-          if (DIST2(K) > DMAX2) then
+        DO K = 2, KFIT
+          IF (DIST2(K) > DMAX2) THEN
             DMAX2 = DIST2(K)
             KMAX  = K
-          end if
-        end do
-      end if
-    end do
+          END IF
+        END DO
+      END IF
+    END DO
 
     R   = 0.0D0
     RWT = 0.0D0
-    do K = 1, KFOUND
+    DO K = 1, KFOUND
       W   = 1.0D0 / (DIST2(K) + SHEP_EPS) ** SHEP_PHALF
       R   = R   + W * ROSS(KIDX(K))
       RWT = RWT + W
-    end do
+    END DO
     R = R / RWT
 
-  end if
+  END IF
 
   ROSSTAB = 10.0D0 ** R
 
@@ -3723,49 +3597,49 @@ END FUNCTION ROSSTAB
 SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
                  VTURB_in, GRAV_in, NUMTAU)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  integer, intent(in)    :: NUMTAU
-  real*8,  intent(in)    :: T_in(NUMTAU)
-  real*8,  intent(in)    :: TAU(NUMTAU)
-  real*8,  intent(out)   :: ABSTD(NUMTAU)
-  real*8,  intent(out)   :: PTOTAL(NUMTAU)
-  real*8,  intent(out)   :: P_out(NUMTAU)
-  real*8,  intent(in)    :: PRAD_in(NUMTAU)
-  real*8,  intent(in)    :: PTURB_in(NUMTAU)
-  real*8,  intent(in)    :: VTURB_in(NUMTAU)
-  real*8,  intent(in)    :: GRAV_in
+  INTEGER, INTENT(IN)    :: NUMTAU
+  REAL(8),  INTENT(IN)    :: T_in(NUMTAU)
+  REAL(8),  INTENT(IN)    :: TAU(NUMTAU)
+  REAL(8),  INTENT(OUT)   :: ABSTD(NUMTAU)
+  REAL(8),  INTENT(OUT)   :: PTOTAL(NUMTAU)
+  REAL(8),  INTENT(OUT)   :: P_out(NUMTAU)
+  REAL(8),  INTENT(IN)    :: PRAD_in(NUMTAU)
+  REAL(8),  INTENT(IN)    :: PTURB_in(NUMTAU)
+  REAL(8),  INTENT(IN)    :: VTURB_in(NUMTAU)
+  REAL(8),  INTENT(IN)    :: GRAV_in
 
   ! --- Tuning parameters ---
-  integer, parameter :: MAX_CORRECTOR  = 1000
-  real*8,  parameter :: CONV_TOL       = 5.0D-5   ! convergence in ln(P)
-  real*8,  parameter :: DPLOG_MAX      = 10.0D0   ! max d(ln P) per step
-  real*8,  parameter :: OPACITY_REBOOT = 2.0D0    ! opacity ratio triggering surface redo
-  integer, parameter :: RELAX_TRIGGER  = 4        ! stall count before under-relaxation
-  real*8,  parameter :: RELAX_FACTOR   = 0.3D0    ! relaxation weight when oscillating
+  INTEGER, PARAMETER :: MAX_CORRECTOR  = 1000
+  REAL(8),  PARAMETER :: CONV_TOL       = 5.0D-5   ! convergence in ln(P)
+  REAL(8),  PARAMETER :: DPLOG_MAX      = 10.0D0   ! max d(ln P) per step
+  REAL(8),  PARAMETER :: OPACITY_REBOOT = 2.0D0    ! opacity ratio triggering surface redo
+  INTEGER, PARAMETER :: RELAX_TRIGGER  = 4        ! stall count before under-relaxation
+  REAL(8),  PARAMETER :: RELAX_FACTOR   = 0.3D0    ! relaxation weight when oscillating
 
   ! --- Local variables ---
-  real*8  :: DLGTAU              ! log spacing: ln(TAU(2)/TAU(1))
-  real*8  :: PLOG                ! current ln(P_total) estimate
-  real*8  :: PNEW               ! corrected ln(P_total)
-  real*8  :: DPLOG              ! d(ln P)/d(ln tau) * DLGTAU at current point
-  real*8  :: ERROR              ! |PNEW - PLOG| convergence measure
-  real*8  :: PREV_ERROR         ! previous corrector error
-  real*8  :: ABSTD1_INIT        ! initial surface opacity guess (for bootstrap)
-  real*8  :: RELAX              ! relaxation weight for current step
-  integer :: N_STALL            ! count of stalled corrector steps
+  REAL(8)  :: DLGTAU              ! log spacing: ln(TAU(2)/TAU(1))
+  REAL(8)  :: PLOG                ! current ln(P_total) estimate
+  REAL(8)  :: PNEW               ! corrected ln(P_total)
+  REAL(8)  :: DPLOG              ! d(ln P)/d(ln tau) * DLGTAU at current point
+  REAL(8)  :: ERROR              ! |PNEW - PLOG| convergence measure
+  REAL(8)  :: PREV_ERROR         ! previous corrector error
+  REAL(8)  :: ABSTD1_INIT        ! initial surface opacity guess (for bootstrap)
+  REAL(8)  :: RELAX              ! relaxation weight for current step
+  INTEGER :: N_STALL            ! count of stalled corrector steps
 
   ! Adams-Bashforth history (previous 4 points)
-  real*8  :: PLOG1, PLOG2, PLOG3, PLOG4
-  real*8  :: DPLOG1, DPLOG2, DPLOG3
+  REAL(8)  :: PLOG1, PLOG2, PLOG3, PLOG4
+  REAL(8)  :: DPLOG1, DPLOG2, DPLOG3
 
-  integer :: J, N
-  logical :: CONVERGED
+  INTEGER :: J, N
+  LOGICAL :: CONVERGED
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING TTAUP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING TTAUP'
 
   ! Log spacing of the tau grid (must be uniform)
   DLGTAU = log(TAU(2) / TAU(1))
@@ -3780,37 +3654,37 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
   ! Initial opacity guess: 0.1 cm^2/g, or smaller if radiation pressure
   ! is known (ensures P_total > P_rad at surface)
   ABSTD(1) = 0.1D0
-  if (PRAD_in(1) > 0.0D0) then
+  IF (PRAD_in(1) > 0.0D0) THEN
     ABSTD(1) = min(0.1D0, GRAV_in * TAU(1) / PRAD_in(1) / 2.0D0)
-  end if
+  END IF
   ABSTD1_INIT = ABSTD(1)
 
   !---------------------------------------------------------------------
   ! March inward through the atmosphere
   !---------------------------------------------------------------------
-  do J = 1, NUMTAU
+  DO J = 1, NUMTAU
 
     ! --- Predictor: initial guess for ln(P_total) ---
-    if (J == 1) then
+    IF (J == 1) THEN
       ! Surface: P_total = g * tau / kappa (constant-opacity approximation)
       PLOG = log(GRAV_in / ABSTD(1) * TAU(1))
-    else if (J <= 4) then
+    ELSE IF (J <= 4) THEN
       ! Linear extrapolation from previous point
       PLOG = PLOG1 + DPLOG1
-    else
+    ELSE
       ! 4th-order Adams-Bashforth predictor
       PLOG = (3.0D0 * PLOG4 + 8.0D0 * DPLOG1 &
             - 4.0D0 * DPLOG2 + 8.0D0 * DPLOG3) / 3.0D0
-    end if
+    END IF
 
     ! --- Corrector iterations ---
     ERROR      = 1.0D0
     PREV_ERROR = 1.0D0
     N          = 0
-    CONVERGED  = .false.
+    CONVERGED  = .FALSE.
     N_STALL    = 0
 
-    do
+    DO
       ! Convert ln(P_total) → total pressure → gas pressure → opacity
       PTOTAL(J) = exp(PLOG)
 
@@ -3819,13 +3693,13 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
       P_out(J) = PTOTAL(J) + (PRAD_in(1) - PRAD_in(J)) &
                             + (PTURB_in(1) - PTURB_in(J))
 
-      if (P_out(J) <= 0.0D0) then
+      IF (P_out(J) <= 0.0D0) THEN
         ! Gas pressure went negative — corrector guess for P_total is too low.
         ! Floor P_gas to a small fraction of P_total so the opacity lookup
         ! returns a large kappa, which drives DPLOG upward and self-corrects.
         P_out(J) = PTOTAL(J) * 1.0D-4
-        if (P_out(J) <= 0.0D0) P_out(J) = 1.0D-10
-      end if
+        IF (P_out(J) <= 0.0D0) P_out(J) = 1.0D-10
+      END IF
 
       ! Look up Rosseland opacity from the interpolation table
       ABSTD(J) = ROSSTAB(T_in(J), P_out(J), VTURB_in(J))
@@ -3837,75 +3711,75 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
       DPLOG = max(0.0D0, min(DPLOG_MAX, DPLOG))
 
       N = N + 1
-      if (N == 1) cycle    ! first pass: go straight to corrector
+      IF (N == 1) CYCLE    ! first pass: go straight to corrector
 
       ! --- Corrector: update ln(P) ---
-      if (J == 1) then
+      IF (J == 1) THEN
         PNEW = log(GRAV_in / ABSTD(1) * TAU(1))
-      else if (J <= 4) then
+      ELSE IF (J <= 4) THEN
         ! Trapezoidal corrector
         PNEW = (PLOG + 2.0D0 * PLOG1 + DPLOG + DPLOG1) / 3.0D0
-      else
+      ELSE
         ! 4th-order Adams-Moulton corrector
         PNEW = (126.0D0 * PLOG1 - 14.0D0 * PLOG3 + 9.0D0 * PLOG4 &
               + 42.0D0 * DPLOG + 108.0D0 * DPLOG1 &
               - 54.0D0 * DPLOG2 + 24.0D0 * DPLOG3) / 121.0D0
-      end if
+      END IF
 
       PREV_ERROR = ERROR
       ERROR = abs(PNEW - PLOG)
 
       ! Detect stalling: error not decreasing meaningfully
-      if (N > 3 .and. ERROR > 0.9D0 * PREV_ERROR) then
+      IF (N > 3 .AND. ERROR > 0.9D0 * PREV_ERROR) THEN
         N_STALL = N_STALL + 1
-      else
+      ELSE
         N_STALL = max(N_STALL - 1, 0)
-      end if
+      END IF
 
       ! Choose relaxation weight:
       !   Normal: average old and new (0.5), same as original code
       !   Oscillating: bias toward old value to damp oscillation
-      if (N_STALL >= RELAX_TRIGGER) then
+      IF (N_STALL >= RELAX_TRIGGER) THEN
         RELAX = RELAX_FACTOR
-      else
+      ELSE
         RELAX = 0.5D0
-      end if
+      END IF
       PLOG = (1.0D0 - RELAX) * PLOG + RELAX * PNEW
 
-      if (ERROR <= CONV_TOL) then
-        CONVERGED = .true.
-        exit
-      end if
-      if (N > MAX_CORRECTOR) exit
-    end do
+      IF (ERROR <= CONV_TOL) THEN
+        CONVERGED = .TRUE.
+        EXIT
+      END IF
+      IF (N > MAX_CORRECTOR) EXIT
+    END DO
 
     ! Warn on convergence failure
-    if (.not. CONVERGED) then
-      write(6, '(A,I4,A,ES10.3,A,I5)') &
+    IF (.NOT. CONVERGED) THEN
+      WRITE(6, '(A,I4,A,ES10.3,A,I5)') &
         ' TTAUP WARNING: corrector did not converge at J=', J, &
         ', error=', ERROR, ', iter=', N
-    end if
+    END IF
 
     ! --- Surface bootstrap ---
     ! If the converged opacity at J=1 differs substantially from the
     ! initial blind guess, redo J=1 with the better opacity value.
     ! This prevents a poor surface guess from corrupting the entire
     ! Adams-Bashforth history.
-    if (J == 1 .and. (ABSTD(1) / ABSTD1_INIT > OPACITY_REBOOT .or. &
-                       ABSTD1_INIT / ABSTD(1) > OPACITY_REBOOT)) then
+    IF (J == 1 .AND. (ABSTD(1) / ABSTD1_INIT > OPACITY_REBOOT .OR. &
+                       ABSTD1_INIT / ABSTD(1) > OPACITY_REBOOT)) THEN
       ABSTD1_INIT = ABSTD(1)   ! prevent infinite re-bootstrapping
       PLOG = log(GRAV_in / ABSTD(1) * TAU(1))
       PTOTAL(1) = exp(PLOG)
       P_out(1)  = PTOTAL(1)    ! at surface: PRAD(1)-PRAD(1) = 0, same for PTURB
-      if (P_out(1) > 0.0D0) then
+      IF (P_out(1) > 0.0D0) THEN
         ABSTD(1) = ROSSTAB(T_in(1), P_out(1), VTURB_in(1))
         PLOG     = log(GRAV_in / ABSTD(1) * TAU(1))
         PTOTAL(1) = exp(PLOG)
         P_out(1)  = PTOTAL(1)
-      end if
+      END IF
       DPLOG = GRAV_in / ABSTD(1) * TAU(1) / PTOTAL(1) * DLGTAU
       DPLOG = max(0.0D0, min(DPLOG_MAX, DPLOG))
-    end if
+    END IF
 
     ! --- Shift Adams-Bashforth history ---
     PLOG4  = PLOG3
@@ -3916,9 +3790,9 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
     DPLOG2 = DPLOG1
     DPLOG1 = DPLOG
 
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE TTAUP
 
@@ -3930,25 +3804,25 @@ END SUBROUTINE TTAUP
 
 SUBROUTINE READIN(MODE)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: MODE
+  INTEGER, INTENT(IN) :: MODE
 !     MODE=1  COMPUTE A MODEL (ATLAS12: reads input_model.dat + stdin)
 !     MODE=20 READ A MODEL FOR SYNTHESIS (SYNTHE: caller opens file on unit 5)
 
   ! Local scalars
-  real*8  :: XSCALELOG
-  integer :: I, IZ
-  integer :: J, MU
-  integer :: IOS_CARD
-  logical :: FIRST_KW
-  character(20) :: KEYWORD
+  REAL(8)  :: XSCALELOG
+  INTEGER :: I, IZ
+  INTEGER :: J, MU
+  INTEGER :: IOS_CARD
+  LOGICAL :: FIRST_KW
+  CHARACTER(20) :: KEYWORD
 
-  character(1) :: CARD(132)
+  CHARACTER(1) :: CARD(132)
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING READIN'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING READIN'
 
-  if (MODE == 1) then
+  IF (MODE == 1) THEN
     !-------------------------------------------------------------------
     ! ATLAS12 path: read model from input_model.dat, then stdin overrides
     !-------------------------------------------------------------------
@@ -3956,8 +3830,8 @@ SUBROUTINE READIN(MODE)
     INPUTDATA = 3
     IFPRES = 1
     IFCORR = 1
-    call READMOL
-  else
+    CALL READMOL
+  ELSE
     !-------------------------------------------------------------------
     ! SYNTHE path: caller has already opened the model file on unit 5.
     ! Force surface flux mode with a single iteration and full output.
@@ -3970,8 +3844,8 @@ SUBROUTINE READIN(MODE)
     NUMITS = 1
     IFPRNT(1) = 2
     IFPNCH(1) = 2
-    call READMOL
-  end if
+    CALL READMOL
+  END IF
 
   LAST=133
   MAXPOW=38
@@ -3979,115 +3853,115 @@ SUBROUTINE READIN(MODE)
   !---------------------------------------------------------------------
   ! Main card-reading loop
   !---------------------------------------------------------------------
-  card_loop: do
+  card_loop: DO
     MORE = 0
     LETCOL = 1
     READ(INPUTDATA, '(132A1)', IOSTAT=IOS_CARD) CARD
-    if (IOS_CARD /= 0) exit card_loop
+    IF (IOS_CARD /= 0) EXIT card_loop
 
     !-------------------------------------------------------------------
     ! Keyword parsing loop (multiple keywords per card)
     !-------------------------------------------------------------------
     KEYWORD = NEXTWORD(CARD)
     NUMCOL = LETCOL
-    FIRST_KW = .true.
+    FIRST_KW = .TRUE.
 
-    keyword_loop: do
-      if (.not. FIRST_KW) then
+    keyword_loop: DO
+      IF (.NOT. FIRST_KW) THEN
         ! Get next keyword from same card
         LETCOL = MAX(LETCOL, NUMCOL)
         MORE = 1
         KEYWORD = NEXTWORD(CARD)
-        if (IFFAIL == 1) exit keyword_loop
+        IF (IFFAIL == 1) EXIT keyword_loop
         MORE = 0
         NUMCOL = LETCOL
-      end if
-      FIRST_KW = .false.
+      END IF
+      FIRST_KW = .FALSE.
 
       !-----------------------------------------------------------------
       ! TEFF
       !-----------------------------------------------------------------
-      if (trim(KEYWORD) == 'TEFF') then
+      IF (trim(KEYWORD) == 'TEFF') THEN
         TEFF = FREEFF(CARD)
         FLUX = SIGMA_SB / FOURPI * TEFF**4
-        cycle keyword_loop
+        CYCLE keyword_loop
 
       !-----------------------------------------------------------------
       ! GRAVITY
       !-----------------------------------------------------------------
-      else if (trim(KEYWORD) == 'GRAVITY') then
+      ELSE IF (trim(KEYWORD) == 'GRAVITY') THEN
         GRAV = FREEFF(CARD)
-        if (GRAV < 10.0D0) GRAV = 10.0D0**(GRAV)
+        IF (GRAV < 10.0D0) GRAV = 10.0D0**(GRAV)
         GLOG = LOG10(GRAV)
-        cycle keyword_loop
+        CYCLE keyword_loop
 
       !-----------------------------------------------------------------
       ! ABUNDANCE (sub-keywords: SCALE, CHANGE, ABSOLUTE, RELATIVE, TABLE)
       !-----------------------------------------------------------------
-      else if (trim(KEYWORD) == 'ABUNDANCE') then
+      ELSE IF (trim(KEYWORD) == 'ABUNDANCE') THEN
         KEYWORD = NEXTWORD(CARD)
         ! SCALE
-        if (trim(KEYWORD) == 'SCALE') then
+        IF (trim(KEYWORD) == 'SCALE') THEN
           NUMCOL = LETCOL
           XSCALE = FREEFF(CARD)
-          if (XSCALE > 0.0D0) XSCALELOG = LOG10(XSCALE)
-          do IZ = 3, 99
+          IF (XSCALE > 0.0D0) XSCALELOG = LOG10(XSCALE)
+          DO IZ = 3, 99
             XRELATIVE(IZ) = XSCALELOG
-          end do
+          END DO
           XSCALE = 1.0D0
-          cycle keyword_loop
+          CYCLE keyword_loop
         ! CHANGE
-        else if (trim(KEYWORD) == 'CHANGE') then
+        ELSE IF (trim(KEYWORD) == 'CHANGE') THEN
           MORE = 1
-          do
+          DO
             IZ = FREEFF(CARD)
-            if (IFFAIL == 1) exit keyword_loop
+            IF (IFFAIL == 1) EXIT keyword_loop
             ABUND(IZ) = FREEFF(CARD)
-            if (IZ > 2 .and. ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
-          end do
+            IF (IZ > 2 .AND. ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
+          END DO
         ! ABSOLUTE
-        else if (trim(KEYWORD) == 'ABSOLUTE') then
+        ELSE IF (trim(KEYWORD) == 'ABSOLUTE') THEN
           MORE = 1
-          do
+          DO
             IZ = FREEFF(CARD)
-            if (IFFAIL == 1) exit keyword_loop
+            IF (IFFAIL == 1) EXIT keyword_loop
             ABUND(IZ) = FREEFF(CARD)
-            if (IZ > 2 .and. ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
+            IF (IZ > 2 .AND. ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
             XRELATIVE(IZ) = 0.0D0
-          end do
+          END DO
         ! RELATIVE
-        else if (trim(KEYWORD) == 'RELATIVE') then
+        ELSE IF (trim(KEYWORD) == 'RELATIVE') THEN
           MORE = 1
-          do
+          DO
             IZ = FREEFF(CARD)
-            if (IFFAIL == 1) exit keyword_loop
+            IF (IFFAIL == 1) EXIT keyword_loop
             XRELATIVE(IZ) = FREEFF(CARD)
-          end do
+          END DO
         ! TABLE
-        else if (trim(KEYWORD) == 'TABLE') then
+        ELSE IF (trim(KEYWORD) == 'TABLE') THEN
           READ(INPUTDATA, '(7X,F10.6,10X,F10.6/(5(7X,F7.3,F6.3)))') &
             ABUND(1), ABUND(2), (ABUND(IZ), XRELATIVE(IZ), IZ=3,99)
-          do IZ = 3, 99
-            if (ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
-          end do
+          DO IZ = 3, 99
+            IF (ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
+          END DO
           XSCALE = 1.0D0
-          exit keyword_loop
-        else
-          write(6, '(A,A)') ' ABUNDANCE: unknown sub-keyword: ', trim(KEYWORD)
-          stop 1
-        end if
+          EXIT keyword_loop
+        ELSE
+          WRITE(6, '(A,A)') ' ABUNDANCE: unknown sub-keyword: ', trim(KEYWORD)
+          STOP 1
+        END IF
 
       !-----------------------------------------------------------------
       ! READ (sub-keyword: DECK/DECK6)
       !-----------------------------------------------------------------
-      else if (trim(KEYWORD) == 'READ') then
+      ELSE IF (trim(KEYWORD) == 'READ') THEN
         KEYWORD = NEXTWORD(CARD)
         NUMCOL = LETCOL
 
         ! DECK / DECK6
-        if (trim(KEYWORD) == 'DECK' .or. trim(KEYWORD) == 'DECK6') then
+        IF (trim(KEYWORD) == 'DECK' .OR. trim(KEYWORD) == 'DECK6') THEN
           NRHOX = FREEFF(CARD)
-          do J = 1, NRHOX
+          DO J = 1, NRHOX
             NUMCOL = 1
             READ(INPUTDATA, '(132A1)') CARD
             RHOX(J) = FREEFF(CARD)
@@ -4100,139 +3974,139 @@ SUBROUTINE READIN(MODE)
             PRAD(J) = FREEFF(CARD)
             VTURB(J) = FREEFF(CARD)
             MORE = 0
-          end do
-          if (RHOX(1) < 0.0D0) then
-            do J = 1, NRHOX
+          END DO
+          IF (RHOX(1) < 0.0D0) THEN
+            DO J = 1, NRHOX
               RHOX(J) = 10.0D0**(RHOX(J))
-            end do
-          end if
+            END DO
+          END IF
           PRADK0 = 0.0D0
           PTURB0 = PTURB(1)
           PCON = 0.0D0
           PZERO = PCON + PRADK0 + PTURB0
-          call INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
-          if (trim(KEYWORD) == 'DECK6') then
+          CALL INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
+          IF (trim(KEYWORD) == 'DECK6') THEN
             ! DECK6: read additional PRADK0 card
             READ(INPUTDATA, '(132A1)') CARD
             NUMCOL = 1
             PRADK0 = FREEFF(CARD)
-            do J = 1, NRHOX
+            DO J = 1, NRHOX
               ACCRAD(J) = PRAD(J)
-            end do
-            call INTEG(RHOX, ACCRAD, PRAD, NRHOX, ACCRAD(1)*RHOX(1))
-            do J = 1, NRHOX
+            END DO
+            CALL INTEG(RHOX, ACCRAD, PRAD, NRHOX, ACCRAD(1)*RHOX(1))
+            DO J = 1, NRHOX
               PRADK(J) = PRAD(J) + PRADK0
-            end do
-          end if
-          exit keyword_loop
+            END DO
+          END IF
+          EXIT keyword_loop
 
-        else
-          write(6, '(A,A)') ' READ: unknown sub-keyword: ', trim(KEYWORD)
-          stop 1
-        end if
+        ELSE
+          WRITE(6, '(A,A)') ' READ: unknown sub-keyword: ', trim(KEYWORD)
+          STOP 1
+        END IF
 
       !-----------------------------------------------------------------
       ! BEGIN — end of model file; exit card loop for finalization
       !-----------------------------------------------------------------
-      else if (trim(KEYWORD) == 'BEGIN') then
-        if (INPUTDATA == 3) CLOSE(UNIT=3)
-        exit card_loop
+      ELSE IF (trim(KEYWORD) == 'BEGIN') THEN
+        IF (INPUTDATA == 3) CLOSE(UNIT=3)
+        EXIT card_loop
 
       !-----------------------------------------------------------------
       ! TURBULENCE (sub-keywords: ON, OFF)
       !-----------------------------------------------------------------
-      else if (trim(KEYWORD) == 'TURBULENCE') then
+      ELSE IF (trim(KEYWORD) == 'TURBULENCE') THEN
         KEYWORD = NEXTWORD(CARD)
-        if (trim(KEYWORD) == 'ON') then
+        IF (trim(KEYWORD) == 'ON') THEN
           IFTURB = 1
           NUMCOL = LETCOL
           TRBFDG = FREEFF(CARD)
           TRBPOW = FREEFF(CARD)
           TRBSND = FREEFF(CARD)
           TRBCON = FREEFF(CARD)
-        else if (trim(KEYWORD) == 'OFF') then
+        ELSE IF (trim(KEYWORD) == 'OFF') THEN
           IFTURB = 0
           TRBFDG = 0.0D0
           TRBPOW = 0.0D0
           TRBSND = 0.0D0
           TRBCON = 0.0D0
-        else
-          write(6, '(A,A)') ' TURBULENCE: unknown sub-keyword: ', trim(KEYWORD)
-          stop 1
-        end if
-        cycle keyword_loop
+        ELSE
+          WRITE(6, '(A,A)') ' TURBULENCE: unknown sub-keyword: ', trim(KEYWORD)
+          STOP 1
+        END IF
+        CYCLE keyword_loop
 
       !-----------------------------------------------------------------
       ! SURFACE (sub-keywords: INTENSITY, FLUX, OFF)
       !-----------------------------------------------------------------
-      else if (trim(KEYWORD) == 'SURFACE') then
+      ELSE IF (trim(KEYWORD) == 'SURFACE') THEN
         KEYWORD = NEXTWORD(CARD)
-        if (trim(KEYWORD) == 'INTENSITY') then
+        IF (trim(KEYWORD) == 'INTENSITY') THEN
           NMU = FREEFF(CARD)
-          do MU = 1, NMU
+          DO MU = 1, NMU
             ANGLE(MU) = FREEFR(CARD)
-          end do
+          END DO
           IFSURF = 2
-        else if (trim(KEYWORD) == 'FLUX') then
+        ELSE IF (trim(KEYWORD) == 'FLUX') THEN
           IFSURF = 1
-        else if (trim(KEYWORD) == 'OFF') then
+        ELSE IF (trim(KEYWORD) == 'OFF') THEN
           IFSURF = 0
-        else
-          write(6, '(A,A)') ' SURFACE: unknown sub-keyword: ', trim(KEYWORD)
-          stop 1
-        end if
-        cycle keyword_loop
+        ELSE
+          WRITE(6, '(A,A)') ' SURFACE: unknown sub-keyword: ', trim(KEYWORD)
+          STOP 1
+        END IF
+        CYCLE keyword_loop
 
       !-----------------------------------------------------------------
       ! Unrecognized keyword — skip to next card
       !-----------------------------------------------------------------
-      else
-        exit keyword_loop
-      end if
+      ELSE
+        EXIT keyword_loop
+      END IF
 
-    end do keyword_loop
-  end do card_loop
+    END DO keyword_loop
+  END DO card_loop
 
   ! ===================================================================
   ! FINALIZATION — compute derived quantities
   ! ===================================================================
-  if (ABUND(1) < 0.0D0) ABUND(1) = 10.0D0**ABUND(1)
-  if (ABUND(2) < 0.0D0) ABUND(2) = 10.0D0**ABUND(2)
-  do IZ = 3, 99
-    if (ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
-  end do
+  IF (ABUND(1) < 0.0D0) ABUND(1) = 10.0D0**ABUND(1)
+  IF (ABUND(2) < 0.0D0) ABUND(2) = 10.0D0**ABUND(2)
+  DO IZ = 3, 99
+    IF (ABUND(IZ) > 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
+  END DO
   ! Write abbreviated list of abundances
   WRITE(6, '(/" TEFF",F7.0,"   LOGG",F8.4/' // &
        '"   1",A2,F10.6,"     2",A2,F10.6/(5(I4,A2,F7.2,F5.2)))') &
        TEFF, GLOG, ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
      (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,32)
-  do J = 1, NRHOX
-    do IZ = 3, 99
+  DO J = 1, NRHOX
+    DO IZ = 3, 99
       XABUND(J,IZ) = 10.0D0**(ABUND(IZ) + XRELATIVE(IZ))
-    end do
+    END DO
     XABUND(J,1) = ABUND(1)
     XABUND(J,2) = ABUND(2)
     WTMOLE(J) = 0.0D0
-    do IZ = 1, 99
+    DO IZ = 1, 99
       WTMOLE(J) = WTMOLE(J) + XABUND(J,IZ) * ATMASS(IZ)
-    end do
-  end do
+    END DO
+  END DO
   YABUND(1) = ABUND(1)
   YABUND(2) = ABUND(2)
-  do IZ = 3, 99
+  DO IZ = 3, 99
     YABUND(IZ) = ABUND(IZ) + XRELATIVE(IZ)
-  end do
-  do J = 1, NRHOX
+  END DO
+  DO J = 1, NRHOX
     TK(J) = KBOL * T(J)
     HKT(J) = HPLANCK / TK(J)
     HCKT(J) = HKT(J) * CLIGHT
-    TKEV(J) = 8.6171D-5 * T(J)
+    TKEV(J) = KBOL_EV * T(J)
     TLOG(J) = LOG(T(J))
     XNATOM(J) = P(J) / TK(J) - XNE(J)
     RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
-    if (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
+    IF (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
     CHARGESQ(J) = XNE(J)
-  end do
+  END DO
   WRITE(6, '(/" H1",I2," H2PLUS",I2," HMINUS",I2," HRAY",I2,' // &
     '" HE1",I2," HE2",I2," HEMINUS",I2," HERAY",I2," COOL",I2,' // &
     '" LUKE",I2/" HOT",I2," ELECTRON",I2," H2RAY",I2," HLINES",' // &
@@ -4244,18 +4118,18 @@ SUBROUTINE READIN(MODE)
     '"  TRBSND",F6.2,"  TRBCON",F6.2)') &
     IFCORR, IFPRES, IFSURF, IFSCAT, IFCONV, MIXLTH, IFMOL, &
     IFTURB, TRBFDG, TRBPOW, TRBSND, TRBCON
-  write(6, *)
+  WRITE(6, *)
   WRITE(6, '(" NUMITS",I3,"  IFPRNT",*(I2))') NUMITS, IFPRNT(1:NUMITS)
   WRITE(6, '(10X,"  IFPNCH",*(I2))') IFPNCH(1:NUMITS)
 
   ! Auto-generate title from mixing length
-  block
-    character(74) :: TITLEBUF
-    write(TITLEBUF, '(A,F5.2)') 'ATLAS12 l/H=', MIXLTH
-    do I = 1, 74
+  BLOCK
+    CHARACTER(74) :: TITLEBUF
+    WRITE(TITLEBUF, '(A,F5.2)') 'ATLAS12 l/H=', MIXLTH
+    DO I = 1, 74
       TITLE(I) = TITLEBUF(I:I)
-    end do
-  end block
+    END DO
+  END BLOCK
 
 END SUBROUTINE READIN
 
@@ -4282,33 +4156,33 @@ END SUBROUTINE READIN
 
 SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8, intent(in) :: TEFF_NEW, LOGG_NEW
+  REAL(8), INTENT(IN) :: TEFF_NEW, LOGG_NEW
 
   ! --- Tau grid parameters ---
   ! NDEPTHS: number of depth points in the output model
   ! TAU1LG and STEPLG are module-level variables (mod_atlas_data),
   ! also used by TCORR to rebuild the grid during iterations.
   ! The deepest point is at log10(tau) = TAU1LG + (NDEPTHS-1)*STEPLG
-  integer, parameter :: NDEPTHS = 80
+  INTEGER, PARAMETER :: NDEPTHS = 80
 
   ! Local work arrays for interpolation
-  real*8  :: DUM1(kw), DUM2(kw), DUM3(kw), DUM4(kw)
-  real*8  :: DUM5(kw), DUM6(kw), DUM7(kw), DUM8(kw)
-  real*8  :: GNEW
-  integer :: I, J, IDUM
+  REAL(8)  :: DUM1(kw), DUM2(kw), DUM3(kw), DUM4(kw)
+  REAL(8)  :: DUM5(kw), DUM6(kw), DUM7(kw), DUM8(kw)
+  REAL(8)  :: GNEW
+  INTEGER :: I, J, IDUM
 
   ! Convert logg to linear gravity
   GNEW = 10.0D0**LOGG_NEW
 
   ! --- Step 1: Build new uniform log-tau grid ---
-  do J = 1, NDEPTHS
+  DO J = 1, NDEPTHS
     TAUSTD(J) = 10.0D0**(TAU1LG + (J-1)*STEPLG)
-  end do
+  END DO
 
   ! --- Step 2: Integrate ABROSS to get TAUROS from current model ---
-  call INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
+  CALL INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
 
   ! --- Step 3: Interpolate all structure variables onto new grid ---
   IDUM = MAP1(TAUROS, RHOX,   NRHOX, TAUSTD, DUM1, NDEPTHS)
@@ -4319,7 +4193,7 @@ SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
   IDUM = MAP1(TAUROS, PRAD,   NRHOX, TAUSTD, DUM6, NDEPTHS)
   IDUM = MAP1(TAUROS, VTURB,  NRHOX, TAUSTD, DUM7, NDEPTHS)
   IDUM = MAP1(TAUROS, BMIN,   NRHOX, TAUSTD, DUM8, NDEPTHS)
-  do J = 1, NDEPTHS
+  DO J = 1, NDEPTHS
     RHOX(J)   = DUM1(J)
     T(J)      = DUM2(J)
     P(J)      = DUM3(J)
@@ -4329,39 +4203,39 @@ SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
     PRADK(J)  = PRAD(J) + PRADK0
     VTURB(J)  = DUM7(J)
     BMIN(J)   = DUM8(J)
-  end do
-  do I = 1, 6
+  END DO
+  DO I = 1, 6
     IDUM = MAP1(TAUROS, BHYD(1,I), NRHOX, TAUSTD, DUM1, NDEPTHS)
-    do J = 1, NDEPTHS
+    DO J = 1, NDEPTHS
       BHYD(J,I) = DUM1(J)
-    end do
-  end do
+    END DO
+  END DO
   NRHOX = NDEPTHS
 
   ! --- Step 4: Rescale to new Teff/logg if different ---
-  if (TEFF_NEW == 0.0D0) return
-  if (TEFF_NEW == TEFF .and. GNEW == GRAV) return
-  if (TEFF_NEW < TEFF+1.0D0 .and. TEFF_NEW > TEFF-1.0D0 .and. &
-      GNEW < GRAV*1.001D0 .and. GNEW > GRAV*0.999D0) return
+  IF (TEFF_NEW == 0.0D0) RETURN
+  IF (TEFF_NEW == TEFF .AND. GNEW == GRAV) RETURN
+  IF (TEFF_NEW < TEFF+1.0D0 .AND. TEFF_NEW > TEFF-1.0D0 .AND. &
+      GNEW < GRAV*1.001D0 .AND. GNEW > GRAV*0.999D0) RETURN
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TAUROS(J) = TAUSTD(J)
     T(J)      = T(J) * TEFF_NEW / TEFF
     PTURB(J)  = 0.0D0
     PRADK(J)  = PRADK(J) * (TEFF_NEW/TEFF)**4
     PRAD(J)   = PRAD(J)  * (TEFF_NEW/TEFF)**4
-  end do
+  END DO
   PRADK0 = PRADK0 * (TEFF_NEW/TEFF)**4
   PZERO  = PCON + PRADK0 + PTURB0
   TEFF   = TEFF_NEW
   FLUX   = SIGMA_SB / FOURPI * TEFF**4
   GRAV   = GNEW
   GLOG   = LOG10(GRAV)
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     PTOTAL(J) = P(J) + PRAD(J) + PTURB(J)
     RHOX(J)   = PTOTAL(J) / GRAV
     PTOTAL(J) = PTOTAL(J) + PZERO
-  end do
+  END DO
 
 END SUBROUTINE SCALE_MODEL
 
@@ -4371,20 +4245,20 @@ END SUBROUTINE SCALE_MODEL
 
 FUNCTION FREEFR(CARD)
 
-  implicit none
-  character(1), intent(inout) :: CARD(*)
-  real*8 :: FREEFR
-  integer :: I, L
+  IMPLICIT NONE
+  CHARACTER(1), INTENT(INOUT) :: CARD(*)
+  REAL(8) :: FREEFR
+  INTEGER :: I, L
 
   MORE = 1
   FREEFR = FREEFF(CARD)
-  if (IFFAIL == 0) return
+  IF (IFFAIL == 0) RETURN
   L = LAST - 1
-  read(INPUTDATA, 1) (CARD(I), I=1, L)
-    1 format(132A1)
+  READ(INPUTDATA, 1) (CARD(I), I=1, L)
+    1 FORMAT(132A1)
   NUMCOL = 1
   FREEFR = FREEFF(CARD)
-  return
+  RETURN
 
 END FUNCTION FREEFR
 
@@ -4406,37 +4280,37 @@ END FUNCTION FREEFR
 
 FUNCTION FREEFF(CARD)
 
-  implicit none
+  IMPLICIT NONE
 
-  character(1), intent(in) :: CARD(*)
-  real*8 :: FREEFF
+  CHARACTER(1), INTENT(IN) :: CARD(*)
+  REAL(8) :: FREEFF
 
   ! Digit lookup table: 0-9
-  character(1), parameter :: DIGIT(10) = (/ &
+  CHARACTER(1), PARAMETER :: DIGIT(10) = (/ &
     '0','1','2','3','4','5','6','7','8','9' /)
 
   ! Parser states
-  integer, parameter :: ST_INTEGER  = 1  ! before decimal point
-  integer, parameter :: ST_FRACTION = 2  ! after decimal point
-  integer, parameter :: ST_EXPSIGN  = 3  ! after E (expecting sign or digit)
-  integer, parameter :: ST_EXPDIGIT = 4  ! exponent digits
+  INTEGER, PARAMETER :: ST_INTEGER  = 1  ! before decimal point
+  INTEGER, PARAMETER :: ST_FRACTION = 2  ! after decimal point
+  INTEGER, PARAMETER :: ST_EXPSIGN  = 3  ! after E (expecting sign or digit)
+  INTEGER, PARAMETER :: ST_EXPDIGIT = 4  ! exponent digits
 
-  character(1) :: C
-  real*8  :: ANSWER, ASIGN
-  integer :: I, N, NCOL, NPT, NPOWER, ISIGN, IF0, STATE
+  CHARACTER(1) :: C
+  REAL(8)  :: ANSWER, ASIGN
+  INTEGER :: I, N, NCOL, NPT, NPOWER, ISIGN, IF0, STATE
 
   ! Initialize
   IFFAIL = 0
-  if (NUMCOL > LAST) then
+  IF (NUMCOL > LAST) THEN
     IFFAIL = 1
-    if (MORE > 0) then
+    IF (MORE > 0) THEN
       FREEFF = 0.0D0
-      return
-    end if
-    write(6, '(A/(1X,131A1))') '1FREEFF HAS READ OFF THE END', &
+      RETURN
+    END IF
+    WRITE(6, '(A/(1X,131A1))') '1FREEFF HAS READ OFF THE END', &
       (CARD(I), I = 1, LAST)
-    stop 1
-  end if
+    STOP 1
+  END IF
 
   ANSWER = 0.0D0
   ASIGN  = 1.0D0
@@ -4449,177 +4323,177 @@ FUNCTION FREEFF(CARD)
   !---------------------------------------------------------------------
   ! Main scan loop
   !---------------------------------------------------------------------
-  scan_loop: do NCOL = NUMCOL, LAST
+  scan_loop: DO NCOL = NUMCOL, LAST
     C = CARD(NCOL)
 
-    select case (STATE)
+    SELECT CASE (STATE)
 
     !-----------------------------------------------------------------
     ! State 1: Integer part (before decimal point)
     !-----------------------------------------------------------------
-    case (ST_INTEGER)
-      if (C == ' ') then
-        if (N == 0) then
-          call freeff_reset()
-          cycle scan_loop
-        end if
+    CASE (ST_INTEGER)
+      IF (C == ' ') THEN
+        IF (N == 0) THEN
+          CALL freeff_reset()
+          CYCLE scan_loop
+        END IF
         ! Blank after digits — return integer value
         FREEFF = ANSWER * ASIGN
         NUMCOL = NCOL + 1
-        return
-      end if
+        RETURN
+      END IF
       ! Check for digit
-      do I = 1, 10
-        if (C == DIGIT(I)) then
+      DO I = 1, 10
+        IF (C == DIGIT(I)) THEN
           N = N + 1
           ANSWER = 10.0D0 * ANSWER + dble(I - 1)
-          cycle scan_loop
-        end if
-      end do
+          CYCLE scan_loop
+        END IF
+      END DO
       ! Check for decimal point
-      if (C == '.') then
+      IF (C == '.') THEN
         STATE = ST_FRACTION
-        cycle scan_loop
-      end if
+        CYCLE scan_loop
+      END IF
       ! Check for comma (delimiter)
-      if (C == ',') then
-        if (N == 0) then
+      IF (C == ',') THEN
+        IF (N == 0) THEN
           ! Reset — comma before any digits
-          call freeff_reset()
-          cycle scan_loop
-        end if
+          CALL freeff_reset()
+          CYCLE scan_loop
+        END IF
         FREEFF = ANSWER * ASIGN
         NUMCOL = NCOL + 1
-        return
-      end if
+        RETURN
+      END IF
       ! Check for minus sign
-      if (C == '-') then
-        if (N == 0) then
+      IF (C == '-') THEN
+        IF (N == 0) THEN
           ASIGN = -1.0D0
-          cycle scan_loop
-        end if
+          CYCLE scan_loop
+        END IF
         ! Minus after digits — reset
-        call freeff_reset()
-        cycle scan_loop
-      end if
+        CALL freeff_reset()
+        CYCLE scan_loop
+      END IF
       ! Unrecognized character — reset
-      call freeff_reset()
+      CALL freeff_reset()
 
     !-----------------------------------------------------------------
     ! State 2: Fractional part (after decimal point)
     !-----------------------------------------------------------------
-    case (ST_FRACTION)
+    CASE (ST_FRACTION)
       ! Check for digit
-      do I = 1, 10
-        if (C == DIGIT(I)) then
+      DO I = 1, 10
+        IF (C == DIGIT(I)) THEN
           N = N + 1
           NPT = NPT + 1
           ANSWER = 10.0D0 * ANSWER + dble(I - 1)
-          cycle scan_loop
-        end if
-      end do
-      if (C == 'E') then
+          CYCLE scan_loop
+        END IF
+      END DO
+      IF (C == 'E') THEN
         STATE = ST_EXPSIGN
-        cycle scan_loop
-      end if
-      if (C == '-') then
+        CYCLE scan_loop
+      END IF
+      IF (C == '-') THEN
         ! Minus after decimal digits — treat as exponent sign
         ISIGN = -1
         NPOWER = 0
         STATE = ST_EXPDIGIT
-        cycle scan_loop
-      end if
-      if (C == '+') then
+        CYCLE scan_loop
+      END IF
+      IF (C == '+') THEN
         NPOWER = 0
         STATE = ST_EXPDIGIT
-        cycle scan_loop
-      end if
-      if (C == ' ' .or. C == ',') then
-        if (N == 0) then
-          call freeff_reset()
-          cycle scan_loop
-        end if
+        CYCLE scan_loop
+      END IF
+      IF (C == ' ' .OR. C == ',') THEN
+        IF (N == 0) THEN
+          CALL freeff_reset()
+          CYCLE scan_loop
+        END IF
         FREEFF = ANSWER * ASIGN / 10.0D0**NPT
         NUMCOL = NCOL + 1
-        return
-      end if
+        RETURN
+      END IF
       ! Unrecognized — reset
-      call freeff_reset()
+      CALL freeff_reset()
 
     !-----------------------------------------------------------------
     ! State 3: After E (expecting sign or first exponent digit)
     !-----------------------------------------------------------------
-    case (ST_EXPSIGN)
+    CASE (ST_EXPSIGN)
       ! Check for digit
-      do I = 1, 10
-        if (C == DIGIT(I)) then
+      DO I = 1, 10
+        IF (C == DIGIT(I)) THEN
           NPOWER = I - 1
           IF0 = 1
           STATE = ST_EXPDIGIT
-          cycle scan_loop
-        end if
-      end do
-      if (C == ' ' .or. C == '+') then
+          CYCLE scan_loop
+        END IF
+      END DO
+      IF (C == ' ' .OR. C == '+') THEN
         NPOWER = 0
         STATE = ST_EXPDIGIT
-        cycle scan_loop
-      end if
-      if (C == '-') then
+        CYCLE scan_loop
+      END IF
+      IF (C == '-') THEN
         ISIGN = -1
         NPOWER = 0
         STATE = ST_EXPDIGIT
-        cycle scan_loop
-      end if
+        CYCLE scan_loop
+      END IF
       ! Unrecognized — reset
-      call freeff_reset()
+      CALL freeff_reset()
 
     !-----------------------------------------------------------------
     ! State 4: Exponent digits
     !-----------------------------------------------------------------
-    case (ST_EXPDIGIT)
+    CASE (ST_EXPDIGIT)
       ! Check for digit
-      do I = 1, 10
-        if (C == DIGIT(I)) then
+      DO I = 1, 10
+        IF (C == DIGIT(I)) THEN
           NPOWER = 10 * NPOWER + I - 1
           IF0 = 1
-          if (NPOWER >= MAXPOW) then
-            call freeff_reset()
-            cycle scan_loop
-          end if
-          cycle scan_loop
-        end if
-      end do
-      if (C == ',' .or. C == ' ') then
-        if (IF0 == 0) then
-          call freeff_reset()
-          cycle scan_loop
-        end if
+          IF (NPOWER >= MAXPOW) THEN
+            CALL freeff_reset()
+            CYCLE scan_loop
+          END IF
+          CYCLE scan_loop
+        END IF
+      END DO
+      IF (C == ',' .OR. C == ' ') THEN
+        IF (IF0 == 0) THEN
+          CALL freeff_reset()
+          CYCLE scan_loop
+        END IF
         FREEFF = ANSWER * ASIGN * 10.0D0**(ISIGN * NPOWER - NPT)
         NUMCOL = NCOL + 1
-        return
-      end if
+        RETURN
+      END IF
       ! Unrecognized — reset
-      call freeff_reset()
+      CALL freeff_reset()
 
-    end select
-  end do scan_loop
+    END SELECT
+  END DO scan_loop
 
   !---------------------------------------------------------------------
   ! Fell off end of card
   !---------------------------------------------------------------------
   NUMCOL = LAST + 1
   IFFAIL = 1
-  if (MORE > 0) then
+  IF (MORE > 0) THEN
     FREEFF = 0.0D0
-    return
-  end if
-  write(6, '(A/(1X,131A1))') '1FREEFF HAS READ OFF THE END', &
+    RETURN
+  END IF
+  WRITE(6, '(A/(1X,131A1))') '1FREEFF HAS READ OFF THE END', &
     (CARD(I), I = 1, LAST)
-  stop 1
+  STOP 1
 
-contains
+CONTAINS
 
-  subroutine freeff_reset()
+  SUBROUTINE freeff_reset()
     ! Reset parser to initial searching state
     ASIGN  = 1.0D0
     ANSWER = 0.0D0
@@ -4628,7 +4502,7 @@ contains
     IF0    = 0
     N      = 0
     STATE  = ST_INTEGER
-  end subroutine freeff_reset
+  END SUBROUTINE freeff_reset
 
 END FUNCTION FREEFF
 
@@ -4649,106 +4523,106 @@ END FUNCTION FREEFF
 
 FUNCTION NEXTWORD(CARD)
 
-  implicit none
+  IMPLICIT NONE
 
-  character(1), intent(in) :: CARD(*)
-  character(20) :: NEXTWORD
+  CHARACTER(1), INTENT(IN) :: CARD(*)
+  CHARACTER(20) :: NEXTWORD
 
-  character(1) :: C
-  integer :: I, NCOL, N
-  logical :: IN_WORD, SKIP_E, IS_ALPHA
+  CHARACTER(1) :: C
+  INTEGER :: I, NCOL, N
+  LOGICAL :: IN_WORD, SKIP_E, IS_ALPHA
 
   ! Initialize
   NEXTWORD = ' '
   IFFAIL = 0
   N = 0
-  IN_WORD = .false.
+  IN_WORD = .FALSE.
 
-  if (LETCOL > LAST) then
+  IF (LETCOL > LAST) THEN
     IFFAIL = 1
-    if (MORE > 0) return
-    write(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
+    IF (MORE > 0) RETURN
+    WRITE(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
       (CARD(I), I = 1, LAST)
-    stop 1
-  end if
+    STOP 1
+  END IF
 
   !---------------------------------------------------------------------
   ! Main scan loop
   !---------------------------------------------------------------------
-  scan_loop: do NCOL = LETCOL, LAST
+  scan_loop: DO NCOL = LETCOL, LAST
     C = CARD(NCOL)
 
-    if (.not. IN_WORD) then
+    IF (.NOT. IN_WORD) THEN
       !--- State: searching for word start ---
-      if (C == ' ') cycle scan_loop
+      IF (C == ' ') CYCLE scan_loop
 
       ! Check if C is a letter (A-Z)
-      IS_ALPHA = (C >= 'A' .and. C <= 'Z')
-      if (.not. IS_ALPHA) then
+      IS_ALPHA = (C >= 'A' .AND. C <= 'Z')
+      IF (.NOT. IS_ALPHA) THEN
         ! Not a letter — reset and continue searching
         N = 0
-        cycle scan_loop
-      end if
+        CYCLE scan_loop
+      END IF
 
       ! Special case: is this an "E" in scientific notation?
-      if (C == 'E' .and. NCOL > 1) then
-        SKIP_E = .false.
+      IF (C == 'E' .AND. NCOL > 1) THEN
+        SKIP_E = .FALSE.
         ! Check preceding character: digit or "."
-        if ((CARD(NCOL-1) >= '0' .and. CARD(NCOL-1) <= '9') .or. &
-            CARD(NCOL-1) == '.') then
+        IF ((CARD(NCOL-1) >= '0' .AND. CARD(NCOL-1) <= '9') .OR. &
+            CARD(NCOL-1) == '.') THEN
           ! Check following character: digit or blank
-          if (CARD(NCOL+1) == ' ' .or. &
-              (CARD(NCOL+1) >= '0' .and. CARD(NCOL+1) <= '9')) then
-            SKIP_E = .true.
-          end if
-        end if
-        if (SKIP_E) then
+          IF (CARD(NCOL+1) == ' ' .OR. &
+              (CARD(NCOL+1) >= '0' .AND. CARD(NCOL+1) <= '9')) THEN
+            SKIP_E = .TRUE.
+          END IF
+        END IF
+        IF (SKIP_E) THEN
           N = 0
-          cycle scan_loop
-        end if
-      end if
+          CYCLE scan_loop
+        END IF
+      END IF
 
       ! Start a new word
       N = 1
       NEXTWORD(1:1) = C
-      IN_WORD = .true.
+      IN_WORD = .TRUE.
 
-    else
+    ELSE
       !--- State: inside a word ---
-      if (C == ' ' .or. C == '=' .or. C == ',') then
+      IF (C == ' ' .OR. C == '=' .OR. C == ',') THEN
         ! Word delimiter — return the word
         LETCOL = NCOL + 1
-        return
-      end if
+        RETURN
+      END IF
 
       ! Check if C is alphanumeric (A-Z or 0-9)
-      IS_ALPHA = (C >= 'A' .and. C <= 'Z') .or. &
-                 (C >= '0' .and. C <= '9')
-      if (.not. IS_ALPHA) then
+      IS_ALPHA = (C >= 'A' .AND. C <= 'Z') .OR. &
+                 (C >= '0' .AND. C <= '9')
+      IF (.NOT. IS_ALPHA) THEN
         ! Not alphanumeric — abandon word, reset to searching
         NEXTWORD = ' '
         N = 0
-        IN_WORD = .false.
-        cycle scan_loop
-      end if
+        IN_WORD = .FALSE.
+        CYCLE scan_loop
+      END IF
 
       ! Accumulate character into word (max 20 chars)
       N = N + 1
-      if (N <= 20) then
+      IF (N <= 20) THEN
         NEXTWORD(N:N) = C
-      end if
-    end if
-  end do scan_loop
+      END IF
+    END IF
+  END DO scan_loop
 
   !---------------------------------------------------------------------
   ! Fell off end of card without completing a word
   !---------------------------------------------------------------------
   LETCOL = LAST + 1
   IFFAIL = 1
-  if (MORE > 0) return
-  write(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
+  IF (MORE > 0) RETURN
+  WRITE(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
     (CARD(I), I = 1, LAST)
-  stop 1
+  STOP 1
 
 END FUNCTION NEXTWORD
 
@@ -4805,33 +4679,33 @@ END FUNCTION NEXTWORD
 
 SUBROUTINE READMOL
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Code extraction table ---
   ! XCODE(I) is the place value for the I-th pair of digits in the
   ! species code. Dividing the code by XCODE and truncating extracts
   ! the atomic number encoded at that position.
-  real*8, parameter :: XCODE(8) = &
+  REAL(8), PARAMETER :: XCODE(8) = &
     (/ 1.0D14, 1.0D12, 1.0D10, 1.0D8, 1.0D6, 1.0D4, 1.0D2, 1.0D0 /)
 
   ! --- Local variables ---
-  real*8  :: C                   ! species code read from file
-  real*8  :: E1, E2, E3, E4, E5, E6  ! equilibrium constants
-  real*8  :: X                   ! remaining code after extracting components
-  integer :: JMOL               ! molecule counter
-  integer :: KLOC               ! position in KCOMPS array
-  integer :: ID                  ! atomic number extracted from code
-  integer :: ION                 ! ionization state from decimal part
-  integer :: II                  ! starting position in XCODE for decoding
-  integer :: I, IEQUA, IOS
+  REAL(8)  :: C                   ! species code read from file
+  REAL(8)  :: E1, E2, E3, E4, E5, E6  ! equilibrium constants
+  REAL(8)  :: X                   ! remaining code after extracting components
+  INTEGER :: JMOL               ! molecule counter
+  INTEGER :: KLOC               ! position in KCOMPS array
+  INTEGER :: ID                  ! atomic number extracted from code
+  INTEGER :: ION                 ! ionization state from decimal part
+  INTEGER :: II                  ! starting position in XCODE for decoding
+  INTEGER :: I, IEQUA, IOS
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING READMOL'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING READMOL'
 
-  open(UNIT=2, FILE=trim(DATADIR)//'molecules.dat', &
-       STATUS='OLD', ACTION='READ', iostat=IOS)
-    if (IOS /= 0) then
-      stop 'molecules.dat file not found'
-    end if
+  OPEN(UNIT=2, FILE=trim(DATADIR)//'molecules.dat', &
+       STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      STOP 'molecules.dat file not found'
+    END IF
 
   ! --- Initialize: no elements require equations yet ---
   IFEQUA(:) = 0
@@ -4840,59 +4714,59 @@ SUBROUTINE READMOL
   KLOC    = 1
   LOCJ(1) = 1
 
-  do JMOL = 1, maxmol
+  DO JMOL = 1, maxmol
 
-    if (KLOC > MAXLOC) then
-      write(6, '(A)') ' READMOL ERROR: TOO MANY COMPONENTS'
-      close(UNIT=2)
-      stop 1
-    end if
+    IF (KLOC > MAXLOC) THEN
+      WRITE(6, '(A)') ' READMOL ERROR: TOO MANY COMPONENTS'
+      CLOSE(UNIT=2)
+      STOP 1
+    END IF
 
-    read(2, '(F18.2, F7.3, 5E11.4)') C, E1, E2, E3, E4, E5, E6
+    READ(2, '(F18.2, F7.3, 5E11.4)') C, E1, E2, E3, E4, E5, E6
 
     ! Code = 0 terminates the list
-    if (C == 0.0D0) exit
+    IF (C == 0.0D0) EXIT
 
-    if (IDEBUG == 1) write(6, '(I5, F18.2, F7.3, 1P5E11.4)') &
+    IF (IDEBUG == 1) WRITE(6, '(I5, F18.2, F7.3, 1P5E11.4)') &
          JMOL, C, E1, E2, E3, E4, E5, E6
 
     ! --- Decode species code into atomic components ---
     ! Find the leading non-zero pair of digits
     II = 0
-    do I = 1, 8
-      if (C >= XCODE(I)) then
+    DO I = 1, 8
+      IF (C >= XCODE(I)) THEN
         II = I
-        exit
-      end if
-    end do
-    if (II == 0) then
-      write(6, '(A,F18.2)') ' READMOL ERROR: invalid species code ', C
-      close(UNIT=2)
-      stop 1
-    end if
+        EXIT
+      END IF
+    END DO
+    IF (II == 0) THEN
+      WRITE(6, '(A,F18.2)') ' READMOL ERROR: invalid species code ', C
+      CLOSE(UNIT=2)
+      STOP 1
+    END IF
 
     ! Extract atomic numbers from successive digit pairs
     X = C
-    do I = II, 8
+    DO I = II, 8
       ID = int(X / XCODE(I) + 0.5D0)
       X  = X - dble(ID) * XCODE(I)
-      if (ID == 0) ID = 100       ! code 00 → neutral atom (element 100)
+      IF (ID == 0) ID = 100       ! code 00 → neutral atom (element 100)
       IFEQUA(ID) = 1              ! flag: this element needs an equation
       KCOMPS(KLOC) = ID
       KLOC = KLOC + 1
-    end do
+    END DO
 
     ! Extract ionization state from decimal part: .NN → NN electrons removed
     ! Each removed electron adds component 101 (free electron)
     ION = int(X * 100.0D0 + 0.5D0)
-    if (ION >= 1) then
+    IF (ION >= 1) THEN
       IFEQUA(100) = 1    ! neutral atom appears in ion balance
       IFEQUA(101) = 1    ! electron appears in ion balance
-      do I = 1, ION
+      DO I = 1, ION
         KCOMPS(KLOC) = 101
         KLOC = KLOC + 1
-      end do
-    end if
+      END DO
+    END IF
 
     ! Store molecule data
     LOCJ(JMOL + 1) = KLOC
@@ -4904,14 +4778,14 @@ SUBROUTINE READMOL
     EQUIL(5, JMOL) = E5
     EQUIL(6, JMOL) = E6
 
-  end do
+  END DO
 
   NUMMOL = JMOL - 1
-  if (NUMMOL >= maxmol .and. C /= 0.0D0) then
-    write(6, '(A,I5)') ' READMOL ERROR: molecule count exceeds maxmol =', maxmol
-    close(UNIT=2)
-    stop 1
-  end if
+  IF (NUMMOL >= maxmol .AND. C /= 0.0D0) THEN
+    WRITE(6, '(A,I5)') ' READMOL ERROR: molecule count exceeds maxmol =', maxmol
+    CLOSE(UNIT=2)
+    STOP 1
+  END IF
   NLOC   = KLOC - 1
 
   ! --- Assign equation numbers to each element ---
@@ -4920,12 +4794,12 @@ SUBROUTINE READMOL
   ! If any ions are present, the last equation is charge conservation
   ! (variable NEQUA = XNE, variable NEQUA1 = 1/XNE).
   IEQUA = 1
-  do I = 1, 100
-    if (IFEQUA(I) == 0) cycle
+  DO I = 1, 100
+    IF (IFEQUA(I) == 0) CYCLE
     IEQUA = IEQUA + 1
     IFEQUA(I) = IEQUA        ! element I → equation number IEQUA
     IDEQUA(IEQUA) = I        ! equation IEQUA → element I
-  end do
+  END DO
 
   NEQUA  = IEQUA
   NEQUA1 = NEQUA + 1
@@ -4935,18 +4809,18 @@ SUBROUTINE READMOL
   ! --- Remap KCOMPS from element IDs to equation indices ---
   ! After this, KCOMPS(K) gives the equation number for the K-th
   ! component, ready for direct use in building the rate matrix.
-  do I = 1, NLOC
+  DO I = 1, NLOC
     ID = KCOMPS(I)
     KCOMPS(I) = IFEQUA(ID)
-  end do
+  END DO
 
-  write(6,*)
-  write(6, '(A,I4,A,I4)') ' MOLECULES  USED', NUMMOL, '  MAX', MAXMOL
-  write(6, '(A,I4,A,I4)') ' COMPONENTS USED', NLOC,   '  MAX', MAXLOC
-  write(6, '(A,I4,A,I4)') ' EQUATIONS  USED', NEQUA,  '  MAX', MAXEQ
+  WRITE(6,*)
+  WRITE(6, '(A,I4,A,I4)') ' MOLECULES  USED', NUMMOL, '  MAX', MAXMOL
+  WRITE(6, '(A,I4,A,I4)') ' COMPONENTS USED', NLOC,   '  MAX', MAXLOC
+  WRITE(6, '(A,I4,A,I4)') ' EQUATIONS  USED', NEQUA,  '  MAX', MAXEQ
 
-  close(UNIT=2)
-  return
+  CLOSE(UNIT=2)
+  RETURN
 
 END SUBROUTINE READMOL
 
@@ -5002,78 +4876,78 @@ END SUBROUTINE READMOL
 
 SUBROUTINE COMPUTE_ONE_POP(CODE, MODE, NUMBER)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  real*8,  intent(in)    :: CODE
-  integer, intent(in)    :: MODE
-  real*8,  intent(inout) :: NUMBER(kw, *)
+  REAL(8),  INTENT(IN)    :: CODE
+  INTEGER, INTENT(IN)    :: MODE
+  REAL(8),  INTENT(INOUT) :: NUMBER(kw, *)
 
   ! --- Persistent: tracks whether electron density is current ---
-  integer, save :: ITEMP_PREV = 0
+  INTEGER, SAVE :: ITEMP_PREV = 0
 
   ! --- Local variables ---
-  integer :: IZ       ! atomic number
-  integer :: NION     ! number of ionization stages requested
-  integer :: NNNN     ! number of stages to convert to number density
-  integer :: J, ION
+  INTEGER :: IZ       ! atomic number
+  INTEGER :: NION     ! number of ionization stages requested
+  INTEGER :: NNNN     ! number of stages to convert to number density
+  INTEGER :: J, ION
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING COMPUTE_ONE_POP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COMPUTE_ONE_POP'
 
   !=====================================================================
   ! Branch: molecular equilibrium ON or OFF
   !=====================================================================
-  if (IFMOL == 1) then
+  IF (IFMOL == 1) THEN
 
     ! --- Molecular equilibrium path ---
     ! NMOLEC solves the full molecular + ionization equilibrium system,
     ! including electron density, in one shot.
-    if (IFPRES == 1 .and. ITEMP /= ITEMP_PREV) call NMOLEC(MODE)
+    IF (IFPRES == 1 .AND. ITEMP /= ITEMP_PREV) CALL NMOLEC(MODE)
     ITEMP_PREV = ITEMP
 
-    if (CODE == 0.0D0) return
+    IF (CODE == 0.0D0) RETURN
 
     ! Look up requested species from molecular equilibrium tables
-    call MOLEC(CODE, MODE, NUMBER)
+    CALL MOLEC(CODE, MODE, NUMBER)
 
-  else
+  ELSE
 
     ! --- Atomic-only path (no molecules) ---
     ! NELECT solves for electron density from Saha ionization alone.
-    if (IFPRES == 1 .and. ITEMP /= ITEMP_PREV) call NELECT
+    IF (IFPRES == 1 .AND. ITEMP /= ITEMP_PREV) CALL NELECT
     ITEMP_PREV = ITEMP
 
-    if (CODE == 0.0D0) return
+    IF (CODE == 0.0D0) RETURN
 
-    if (CODE >= 100.0D0) then
+    IF (CODE >= 100.0D0) THEN
       ! Molecular species requested but molecules are off
-      write(6, '(A)') ' COMPUTE_ONE_POP ERROR: molecular species requested but IFMOL=0'
-      stop 1
-    end if
+      WRITE(6, '(A)') ' COMPUTE_ONE_POP ERROR: molecular species requested but IFMOL=0'
+      STOP 1
+    END IF
 
     ! --- Decode species code ---
     IZ   = int(CODE)                              ! atomic number
     NION = int((CODE - dble(IZ)) * 100.0D0 + 1.5D0)  ! number of ion stages
 
     ! --- Compute ionization fractions at each depth via Saha equation ---
-    do J = 1, NRHOX
-      call PFSAHA(J, IZ, NION, MODE, NUMBER)
+    DO J = 1, NRHOX
+      CALL PFSAHA(J, IZ, NION, MODE, NUMBER)
 
       ! Convert fractions to absolute number densities:
       !   n_ion = fraction * n_total_atoms * abundance_of_element
       ! For MODE < 10: only the first stage (ground ionization)
       ! For MODE >= 10: all NION stages
       NNNN = 1
-      if (MODE >= 10) NNNN = NION
+      IF (MODE >= 10) NNNN = NION
 
-      do ION = 1, NNNN
+      DO ION = 1, NNNN
         NUMBER(J, ION) = NUMBER(J, ION) * XNATOM(J) * XABUND(J, IZ)
-      end do
-    end do
+      END DO
+    END DO
 
-  end if
+  END IF
 
-  return
+  RETURN
 
 END SUBROUTINE COMPUTE_ONE_POP
 
@@ -5105,16 +4979,16 @@ END SUBROUTINE COMPUTE_ONE_POP
 
 SUBROUTINE ENERGY_DENSITY
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Temperature perturbation for finite differences ---
-  real*8, parameter :: DELTA_P     = 1.001D0     ! T+ multiplier
-  real*8, parameter :: DELTA_M     = 0.999D0     ! T- multiplier
-  real*8, parameter :: RATIO_PM    = 0.999D0 / 1.001D0  ! T- / T+ (to go from T+ to T-)
-  real*8, parameter :: DLNUDT_SCALE = 1000.0D0   ! 2 / (ln(1.001) - ln(0.999))
+  REAL(8), PARAMETER :: DELTA_P     = 1.001D0     ! T+ multiplier
+  REAL(8), PARAMETER :: DELTA_M     = 0.999D0     ! T- multiplier
+  REAL(8), PARAMETER :: RATIO_PM    = 0.999D0 / 1.001D0  ! T- / T+ (to go from T+ to T-)
+  REAL(8), PARAMETER :: DLNUDT_SCALE = 1000.0D0   ! 2 / (ln(1.001) - ln(0.999))
 
   ! --- Number of ionization stages per element (for PFSAHA calls) ---
-  integer, parameter :: NION_Z(30) = (/ &
+  INTEGER, PARAMETER :: NION_Z(30) = (/ &
     2, 3, 4, 5, 5,                        &  ! Z = 1-5
     6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,     &  ! Z = 6-16
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,  &  ! Z = 17-28
@@ -5122,31 +4996,31 @@ SUBROUTINE ENERGY_DENSITY
   ! Z = 31-99: all use NION = 3
 
   ! --- Local arrays ---
-  real*8  :: PFPLUS(mion)    ! partition functions at T+
-  real*8  :: PFMINUS(mion)   ! partition functions at T-
+  REAL(8)  :: PFPLUS(mion)    ! partition functions at T+
+  REAL(8)  :: PFMINUS(mion)   ! partition functions at T-
 
   ! --- Local variables ---
-  real*8  :: XNTOT           ! total particle density (atoms + electrons)
-  real*8  :: UPF, DLNU       ! partition function sum and log-derivative
-  integer :: J, IION, NOFF
+  REAL(8)  :: XNTOT           ! total particle density (atoms + electrons)
+  REAL(8)  :: UPF, DLNU       ! partition function sum and log-derivative
+  INTEGER :: J, IION, NOFF
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING ENERGY_DENSITY'
-  if (IFEDNS == 0) return
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING ENERGY_DENSITY'
+  IF (IFEDNS == 0) RETURN
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
 
     ! --- Compute partition functions at T+ = T * 1.001 ---
-    call perturb_T(J, DELTA_P)
-    call compute_partfcns(J, PFPLUS)
+    CALL perturb_T(J, DELTA_P)
+    CALL compute_partfcns(J, PFPLUS)
 
     ! --- Compute partition functions at T- = T * 0.999 ---
     ! T is currently at T*1.001, so multiply by 0.999/1.001
-    call perturb_T(J, RATIO_PM)
-    call compute_partfcns(J, PFMINUS)
+    CALL perturb_T(J, RATIO_PM)
+    CALL compute_partfcns(J, PFMINUS)
 
     ! --- Restore original temperature ---
     ! T is currently at T*0.999, so divide by 0.999
-    call perturb_T(J, 1.0D0 / DELTA_M)
+    CALL perturb_T(J, 1.0D0 / DELTA_M)
 
     ! --- Assemble energy density ---
     ! Kinetic: (3/2) n_total kT
@@ -5154,30 +5028,30 @@ SUBROUTINE ENERGY_DENSITY
     EDENS(J) = 1.5D0 * XNTOT * TK(J)
 
     ! Ionization + excitation for each ion stage (IION = 1..840)
-    do IION = 1, 840
+    DO IION = 1, 840
       UPF  = PFPLUS(IION) + PFMINUS(IION) + 1.0D-30
       DLNU = (PFPLUS(IION) - PFMINUS(IION)) / UPF * DLNUDT_SCALE
 
       EDENS(J) = EDENS(J) + XNF(J, IION) * TK(J) &
                * (POTIONSUM(IION) * HCKT(J) + DLNU)
-    end do
+    END DO
 
     ! Convert to energy per unit mass
     EDENS(J) = EDENS(J) / RHO(J)
 
-  end do
+  END DO
 
-  return
+  RETURN
 
-contains
+CONTAINS
 
   !---------------------------------------------------------------------
   ! Multiply temperature and related arrays at depth J by factor FAC.
   !---------------------------------------------------------------------
-  subroutine perturb_T(J_in, FAC)
-    integer, intent(in) :: J_in
-    real*8,  intent(in) :: FAC
-    real*8 :: FAC_INV
+  SUBROUTINE perturb_T(J_in, FAC)
+    INTEGER, INTENT(IN) :: J_in
+    REAL(8),  INTENT(IN) :: FAC
+    REAL(8) :: FAC_INV
     FAC_INV = 1.0D0 / FAC
     T(J_in)    = T(J_in) * FAC
     TK(J_in)   = TK(J_in) * FAC
@@ -5185,27 +5059,27 @@ contains
     HCKT(J_in) = HCKT(J_in) * FAC_INV
     HKT(J_in)  = HKT(J_in) * FAC_INV
     TLOG(J_in) = log(T(J_in))
-  end subroutine perturb_T
+  END SUBROUTINE perturb_T
 
   !---------------------------------------------------------------------
   ! Compute partition functions for all elements (Z=1-99) at depth J
   ! via PFSAHA MODE 5. Results stored in PF(:) at the standard NELION
   ! offsets: IZ*(IZ+1)/2 for Z=1-30, 496+(IZ-31)*5 for Z=31-99.
   !---------------------------------------------------------------------
-  subroutine compute_partfcns(J_in, PF)
-    integer, intent(in)  :: J_in
-    real*8,  intent(out) :: PF(mion)
-    integer :: IZ_loc
+  SUBROUTINE compute_partfcns(J_in, PF)
+    INTEGER, INTENT(IN)  :: J_in
+    REAL(8),  INTENT(OUT) :: PF(mion)
+    INTEGER :: IZ_loc
 
-    do IZ_loc = 1, 30
+    DO IZ_loc = 1, 30
       NOFF = IZ_loc * (IZ_loc + 1) / 2
-      call PFSAHA(J_in, IZ_loc, NION_Z(IZ_loc), 5, PF(NOFF))
-    end do
-    do IZ_loc = 31, 99
+      CALL PFSAHA(J_in, IZ_loc, NION_Z(IZ_loc), 5, PF(NOFF))
+    END DO
+    DO IZ_loc = 31, 99
       NOFF = 496 + (IZ_loc - 31) * 5
-      call PFSAHA(J_in, IZ_loc, 3, 5, PF(NOFF))
-    end do
-  end subroutine compute_partfcns
+      CALL PFSAHA(J_in, IZ_loc, 3, 5, PF(NOFF))
+    END DO
+  END SUBROUTINE compute_partfcns
 
 END SUBROUTINE ENERGY_DENSITY
 
@@ -5247,16 +5121,16 @@ END SUBROUTINE ENERGY_DENSITY
 
 SUBROUTINE NELECT
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Convergence parameters ---
-  integer, parameter :: MAX_ITER_XNE = 200
-  real*8,  parameter :: XNE_TOL      = 1.0D-4   ! relative convergence
+  INTEGER, PARAMETER :: MAX_ITER_XNE = 200
+  REAL(8),  PARAMETER :: XNE_TOL      = 1.0D-4   ! relative convergence
 
   ! --- Number of ionization stages per element for Saha computation ---
   ! These differ slightly from COMPUTE_ALL_POPS because NELECT needs
   ! enough stages to capture charge balance accurately.
-  integer, parameter :: NION_NELECT(30) = (/ &
+  INTEGER, PARAMETER :: NION_NELECT(30) = (/ &
     2, 3, 4, 4, 4,                        &  ! Z = 1-5
     6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,     &  ! Z = 6-16
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,  &  ! Z = 17-28
@@ -5264,19 +5138,19 @@ SUBROUTINE NELECT
   ! Z = 31-99: all use NION = 3
 
   ! --- Local variables ---
-  real*8  :: XNTOT           ! total particle density = P / kT
-  real*8  :: XNENEW          ! new electron density estimate
-  real*8  :: CHARGESQUARE    ! sum of n_ion * q^2
-  real*8  :: ERROR           ! relative change in XNE
-  real*8  :: DEBYE           ! Debye shielding length
-  integer :: J, IZ, ION, IION, NOFF, ITER_XNE
+  REAL(8)  :: XNTOT           ! total particle density = P / kT
+  REAL(8)  :: XNENEW          ! new electron density estimate
+  REAL(8)  :: CHARGESQUARE    ! sum of n_ion * q^2
+  REAL(8)  :: ERROR           ! relative change in XNE
+  REAL(8)  :: DEBYE           ! Debye shielding length
+  INTEGER :: J, IZ, ION, IION, NOFF, ITER_XNE
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING NELECT'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING NELECT'
 
   !---------------------------------------------------------------------
   ! Loop over all depth points
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
 
     ! Total particle density from ideal gas law
     XNTOT = P(J) / TK(J)
@@ -5285,7 +5159,7 @@ SUBROUTINE NELECT
     !-------------------------------------------------------------------
     ! Iterate to converge electron density
     !-------------------------------------------------------------------
-    do ITER_XNE = 1, MAX_ITER_XNE
+    DO ITER_XNE = 1, MAX_ITER_XNE
 
       ! Zero all ion populations
       XNF(J, 1:MION) = 0.0D0
@@ -5294,36 +5168,36 @@ SUBROUTINE NELECT
       CHARGESQUARE = 0.0D0
 
       ! --- Compute Saha ionization for elements Z=1-30 ---
-      do IZ = 1, 30
+      DO IZ = 1, 30
         NOFF = IZ * (IZ + 1) / 2
-        call PFSAHA(J, IZ, NION_NELECT(IZ), 12, XNF(1, NOFF))
-      end do
+        CALL PFSAHA(J, IZ, NION_NELECT(IZ), 12, XNF(1, NOFF))
+      END DO
 
       ! --- Accumulate electron density and charge sum for Z=1-30 ---
       ! Each element IZ has IZ+1 ion stages in the NELION layout
       IION = 0
-      do IZ = 1, 30
-        do ION = 1, IZ + 1
+      DO IZ = 1, 30
+        DO ION = 1, IZ + 1
           IION = IION + 1
           ! Convert fraction to number density
           XNF(J, IION) = XNF(J, IION) * XNATOM(J) * XABUND(J, IZ)
           ! Charge = ION - 1 (neutral = 0, singly ionized = 1, etc.)
           CHARGESQUARE = CHARGESQUARE + XNF(J, IION) * dble((ION - 1)**2)
           XNENEW = XNENEW + XNF(J, IION) * dble(ION - 1)
-        end do
-      end do
+        END DO
+      END DO
 
       ! --- Elements Z=31-99: 3 stages computed, 5 slots allocated ---
-      do IZ = 31, 99
+      DO IZ = 31, 99
         NOFF = 496 + (IZ - 31) * 5
-        call PFSAHA(J, IZ, 3, 12, XNF(1, NOFF))
-        do ION = 1, 5
+        CALL PFSAHA(J, IZ, 3, 12, XNF(1, NOFF))
+        DO ION = 1, 5
           IION = IION + 1
           XNF(J, IION) = XNF(J, IION) * XNATOM(J) * XABUND(J, IZ)
           CHARGESQUARE = CHARGESQUARE + XNF(J, IION) * dble((ION - 1)**2)
           XNENEW = XNENEW + XNF(J, IION) * dble(ION - 1)
-        end do
-      end do
+        END DO
+      END DO
 
       ! Floor to prevent oscillation to zero
       XNENEW = max(XNENEW, XNE(J) * 0.5D0)
@@ -5342,33 +5216,33 @@ SUBROUTINE NELECT
       XNATOM(J) = XNTOT - XNE(J)
       CHARGESQ(J) = CHARGESQUARE + XNE(J)
 
-      if (ERROR < XNE_TOL) exit
+      IF (ERROR < XNE_TOL) EXIT
 
-    end do  ! ITER_XNE
+    END DO  ! ITER_XNE
 
-    if (ITER_XNE > MAX_ITER_XNE) then
-      write(6, '(A,I4,A,ES10.3)') &
+    IF (ITER_XNE > MAX_ITER_XNE) THEN
+      WRITE(6, '(A,I4,A,ES10.3)') &
         ' NELECT WARNING: XNE did not converge at J=', J, ', error=', ERROR
-    end if
+    END IF
 
     ! Mass density from atom count and mean molecular weight
     RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
 
-  end do  ! depth loop
+  END DO  ! depth loop
 
   ! --- Debug output ---
-  if (IDEBUG == 1) then
-    write(6, '(3X,4X,A,A,A,A,A,A,A,A)') &
+  IF (IDEBUG == 1) THEN
+    WRITE(6, '(3X,4X,A,A,A,A,A,A,A,A)') &
       'RHOX', '     T    ', '     P     ', '     XNE    ', &
       '    XNATOM  ', '    WTMOLE  ', '     RHO    ', '    CHARGESQ'
-    do J = 1, NRHOX
-      write(6, '(I3,1PE15.7,0PF10.1,1P6E12.3)') &
+    DO J = 1, NRHOX
+      WRITE(6, '(I3,1PE15.7,0PF10.1,1P6E12.3)') &
         J, RHOX(J), T(J), P(J), XNE(J), XNATOM(J), WTMOLE(J), &
         RHO(J), CHARGESQ(J)
-    end do
-  end if
+    END DO
+  END IF
 
-  return
+  RETURN
 
 END SUBROUTINE NELECT
 
@@ -5394,47 +5268,47 @@ END SUBROUTINE NELECT
 
 SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
 
-  implicit none
+  IMPLICIT NONE
 
   ! Arguments
-  integer, intent(in)    :: J       ! Depth point index
-  integer, intent(in)    :: IZ      ! Atomic number
-  integer, intent(in)    :: NION    ! Number of ionization stages requested
-  integer, intent(in)    :: MODE    ! Output mode selector
-  real*8,  intent(inout) :: ANSWER(kw, *)
+  INTEGER, INTENT(IN)    :: J       ! Depth point index
+  INTEGER, INTENT(IN)    :: IZ      ! Atomic number
+  INTEGER, INTENT(IN)    :: NION    ! Number of ionization stages requested
+  INTEGER, INTENT(IN)    :: MODE    ! Output mode selector
+  REAL(8),  INTENT(INOUT) :: ANSWER(kw, *)
 
   ! External function
 
   ! NNN interpolation table (loaded from file on first call)
-  integer, save :: NNN(6, 365)
-  logical, save :: INITIALIZED = .false.
+  INTEGER, SAVE :: NNN(6, 365)
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! Local arrays
-  real*8  :: F(31), IP(31), PART(31), POTLO(31)
-  integer :: LOCZ(29)
+  REAL(8)  :: F(31), IP(31), PART(31), POTLO(31)
+  INTEGER :: LOCZ(29)
 
   ! Scale factors for NNN unpacking
-  real*8 :: SCALE(4)
+  REAL(8) :: SCALE(4)
 
   ! Detailed energy level tables for special elements (cm^-1)
-  real*8 :: EHYD(6), GHYD(6)
-  real*8 :: EHE1(29), GHE1(29), EHE2(6), GHE2(6)
-  real*8 :: EB1(7), GB1(7)
-  real*8 :: EC1(14), GC1(14), EC2(6), GC2(6)
-  real*8 :: EO1(13), GO1(13)
-  real*8 :: ENA1(8), GNA1(8)
-  real*8 :: EMG1(11), GMG1(11), EMG2(6), GMG2(6)
-  real*8 :: EAL1(9), GAL1(9)
-  real*8 :: ESI1(11), GSI1(11), ESI2(6), GSI2(6)
-  real*8 :: EK1(8), GK1(8)
-  real*8 :: ECA1(8), GCA1(8), ECA2(5), GCA2(5)
+  REAL(8) :: EHYD(6), GHYD(6)
+  REAL(8) :: EHE1(29), GHE1(29), EHE2(6), GHE2(6)
+  REAL(8) :: EB1(7), GB1(7)
+  REAL(8) :: EC1(14), GC1(14), EC2(6), GC2(6)
+  REAL(8) :: EO1(13), GO1(13)
+  REAL(8) :: ENA1(8), GNA1(8)
+  REAL(8) :: EMG1(11), GMG1(11), EMG2(6), GMG2(6)
+  REAL(8) :: EAL1(9), GAL1(9)
+  REAL(8) :: ESI1(11), GSI1(11), ESI2(6), GSI2(6)
+  REAL(8) :: EK1(8), GK1(8)
+  REAL(8) :: ECA1(8), GCA1(8), ECA2(5), GCA2(5)
 
   ! Local scalars
-  real*8  :: Z_ion, TV, DEBYE, POTLOW, T2000, DT, P1, P2, PMIN
-  real*8  :: G, D1, D2, CF, B_dep
-  integer :: MODE1, N, NIONS, NION2, ION, I, L, IT, NNN100, INDEX
-  integer :: K1, K2, K3, KSCALE, KP1
-  integer :: jj  ! loop variable for data read
+  REAL(8)  :: Z_ion, TV, DEBYE, POTLOW, T2000, DT, P1, P2, PMIN
+  REAL(8)  :: G, D1, D2, CF, B_dep
+  INTEGER :: MODE1, N, NIONS, NION2, ION, I, L, IT, NNN100, INDEX
+  INTEGER :: K1, K2, K3, KSCALE, KP1
+  INTEGER :: jj  ! loop variable for data read
 
   ! Data initialization
   DATA LOCZ /1,3,6,10,14,18,22,27,33,39,45,51,57,63,69,75,81,86,91, &
@@ -5527,22 +5401,22 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
   !=====================================================================
   ! Load NNN table on first call
   !=====================================================================
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING PFSAHA'
-  if (.not. INITIALIZED) then
-    open(unit=89, file=TRIM(DATADIR)//'pfsaha.dat', status='OLD', action='READ')
-    read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')  ! skip 3 header lines
-    read(89, *) ((NNN(I,jj), I=1,6), jj=1,365)
-    close(89)
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING PFSAHA'
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=TRIM(DATADIR)//'pfsaha.dat', STATUS='OLD', ACTION='READ')
+    READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')  ! skip 3 header lines
+    READ(89, *) ((NNN(I,jj), I=1,6), jj=1,365)
+    CLOSE(89)
     ! Ensure ionization potentials are loaded (PFSAHA needs POTION for IP)
-    call IONPOTS
-    INITIALIZED = .true.
-  endif
+    CALL IONPOTS
+    INITIALIZED = .TRUE.
+  ENDIF
 
   !=====================================================================
   ! Setup: determine NNN row range and number of ions for this element
   !=====================================================================
   MODE1 = MODE
-  if (MODE1 > 10) MODE1 = MODE1 - 10
+  IF (MODE1 > 10) MODE1 = MODE1 - 10
 
   ! Debye-Hückel lowering of ionization potential (volts per unit Zeff)
   DEBYE  = SQRT(TK(J) / FOURPI / ECHARGE**2 / CHARGESQ(J))
@@ -5550,20 +5424,20 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
   TV     = TKEV(J)
 
   ! Locate element in NNN table
-  if (IZ <= 28) then
+  IF (IZ <= 28) THEN
     N     = LOCZ(IZ)
     NIONS = LOCZ(IZ+1) - N
-  else
+  ELSE
     N     = 3*IZ + 54
     NIONS = 3
-  endif
+  ENDIF
 
   ! Override for C and N (extended tables in NNN67 block)
-  if (IZ == 6) then; N = 354; NIONS = 6; endif
-  if (IZ == 7) then; N = 360; NIONS = 6; endif
+  IF (IZ == 6) THEN; N = 354; NIONS = 6; ENDIF
+  IF (IZ == 7) THEN; N = 360; NIONS = 6; ENDIF
 
   ! Iron group elements have 10 ionization stages in PFIRON
-  if (IZ >= 20 .and. IZ < 29) NIONS = 10
+  IF (IZ >= 20 .AND. IZ < 29) NIONS = 10
 
   NION2 = MIN(NION + 2, NIONS)
   N = N - 1   ! will be incremented at start of loop
@@ -5571,27 +5445,27 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
   !=====================================================================
   ! Phase 1: Compute partition functions PART(ION) for each ion stage
   !=====================================================================
-  do ION = 1, NION2
+  DO ION = 1, NION2
     Z_ion = dble(ION)
     POTLO(ION) = POTLOW * Z_ion
     N = N + 1
 
     ! Ionization potential from POTION table
     NNN100 = NNN(6,N) / 100
-    if (IZ <= 30) then
+    IF (IZ <= 30) THEN
       INDEX = (IZ*(IZ+1))/2 + ION - 1
-    else
+    ELSE
       INDEX = IZ*5 + 341 + ION - 1
-    endif
+    ENDIF
     IP(ION) = POTION(INDEX) / 8065.479d0
-    if (IP(ION) == 0.d0) IP(ION) = POTION(INDEX-1) / 8065.479d0
+    IF (IP(ION) == 0.d0) IP(ION) = POTION(INDEX-1) / 8065.479d0
 
     ! Iron group: use PFIRON for partition functions
-    if (IZ >= 20 .and. IZ < 29) then
-      call PFIRON(IZ, ION, TLOG(J)/2.30258509299405d0, &
+    IF (IZ >= 20 .AND. IZ < 29) THEN
+      CALL PFIRON(IZ, ION, TLOG(J)/LN10, &
                   POTLO(ION)*8065.479d0, PART(ION))
-      cycle  ! next ION
-    endif
+      CYCLE  ! next ION
+    ENDIF
 
     ! Statistical weight of highest included level
     G = NNN(6,N) - NNN100*100
@@ -5602,9 +5476,9 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
     !-----------------------------------------------------------------
     B_dep = 1.0d0
 
-    select case (N)
+    SELECT CASE (N)
 
-    case (1)  ! ---- Hydrogen I ----
+    CASE (1)  ! ---- Hydrogen I ----
       ! Partition function with Hummer & Mihalas (1988) occupation
       ! probability weighting.  Each level n is weighted by w_n, the
       ! probability that the level survives Stark dissolution.
@@ -5616,126 +5490,126 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
       ! Replaces the former approach of levels 1-6 at full weight plus
       ! a fixed Euler-Maclaurin integral from n=6.5 to ionization.
       PART(1) = 2.d0 * B_dep       ! n=1: w_1 = 1 always
-      do I = 2, 6
+      DO I = 2, 6
         PART(1) = PART(1) + occupation_prob(I, XNE(J)) &
                 * GHYD(I) * B_dep * EXP(-EHYD(I)*HCKT(J))
-      end do
+      END DO
       ! Levels n=7 and above: hydrogenic energies, weighted by w_n.
       ! Sum truncates naturally where w_n -> 0 or Boltzmann factor -> 0.
-      do I = 7, 80
+      DO I = 7, 80
         D1 = occupation_prob(I, XNE(J))
-        if (D1 < 1.0d-6) exit   ! remaining levels fully dissolved
+        IF (D1 < 1.0d-6) EXIT   ! remaining levels fully dissolved
         PART(1) = PART(1) + D1 &
                 * 2.0d0 * dble(I)**2 * EXP(-(ELIM_HI - RYDBERG_H/dble(I)**2)*HCKT(J))
-      end do
-      cycle
+      END DO
+      CYCLE
 
-    case (3)  ! ---- Helium I ----
+    CASE (3)  ! ---- Helium I ----
       PART(1) = B_dep
-      do I = 2, 29
+      DO I = 2, 29
         PART(1) = PART(1) + GHE1(I) * B_dep * EXP(-EHE1(I)*HCKT(J))
-      end do
+      END DO
       D1 = RYDBERG_H / 5.5d0 / 5.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (4)  ! ---- Helium II ----
+    CASE (4)  ! ---- Helium II ----
       PART(2) = 2.d0 * B_dep
-      do I = 2, 6
+      DO I = 2, 6
         PART(2) = PART(2) + GHE2(I) * B_dep * EXP(-EHE2(I)*HCKT(J))
-      end do
+      END DO
       D1 = 4.d0 * RYDBERG_HE / 6.5d0 / 6.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (14)  ! ---- Boron I ----
+    CASE (14)  ! ---- Boron I ----
       PART(1) = B_dep * (2.d0 + 4.d0*EXP(-15.25d0*HCKT(J)))
-      do I = 2, 7
+      DO I = 2, 7
         PART(1) = PART(1) + GB1(I) * B_dep * EXP(-EB1(I)*HCKT(J))
-      end do
+      END DO
       PART(1) = PART(1) + 6.d0*EXP(-57786.80d0*HCKT(J)) &
         + 10.d0*EXP(-59989.d0*HCKT(J)) + 14.d0*EXP(-60031.03d0*HCKT(J)) &
         + 2.d0*EXP(-63561.d0*HCKT(J))
       G = 2.d0
       D1 = 109734.83d0 / 4.5d0 / 4.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (45)  ! ---- Sodium I ----
+    CASE (45)  ! ---- Sodium I ----
       PART(1) = B_dep * 2.d0
-      do I = 2, 8
+      DO I = 2, 8
         PART(1) = PART(1) + GNA1(I) * B_dep * EXP(-ENA1(I)*HCKT(J))
-      end do
+      END DO
       PART(1) = PART(1) + 10.d0*EXP(-34548.745d0*HCKT(J)) &
         + 14.d0*EXP(-34586.96d0*HCKT(J))
       G = 2.d0
       D1 = 109734.83d0 / 4.5d0 / 4.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (51)  ! ---- Magnesium I ----
+    CASE (51)  ! ---- Magnesium I ----
       PART(1) = B_dep
-      do I = 2, 11
+      DO I = 2, 11
         PART(1) = PART(1) + GMG1(I) * B_dep * EXP(-EMG1(I)*HCKT(J))
-      end do
+      END DO
       PART(1) = PART(1) + 5.d0*EXP(-53134.d0*HCKT(J)) &
         + 15.d0*EXP(-54192.d0*HCKT(J)) + 28.d0*EXP(-54676.d0*HCKT(J)) &
         + 9.d0*EXP(-57853.d0*HCKT(J))
       G = 4.d0
       D1 = 109734.83d0 / 4.5d0 / 4.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (52)  ! ---- Magnesium II ----
+    CASE (52)  ! ---- Magnesium II ----
       PART(2) = B_dep * 2.d0
-      do I = 2, 6
+      DO I = 2, 6
         PART(2) = PART(2) + GMG2(I) * B_dep * EXP(-EMG2(I)*HCKT(J))
-      end do
+      END DO
       PART(2) = PART(2) + 10.d0*EXP(-93310.80d0*HCKT(J)) &
         + 14.d0*EXP(-93799.70d0*HCKT(J)) + 6.d0*EXP(-97464.32d0*HCKT(J)) &
         + 10.d0*EXP(-103419.82d0*HCKT(J)) + 14.d0*EXP(-103689.89d0*HCKT(J)) &
         + 18.d0*EXP(-103705.66d0*HCKT(J))
       G = 2.d0
       D1 = 4.d0 * 109734.83d0 / 5.5d0 / 5.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (57)  ! ---- Aluminum I ----
+    CASE (57)  ! ---- Aluminum I ----
       PART(1) = B_dep * (2.d0 + 4.d0*EXP(-112.061d0*HCKT(J)))
-      do I = 2, 9
+      DO I = 2, 9
         PART(1) = PART(1) + GAL1(I) * B_dep * EXP(-EAL1(I)*HCKT(J))
-      end do
+      END DO
       PART(1) = PART(1) + 10.d0*EXP(-42235.d0*HCKT(J)) &
         + 14.d0*EXP(-43831.d0*HCKT(J))
       G = 2.d0
       D1 = 109735.08d0 / 5.5d0 / 5.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (63)  ! ---- Silicon I ----
+    CASE (63)  ! ---- Silicon I ----
       PART(1) = B_dep * (1.d0 + 3.d0*EXP(-77.115d0*HCKT(J)) &
         + 5.d0*EXP(-223.157d0*HCKT(J)))
-      do I = 2, 11
+      DO I = 2, 11
         PART(1) = PART(1) + GSI1(I) * B_dep * EXP(-ESI1(I)*HCKT(J))
-      end do
+      END DO
       PART(1) = PART(1) + 76.d0*EXP(-53000.d0*HCKT(J)) &
         + 71.d0*EXP(-57000.d0*HCKT(J)) + 191.d0*EXP(-60000.d0*HCKT(J)) &
         + 240.d0*EXP(-62000.d0*HCKT(J)) + 251.d0*EXP(-63000.d0*HCKT(J)) &
         + 300.d0*EXP(-65000.d0*HCKT(J))
-      cycle  ! Si I has no high-level correction (goes direct to 18)
+      CYCLE  ! Si I has no high-level correction (goes direct to 18)
 
-    case (64)  ! ---- Silicon II ----
+    CASE (64)  ! ---- Silicon II ----
       PART(2) = B_dep * (2.d0 + 4.d0*EXP(-287.32d0*HCKT(J)))
-      do I = 2, 6
+      DO I = 2, 6
         PART(2) = PART(2) + GSI2(I) * B_dep * EXP(-ESI2(I)*HCKT(J))
-      end do
+      END DO
       PART(2) = PART(2) + 6.d0*EXP(-81231.59d0*HCKT(J)) &
         + 6.d0*EXP(-83937.08d0*HCKT(J)) + 10.d0*EXP(-101024.09d0*HCKT(J)) &
         + 14.d0*EXP(-103556.35d0*HCKT(J)) + 10.d0*EXP(-108800.d0*HCKT(J)) &
@@ -5743,60 +5617,60 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
         + 38.d0*EXP(-125000.d0*HCKT(J)) + 34.d0*EXP(-132000.d0*HCKT(J))
       G = 2.d0
       D1 = 4.d0 * 109734.83d0 / 4.5d0 / 4.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (91)  ! ---- Potassium I ----
+    CASE (91)  ! ---- Potassium I ----
       PART(1) = B_dep * 2.d0
-      do I = 2, 8
+      DO I = 2, 8
         PART(1) = PART(1) + GK1(I) * B_dep * EXP(-EK1(I)*HCKT(J))
-      end do
+      END DO
       PART(1) = PART(1) + 10.d0*EXP(-27397.077d0*HCKT(J)) &
         + 14.d0*EXP(-28127.85d0*HCKT(J))
       G = 2.d0
       D1 = 109734.83d0 / 5.5d0 / 5.5d0 * HCKT(J)
-      call pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+      CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
                              POTLO(ION), D1)
-      cycle
+      CYCLE
 
-    case (354)  ! ---- Carbon I (extended, NNN67) ----
+    CASE (354)  ! ---- Carbon I (extended, NNN67) ----
       PART(1) = B_dep * (1.d0 + 3.d0*EXP(-16.42d0*HCKT(J)) &
         + 5.d0*EXP(-43.42d0*HCKT(J)))
-      do I = 2, 14
+      DO I = 2, 14
         PART(1) = PART(1) + GC1(I) * B_dep * EXP(-EC1(I)*HCKT(J))
-      end do
+      END DO
       PART(1) = PART(1) + 108.d0*EXP(-80000.d0*HCKT(J)) &
         + 189.d0*EXP(-84000.d0*HCKT(J)) + 247.d0*EXP(-87000.d0*HCKT(J)) &
         + 231.d0*EXP(-88000.d0*HCKT(J)) + 190.d0*EXP(-89000.d0*HCKT(J)) &
         + 300.d0*EXP(-90000.d0*HCKT(J))
-      cycle  ! C I has no high-level correction
+      CYCLE  ! C I has no high-level correction
 
-    case (355)  ! ---- Carbon II (extended) ----
+    CASE (355)  ! ---- Carbon II (extended) ----
       PART(2) = B_dep * (2.d0 + 4.d0*EXP(-63.42d0*HCKT(J)))
-      do I = 2, 6
+      DO I = 2, 6
         PART(2) = PART(2) + GC2(I) * B_dep * EXP(-EC2(I)*HCKT(J))
-      end do
+      END DO
       PART(2) = PART(2) + 6.d0*EXP(-131731.80d0*HCKT(J)) &
         + 4.d0*EXP(-142027.1d0*HCKT(J)) + 10.d0*EXP(-145550.13d0*HCKT(J)) &
         + 10.d0*EXP(-150463.62d0*HCKT(J)) + 2.d0*EXP(-157234.07d0*HCKT(J)) &
         + 6.d0*EXP(-162500.d0*HCKT(J)) + 42.d0*EXP(-168000.d0*HCKT(J)) &
         + 56.d0*EXP(-178000.d0*HCKT(J)) + 102.d0*EXP(-183000.d0*HCKT(J)) &
         + 400.d0*EXP(-188000.d0*HCKT(J))
-      cycle  ! C II has no high-level correction
+      CYCLE  ! C II has no high-level correction
 
-    case (367)  ! ---- Oxygen I (extended) ----
+    CASE (367)  ! ---- Oxygen I (extended) ----
       PART(1) = B_dep * (5.d0 + 3.d0*EXP(-158.265d0*HCKT(J)) &
         + EXP(-226.977d0*HCKT(J)))
-      do I = 2, 13
+      DO I = 2, 13
         PART(1) = PART(1) + GO1(I) * B_dep * EXP(-EO1(I)*HCKT(J))
-      end do
+      END DO
       PART(1) = PART(1) + 15.d0*EXP(-101140.d0*HCKT(J)) &
         + 131.d0*EXP(-103000.d0*HCKT(J)) + 128.d0*EXP(-105000.d0*HCKT(J)) &
         + 600.d0*EXP(-107000.d0*HCKT(J))
-      cycle  ! O I has no high-level correction
+      CYCLE  ! O I has no high-level correction
 
-    case default
+    CASE DEFAULT
       !-----------------------------------------------------------------
       ! Generic NNN interpolation for all other elements/ions
       !-----------------------------------------------------------------
@@ -5811,21 +5685,21 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
       K3 = K2 / 10
       KSCALE = K2 - K3*10
 
-      if (MOD(IT,2) == 0) then
+      IF (MOD(IT,2) == 0) THEN
         ! Even IT: interpolate between K3 and next column K1
         P1 = K3 * SCALE(KSCALE)
         K1 = NNN(I+1,N) / 100000
         KSCALE = MOD(NNN(I+1,N), 10)
         P2 = K1 * SCALE(KSCALE)
-      else
+      ELSE
         ! Odd IT: interpolate between K1 and K3
         P1 = K1 * SCALE(KSCALE)
         P2 = K3 * SCALE(KSCALE)
-        if (DT < 0.d0 .and. KSCALE <= 1) then
+        IF (DT < 0.d0 .AND. KSCALE <= 1) THEN
           KP1 = int(P1)
-          if (KP1 == INT(P2 + 0.5d0)) PMIN = dble(KP1)
-        endif
-      endif
+          IF (KP1 == INT(P2 + 0.5d0)) PMIN = dble(KP1)
+        ENDIF
+      ENDIF
 
       PART(ION) = MAX(PMIN, P1 + (P2 - P1)*DT)
 
@@ -5833,14 +5707,14 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
       ! the ground-state partition function at low T.  PFGROUND_HYBRID
       ! returns the B&C-based value where tabulated (T <= 10000 K), and
       ! otherwise falls back to Kurucz's pristine hand-coded expressions.
-      if (T(J) < T2000*2.0d0) then
+      IF (T(J) < T2000*2.0d0) THEN
         PART(ION) = MAX(PFGROUND_HYBRID((IZ-1)*6 + ION, T(J)), PART(ION))
-        cycle  ! skip high-level correction at low T
-      endif
+        CYCLE  ! skip high-level correction at low T
+      ENDIF
 
       ! High-level (Rydberg series) correction
-      if (G == 0.d0 .or. POTLO(ION) < 0.1d0 .or. T(J) < T2000*4.d0) cycle
-      if (T(J) > T2000*11.d0) TV = (T2000*11.d0) * 8.6171D-5
+      IF (G == 0.d0 .OR. POTLO(ION) < 0.1d0 .OR. T(J) < T2000*4.d0) CYCLE
+      IF (T(J) > T2000*11.d0) TV = (T2000*11.d0) * KBOL_EV
       D1 = 0.1d0 / TV
       D2 = POTLO(ION) / TV
       PART(ION) = PART(ION) + G*EXP(-IP(ION)/TV) * &
@@ -5849,86 +5723,86 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
         - SQRT(13.595d0*Z_ion*Z_ion/TV/D1)**3 * &
           (1.d0/3.d0 + (1.d0 - (0.5d0 + (1.d0/18.d0 + D1/120.d0)*D1)*D1)*D1) )
       TV = TKEV(J)
-      cycle
+      CYCLE
 
-    end select
-  end do  ! ION
+    END SELECT
+  END DO  ! ION
 
   !=====================================================================
   ! Phase 2: Saha equation and output
   !=====================================================================
-  if (MODE1 == 5) then
+  IF (MODE1 == 5) THEN
     ! MODE 5: partition functions + cumulative ionization potentials
     ANSWER(32,1) = 0.d0
-    do ION = 1, NION
+    DO ION = 1, NION
       ANSWER(ION,1)    = PART(ION)
       ANSWER(ION+32,1) = IP(ION) + ANSWER(ION+31,1)
-    end do
-    return
-  end if
+    END DO
+    RETURN
+  END IF
 
-  if (MODE1 /= 3) then
+  IF (MODE1 /= 3) THEN
     ! Compute Saha ionization fractions
     N = N - NION2
     CF = SAHA_PREFAC * T(J) * SQRT(T(J)) / XNE(J)
 
-    do ION = 2, NION2
+    DO ION = 2, NION2
       N = N + 1
       F(ION) = CF * PART(ION) / PART(ION-1) * EXP(-(IP(ION-1) - POTLO(ION-1))/TV)
-    end do
+    END DO
 
     ! Normalize fractions
     F(1) = 1.d0
     L = NION2 + 1
-    do ION = 2, NION2
+    DO ION = 2, NION2
       L = L - 1
       F(1) = 1.d0 + F(L)*F(1)
-    end do
+    END DO
     F(1) = 1.d0 / F(1)
 
-    do ION = 2, NION2
+    DO ION = 2, NION2
       F(ION) = F(ION-1) * F(ION)
-    end do
-  end if
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Fill ANSWER based on MODE
   !---------------------------------------------------------------------
-  if (MODE >= 10) then
+  IF (MODE >= 10) THEN
     ! Multi-ion output modes (MODE = 11, 12, 13, 14)
-    select case (MODE1)
-    case (1)
-      do ION = 1, NION
+    SELECT CASE (MODE1)
+    CASE (1)
+      DO ION = 1, NION
         ANSWER(J,ION) = F(ION) / PART(ION)
-      end do
-    case (2)
-      do ION = 1, NION
+      END DO
+    CASE (2)
+      DO ION = 1, NION
         ANSWER(J,ION) = F(ION)
-      end do
-    case (3)
-      do ION = 1, NION
+      END DO
+    CASE (3)
+      DO ION = 1, NION
         ANSWER(J,ION) = PART(ION)
-      end do
-    case (4)
+      END DO
+    CASE (4)
       ANSWER(J,1) = 0.d0
-      do ION = 2, NION2
+      DO ION = 2, NION2
         ANSWER(J,1) = ANSWER(J,1) + F(ION) * dble(ION-1)
-      end do
-    end select
-  else
+      END DO
+    END SELECT
+  ELSE
     ! Single-ion output modes (MODE = 1, 2, 3, 4)
-    select case (MODE1)
-    case (1);  ANSWER(J,1) = F(NION) / PART(NION)
-    case (2);  ANSWER(J,1) = F(NION)
-    case (3);  ANSWER(J,1) = PART(NION)
-    case (4)
+    SELECT CASE (MODE1)
+    CASE (1);  ANSWER(J,1) = F(NION) / PART(NION)
+    CASE (2);  ANSWER(J,1) = F(NION)
+    CASE (3);  ANSWER(J,1) = PART(NION)
+    CASE (4)
       ANSWER(J,1) = 0.d0
-      do ION = 2, NION2
+      DO ION = 2, NION2
         ANSWER(J,1) = ANSWER(J,1) + F(ION) * dble(ION-1)
-      end do
-    end select
-  endif
-  return
+      END DO
+    END SELECT
+  ENDIF
+  RETURN
 
 END SUBROUTINE PFSAHA
 
@@ -5944,10 +5818,10 @@ SUBROUTINE pfsaha_highlevels(PART_ION, G, IP_ION, Z_ion, TV_in, &
 ! the original code, bypassing the T2000 guard, TV cap, and D1=0.1/TV.
 ! Those guards apply only to the generic NNN interpolation path.
 !-----------------------------------------------------------------------
-  implicit none
-  real*8, intent(inout) :: PART_ION
-  real*8, intent(in)    :: G, IP_ION, Z_ion, TV_in, POTLO_ION, D1
-  real*8 :: D2
+  IMPLICIT NONE
+  REAL(8), INTENT(INOUT) :: PART_ION
+  REAL(8), INTENT(IN)    :: G, IP_ION, Z_ion, TV_in, POTLO_ION, D1
+  REAL(8) :: D2
 
   D2 = POTLO_ION / TV_in
 
@@ -5979,121 +5853,121 @@ END SUBROUTINE pfsaha_highlevels
 
 SUBROUTINE MOLEC(CODOUT, MODE, NUMBER)
 
-  implicit none
+  IMPLICIT NONE
 
   ! Arguments
-  real*8,  intent(in)    :: CODOUT
-  integer, intent(in)    :: MODE
-  real*8,  intent(inout) :: NUMBER(kw, 1)
+  REAL(8),  INTENT(IN)    :: CODOUT
+  INTEGER, INTENT(IN)    :: MODE
+  REAL(8),  INTENT(INOUT) :: NUMBER(kw, 1)
 
   ! Local variables
-  integer :: JMOL, J, NN, ION, ID, I, II
-  real*8  :: C
-  logical :: found
+  INTEGER :: JMOL, J, NN, ION, ID, I, II
+  REAL(8)  :: C
+  LOGICAL :: found
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING MOLEC'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING MOLEC'
 
   !=====================================================================
   ! Read molecular input data (first call only)
   !=====================================================================
-  if (IFPOP /= 2 .and. MOLEC_IREAD /= 1 .and. IFPRES /= 1) then
-    read(INPUTDATA, '(I5)') NUMMOL
+  IF (IFPOP /= 2 .AND. MOLEC_IREAD /= 1 .AND. IFPRES /= 1) THEN
+    READ(INPUTDATA, '(I5)') NUMMOL
 
-    do JMOL = 1, NUMMOL
-      read(INPUTDATA, '(F20.2)') XNMOLCODE(JMOL)
-      read(INPUTDATA, '(1P8E10.3)') (XNMOL(J,JMOL), J=1,NRHOX)
-      if (IDEBUG == 1) write(6, '(F20.2/(1P8E10.3))') XNMOLCODE(JMOL), (XNMOL(J,JMOL), J=1,NRHOX)
-    end do
+    DO JMOL = 1, NUMMOL
+      READ(INPUTDATA, '(F20.2)') XNMOLCODE(JMOL)
+      READ(INPUTDATA, '(1P8E10.3)') (XNMOL(J,JMOL), J=1,NRHOX)
+      IF (IDEBUG == 1) WRITE(6, '(F20.2/(1P8E10.3))') XNMOLCODE(JMOL), (XNMOL(J,JMOL), J=1,NRHOX)
+    END DO
 
-    read(INPUTDATA, '(1P8E10.3)')  ! skip header line
-    read(INPUTDATA, '(1P8E10.3)') (XNATOM(J), RHO(J), J=1,NRHOX)
-    if (IDEBUG == 1) write(6, '(1P8E10.3)') (XNATOM(J), RHO(J), J=1,NRHOX)
+    READ(INPUTDATA, '(1P8E10.3)')  ! skip header line
+    READ(INPUTDATA, '(1P8E10.3)') (XNATOM(J), RHO(J), J=1,NRHOX)
+    IF (IDEBUG == 1) WRITE(6, '(1P8E10.3)') (XNATOM(J), RHO(J), J=1,NRHOX)
 
-    read(INPUTDATA, '(1P8E10.3)')  ! skip header line
-    read(INPUTDATA, '(1P8E10.3)') (XNE(J), J=1,NRHOX)
-    if (IDEBUG == 1) write(6, '(1P8E10.3)') (XNE(J), J=1,NRHOX)
+    READ(INPUTDATA, '(1P8E10.3)')  ! skip header line
+    READ(INPUTDATA, '(1P8E10.3)') (XNE(J), J=1,NRHOX)
+    IF (IDEBUG == 1) WRITE(6, '(1P8E10.3)') (XNE(J), J=1,NRHOX)
 
     MOLEC_IREAD = 1
-  endif
+  ENDIF
 
   !=====================================================================
   ! Path 1: Molecular species lookup (CODOUT >= 100)
   !=====================================================================
-  if (CODOUT >= 100.d0) then
-    do JMOL = 1, NUMMOL
-      if (XNMOLCODE(JMOL) == CODOUT) then
-        do J = 1, NRHOX
-          if (MODE == 1 .or. MODE == 11) NUMBER(J,1) = XNFPMOL(J,JMOL)
-          if (MODE == 2 .or. MODE == 12) NUMBER(J,1) = XNMOL(J,JMOL)
-        end do
-        return
-      endif
-    end do
+  IF (CODOUT >= 100.d0) THEN
+    DO JMOL = 1, NUMMOL
+      IF (XNMOLCODE(JMOL) == CODOUT) THEN
+        DO J = 1, NRHOX
+          IF (MODE == 1 .OR. MODE == 11) NUMBER(J,1) = XNFPMOL(J,JMOL)
+          IF (MODE == 2 .OR. MODE == 12) NUMBER(J,1) = XNMOL(J,JMOL)
+        END DO
+        RETURN
+      ENDIF
+    END DO
     ! Species not in molecular equilibrium table: return zero populations
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       NUMBER(J,1) = 0.d0
-    end do
-    return
-  endif
+    END DO
+    RETURN
+  ENDIF
 
   !=====================================================================
   ! Path 2: Atomic element lookup (CODOUT < 100)
   !=====================================================================
   C = CODOUT
   NN = 1
-  if (MODE == 11 .or. MODE == 12) NN = INT((C - AINT(C))*100.d0 + 1.5d0)
+  IF (MODE == 11 .OR. MODE == 12) NN = INT((C - AINT(C))*100.d0 + 1.5d0)
 
-  do I = 1, NN
+  DO I = 1, NN
     ION = NN - I + 1
 
     ! Search molecule table for approximate code match
-    found = .false.
-    do JMOL = 1, NUMMOL
-      if (XNMOLCODE(JMOL) + 0.001d0 > C .and. &
-          XNMOLCODE(JMOL) - 0.001d0 < C) then
-        do J = 1, NRHOX
-          if (MODE == 1 .or. MODE == 11) NUMBER(J,ION) = XNFPMOL(J,JMOL)
-          if (MODE == 2 .or. MODE == 12) NUMBER(J,ION) = XNMOL(J,JMOL)
-        end do
-        found = .true.
-        exit  ! exit JMOL loop
-      endif
-    end do
+    found = .FALSE.
+    DO JMOL = 1, NUMMOL
+      IF (XNMOLCODE(JMOL) + 0.001d0 > C .AND. &
+          XNMOLCODE(JMOL) - 0.001d0 < C) THEN
+        DO J = 1, NRHOX
+          IF (MODE == 1 .OR. MODE == 11) NUMBER(J,ION) = XNFPMOL(J,JMOL)
+          IF (MODE == 2 .OR. MODE == 12) NUMBER(J,ION) = XNMOL(J,JMOL)
+        END DO
+        found = .TRUE.
+        EXIT  ! exit JMOL loop
+      ENDIF
+    END DO
 
-    if (.not. found) then
+    IF (.NOT. found) THEN
       ! Try matching by integer element code
       ID = INT(CODOUT)
-      found = .false.
-      do JMOL = 1, NUMMOL
-        if (INT(XNMOLCODE(JMOL)) == ID) then
+      found = .FALSE.
+      DO JMOL = 1, NUMMOL
+        IF (INT(XNMOLCODE(JMOL)) == ID) THEN
           ! Element exists but this specific ion not tabulated: zero it
-          do J = 1, NRHOX
+          DO J = 1, NRHOX
             NUMBER(J,ION) = 0.d0
-          end do
-          found = .true.
-          exit  ! exit JMOL loop
-        endif
-      end do
+          END DO
+          found = .TRUE.
+          EXIT  ! exit JMOL loop
+        ENDIF
+      END DO
 
-      if (.not. found) then
+      IF (.NOT. found) THEN
         ! Element not in molecule table at all: use Saha equation
         ION = INT((CODOUT - dble(ID))*100.d0 + 1.5d0)
         NN = ION
-        if (MODE == 1) NN = 1
-        do J = 1, NRHOX
-          call PFSAHA(J, ID, ION, MODE, NUMBER)
-          do II = 1, NN
+        IF (MODE == 1) NN = 1
+        DO J = 1, NRHOX
+          CALL PFSAHA(J, ID, ION, MODE, NUMBER)
+          DO II = 1, NN
             NUMBER(J,II) = NUMBER(J,II) * XNATOM(J) * XABUND(J,ID)
-          end do
-        end do
-        return  ! exit entire subroutine (matches original GO TO 400)
-      endif
-    endif
+          END DO
+        END DO
+        RETURN  ! exit entire subroutine (matches original GO TO 400)
+      ENDIF
+    ENDIF
 
     C = C - 0.01d0
-  end do  ! I
+  END DO  ! I
 
-  return
+  RETURN
 
 END SUBROUTINE MOLEC
 
@@ -6137,45 +6011,45 @@ END SUBROUTINE MOLEC
 
 SUBROUTINE NMOLEC(MODE)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  integer, intent(in) :: MODE
+  INTEGER, INTENT(IN) :: MODE
 
   ! --- Local arrays ---
-  real*8  :: EQUILJ(maxmol)          ! equilibrium constants at current depth
-  real*8  :: XNZ(kw, maxeq)          ! converged number densities per equation
-  real*8  :: EQ(maxeq)               ! residual vector
-  real*8  :: XN(maxeq)               ! current number density estimates
-  real*8  :: XAB(maxeq)              ! element abundances
-  real*8  :: DEQ(maxeq * maxeq)      ! Jacobian matrix (flattened)
-  real*8  :: EQOLD(maxeq)            ! previous residuals (for oscillation detection)
-  integer :: IPIVOT(maxeq)           ! pivot array for SOLVIT
+  REAL(8)  :: EQUILJ(maxmol)          ! equilibrium constants at current depth
+  REAL(8)  :: XNZ(kw, maxeq)          ! converged number densities per equation
+  REAL(8)  :: EQ(maxeq)               ! residual vector
+  REAL(8)  :: XN(maxeq)               ! current number density estimates
+  REAL(8)  :: XAB(maxeq)              ! element abundances
+  REAL(8)  :: DEQ(maxeq * maxeq)      ! Jacobian matrix (flattened)
+  REAL(8)  :: EQOLD(maxeq)            ! previous residuals (for oscillation detection)
+  INTEGER :: IPIVOT(maxeq)           ! pivot array for SOLVIT
 
-  real*8  :: FRAC(kw, 6)             ! scratch for PFSAHA output
-  real*8  :: PFP(61), PFM(61)        ! partition functions at T+/T- (atoms)
-  real*8  :: PFPLUS(kw), PFMIN(kw)   ! partition functions at T+/T- (molecules)
+  REAL(8)  :: FRAC(kw, 6)             ! scratch for PFSAHA output
+  REAL(8)  :: PFP(61), PFM(61)        ! partition functions at T+/T- (atoms)
+  REAL(8)  :: PFPLUS(kw), PFMIN(kw)   ! partition functions at T+/T- (molecules)
 
   ! For electron contribution diagnostic
-  real*8  :: E_CONTRIB(kw, maxmol)
-  real*8  :: XE_CONTRIB(kw, maxmol)
-  integer :: IDZ(maxmol), NION_MOL(maxmol)
+  REAL(8)  :: E_CONTRIB(kw, maxmol)
+  REAL(8)  :: XE_CONTRIB(kw, maxmol)
+  INTEGER :: IDZ(maxmol), NION_MOL(maxmol)
 
   ! --- Local scalars ---
-  real*8  :: XNTOT          ! total particle density = P / kT
-  real*8  :: RATIO          ! pressure ratio for depth extrapolation
-  real*8  :: TERM, D        ! molecule contribution to Jacobian
-  real*8  :: X, XNEQ, XN100, SCALE
-  real*8  :: AMASS          ! molecular mass accumulator
-  integer :: J, K, M, KK, K1, MK
-  integer :: JMOL, NCOMP, ION, ID
-  integer :: LOCK, LOCJ1, LOCJ2, LOCM, NEQUAK
-  integer :: IFERR
-  integer :: JMOL1, JMOL10, NN, NZ = 0, IZ, IZ1, IZ10
+  REAL(8)  :: XNTOT          ! total particle density = P / kT
+  REAL(8)  :: RATIO          ! pressure ratio for depth extrapolation
+  REAL(8)  :: TERM, D        ! molecule contribution to Jacobian
+  REAL(8)  :: X, XNEQ, XN100, SCALE
+  REAL(8)  :: AMASS          ! molecular mass accumulator
+  INTEGER :: J, K, M, KK, K1, MK
+  INTEGER :: JMOL, NCOMP, ION, ID
+  INTEGER :: LOCK, LOCJ1, LOCJ2, LOCM, NEQUAK
+  INTEGER :: IFERR
+  INTEGER :: JMOL1, JMOL10, NN, NZ = 0, IZ, IZ1, IZ10
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING NMOLEC'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING NMOLEC'
   
   NEQUA1 = NEQUA + 1
   NEQNEQ = NEQUA**2
@@ -6185,90 +6059,90 @@ SUBROUTINE NMOLEC(MODE)
   !=====================================================================
   XAB(:) = 0.0D0
   J = 1
-  do K = 2, NEQUA
+  DO K = 2, NEQUA
     ID = IDEQUA(K)
-    if (ID < 100) XAB(K) = max(XABUND(J, ID), 1.0D-20)
-  end do
-  if (ID == 100) XAB(NEQUA) = 0.0D0
+    IF (ID < 100) XAB(K) = max(XABUND(J, ID), 1.0D-20)
+  END DO
+  IF (ID == 100) XAB(NEQUA) = 0.0D0
 
   ! Initial guess for number densities at the surface
   XNTOT = P(1) / TK(1)
   XN(1) = XNTOT / 2.0D0
-  if (T(1) < 4000.0D0) XN(1) = XNTOT
+  IF (T(1) < 4000.0D0) XN(1) = XNTOT
   X = XN(1) / 10.0D0
-  do K = 2, NEQUA
+  DO K = 2, NEQUA
     XN(K) = X * XAB(K)
-  end do
-  if (ID == 100) XN(NEQUA) = X
+  END DO
+  IF (ID == 100) XN(NEQUA) = X
   XNE(1) = X
   
   !=====================================================================
   ! Main depth loop: solve molecular equilibrium at each depth
   !=====================================================================
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
      
     XNTOT = P(J) / TK(J)
 
     ! Extrapolate from previous depth as initial guess
-    if (J > 1) then
+    IF (J > 1) THEN
       RATIO = P(J) / P(J - 1)
       XNE(J) = XNE(J - 1) * RATIO
-      do K = 1, NEQUA
+      DO K = 1, NEQUA
         XN(K) = XN(K) * RATIO
-      end do
-    end if
+      END DO
+    END IF
 
     ! If computing energy density, restore saved values from previous
     ! normal (non-EDENS) run as the starting point
-    if (IFEDNS /= 0) then
-      do K = 1, NEQUA
+    IF (IFEDNS /= 0) THEN
+      DO K = 1, NEQUA
         XN(K) = XNSAVE(J, K)
-      end do
-    end if
+      END DO
+    END IF
 
     !-------------------------------------------------------------------
     ! Compute equilibrium constants for all molecules at this depth
     !-------------------------------------------------------------------
-    do JMOL = 1, NUMMOL
+    DO JMOL = 1, NUMMOL
       NCOMP = LOCJ(JMOL + 1) - LOCJ(JMOL)
 
-      if (EQUIL(1, JMOL) /= 0.0D0) then
+      IF (EQUIL(1, JMOL) /= 0.0D0) THEN
         ! True molecule: has equilibrium constant polynomial
         ION = int((XNMOLCODE(JMOL) - aint(XNMOLCODE(JMOL))) * 100.0D0 + 0.5D0)
         EQUILJ(JMOL) = 0.0D0
 
-        if (XNMOLCODE(JMOL) == 101.0D0) then
+        IF (XNMOLCODE(JMOL) == 101.0D0) THEN
           ! H2: special equilibrium function (Lester 2005 update)
-          if (T(J) <= 20000.0D0) EQUILJ(JMOL) = EQUILH2(T(J))
-        else
+          IF (T(J) <= 20000.0D0) EQUILJ(JMOL) = EQUILH2(T(J))
+        ELSE
           ! General molecule: polynomial equilibrium constant
-          if (T(J) <= 10000.0D0) then
+          IF (T(J) <= 10000.0D0) THEN
             EQUILJ(JMOL) = exp(EQUIL(1, JMOL) / TKEV(J) - EQUIL(2, JMOL) &
               + (EQUIL(3, JMOL) + (-EQUIL(4, JMOL) + (EQUIL(5, JMOL) &
               - EQUIL(6, JMOL) * T(J)) * T(J)) * T(J)) * T(J) &
               - 1.5D0 * (NCOMP - ION - ION - 1) * TLOG(J))
-          end if
-        end if
+          END IF
+        END IF
 
-      else if (NCOMP == 1) then
+      ELSE IF (NCOMP == 1) THEN
         ! Single atom: trivial equilibrium
         EQUILJ(JMOL) = 1.0D0
 
-      else
+      ELSE
         ! Multi-stage atom: get ionization equilibrium from Saha
         ID = int(XNMOLCODE(JMOL))
         ION = NCOMP - 1
-        call PFSAHA(J, ID, NCOMP, 12, FRAC)
+        CALL PFSAHA(J, ID, NCOMP, 12, FRAC)
         EQUILJ(JMOL) = FRAC(J, NCOMP) / FRAC(J, 1) * XNE(J)**ION
-      end if
-    end do
+      END IF
+    END DO
 
     !-------------------------------------------------------------------
     ! Newton-Raphson iteration for chemical equilibrium
     !-------------------------------------------------------------------
     EQOLD(:) = 0.0D0
 
-    newton_loop: do
+    newton_loop: DO
 
       ! --- Build Jacobian (DEQ) and residual (EQ) ---
       DEQ(1:NEQNEQ) = 0.0D0
@@ -6277,7 +6151,7 @@ SUBROUTINE NMOLEC(MODE)
       EQ(1) = -XNTOT
       K1 = 1
       KK = 1
-      do K = 2, NEQUA
+      DO K = 2, NEQUA
         EQ(1) = EQ(1) + XN(K)
         K1 = K1 + NEQUA
         DEQ(K1) = 1.0D0              ! d(eq1)/d(XN_k) = 1
@@ -6285,319 +6159,319 @@ SUBROUTINE NMOLEC(MODE)
         KK = KK + NEQUA1
         DEQ(KK) = 1.0D0              ! d(eq_k)/d(XN_k) = 1
         DEQ(K) = -XAB(K)             ! d(eq_k)/d(XN_1) = -A_k
-      end do
+      END DO
 
       ! Charge conservation (if ions present)
-      if (IDEQUA(NEQUA) >= 100) then
+      IF (IDEQUA(NEQUA) >= 100) THEN
         EQ(NEQUA) = -XN(NEQUA)
         DEQ(NEQNEQ) = -1.0D0
-      end if
+      END IF
 
       ! --- Add molecular contributions ---
-      do JMOL = 1, NUMMOL
+      DO JMOL = 1, NUMMOL
         NCOMP = LOCJ(JMOL + 1) - LOCJ(JMOL)
-        if (NCOMP == 1) cycle         ! single atoms don't contribute
+        IF (NCOMP == 1) CYCLE         ! single atoms don't contribute
 
         ! Compute molecule number density: TERM = K * product(n_k)
         TERM = EQUILJ(JMOL)
         LOCJ1 = LOCJ(JMOL)
         LOCJ2 = LOCJ(JMOL + 1) - 1
-        do LOCK = LOCJ1, LOCJ2
+        DO LOCK = LOCJ1, LOCJ2
           K = KCOMPS(LOCK)
-          if (K == NEQUA1) then
+          IF (K == NEQUA1) THEN
             TERM = TERM / XN(NEQUA)   ! electron: divide by n_e
-          else
+          ELSE
             TERM = TERM * XN(K)        ! atom: multiply by n_k
-          end if
-        end do
+          END IF
+        END DO
 
         ! Add to total particle count
         EQ(1) = EQ(1) + TERM
 
         ! Add to element conservation and Jacobian
-        do LOCK = LOCJ1, LOCJ2
+        DO LOCK = LOCJ1, LOCJ2
           K = KCOMPS(LOCK)
-          if (K >= NEQUA1) then
+          IF (K >= NEQUA1) THEN
             K = NEQUA
             D = -TERM / XN(K)          ! electron: d(TERM)/d(n_e) = -TERM/n_e
-          else
+          ELSE
             D = TERM / XN(K)           ! atom: d(TERM)/d(n_k) = TERM/n_k
-          end if
+          END IF
           EQ(K) = EQ(K) + TERM
           NEQUAK = NEQUA * K - NEQUA
           K1 = NEQUAK + 1
           DEQ(K1) = DEQ(K1) + D
-          do LOCM = LOCJ1, LOCJ2
+          DO LOCM = LOCJ1, LOCJ2
             M = KCOMPS(LOCM)
-            if (M == NEQUA1) M = NEQUA
+            IF (M == NEQUA1) M = NEQUA
             MK = M + NEQUAK
             DEQ(MK) = DEQ(MK) + D
-          end do
-        end do
+          END DO
+        END DO
 
         ! Correction to charge equation for negative ions
         ! (species whose last component is element 100 = neutral atom)
         K = KCOMPS(LOCJ2)
-        if (IDEQUA(K) == 100) then
-          do LOCK = LOCJ1, LOCJ2
+        IF (IDEQUA(K) == 100) THEN
+          DO LOCK = LOCJ1, LOCJ2
             K = KCOMPS(LOCK)
             D = TERM / XN(K)
-            if (K == NEQUA) EQ(K) = EQ(K) - TERM - TERM
+            IF (K == NEQUA) EQ(K) = EQ(K) - TERM - TERM
             NEQUAK = NEQUA * K - NEQUA
-            do LOCM = LOCJ1, LOCJ2
+            DO LOCM = LOCJ1, LOCJ2
               M = KCOMPS(LOCM)
-              if (M == NEQUA) then
+              IF (M == NEQUA) THEN
                 MK = M + NEQUAK
                 DEQ(MK) = DEQ(MK) - D - D
-              end if
-            end do
-          end do
-        end if
+              END IF
+            END DO
+          END DO
+        END IF
 
-      end do  ! JMOL
+      END DO  ! JMOL
 
       ! --- Solve linearized system ---
-      call SOLVIT(DEQ, NEQUA, EQ, IPIVOT)
+      CALL SOLVIT(DEQ, NEQUA, EQ, IPIVOT)
 
       ! --- Apply corrections with damping ---
       IFERR = 0
       SCALE = 100.0D0
-      do K = 1, NEQUA
+      DO K = 1, NEQUA
         RATIO = abs(EQ(K) / XN(K))
-        if (RATIO > 1.0D-4) IFERR = 1
+        IF (RATIO > 1.0D-4) IFERR = 1
 
         ! Reduce correction if oscillating (sign flip)
-        if (EQOLD(K) * EQ(K) < 0.0D0) EQ(K) = EQ(K) * 0.69D0
+        IF (EQOLD(K) * EQ(K) < 0.0D0) EQ(K) = EQ(K) * 0.69D0
 
         XNEQ = XN(K) - EQ(K)
         XN100 = XN(K) / 100.0D0
 
-        if (abs(XNEQ) >= XN100) then
+        IF (abs(XNEQ) >= XN100) THEN
           ! Normal correction: accept new value (force positive)
           XN(K) = abs(XNEQ)
-        else
+        ELSE
           ! Correction too large relative to current value: scale down
           XN(K) = XN(K) / SCALE
-          if (EQOLD(K) * EQ(K) < 0.0D0) SCALE = sqrt(SCALE)
-        end if
+          IF (EQOLD(K) * EQ(K) < 0.0D0) SCALE = sqrt(SCALE)
+        END IF
 
         EQOLD(K) = EQ(K)
-      end do
+      END DO
 
-      if (IFERR == 0) exit newton_loop
+      IF (IFERR == 0) EXIT newton_loop
 
-    end do newton_loop
+    END DO newton_loop
 
     !-------------------------------------------------------------------
     ! Store converged solution
     !-------------------------------------------------------------------
-    do K = 1, NEQUA
+    DO K = 1, NEQUA
       XNZ(J, K) = XN(K)
-    end do
+    END DO
     XNATOM(J) = XN(1)
     RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
-    if (IDEQUA(NEQUA) == 100) XNE(J) = XN(NEQUA)
+    IF (IDEQUA(NEQUA) == 100) XNE(J) = XN(NEQUA)
 
     ! Compute molecular number densities from converged XN
-    do JMOL = 1, NUMMOL
+    DO JMOL = 1, NUMMOL
       XNMOL(J, JMOL) = EQUILJ(JMOL)
       LOCJ1 = LOCJ(JMOL)
       LOCJ2 = LOCJ(JMOL + 1) - 1
-      do LOCK = LOCJ1, LOCJ2
+      DO LOCK = LOCJ1, LOCJ2
         K = KCOMPS(LOCK)
-        if (K == NEQUA1) then
+        IF (K == NEQUA1) THEN
           XNMOL(J, JMOL) = XNMOL(J, JMOL) / XN(NEQUA)
-        else
+        ELSE
           XNMOL(J, JMOL) = XNMOL(J, JMOL) * XN(K)
-        end if
-      end do
-    end do
+        END IF
+      END DO
+    END DO
 
-  end do  ! depth loop J
+  END DO  ! depth loop J
 
   !=====================================================================
   ! If computing energy density (IFEDNS=1), jump to that section
   !=====================================================================
-  if (IFEDNS == 1) then
-    call nmolec_energy_density()
-    return
-  end if
+  IF (IFEDNS == 1) THEN
+    CALL nmolec_energy_density()
+    RETURN
+  END IF
 
   
   !=====================================================================
   ! Save solution for next call / EDENS restart
   !=====================================================================
 
-  do K = 1, NEQUA
-    do J = 1, NRHOX
+  DO K = 1, NEQUA
+    DO J = 1, NRHOX
       XNSAVE(J, K) = XNZ(J, K)
-    end do
-  end do
+    END DO
+  END DO
 
   ! --- Diagnostic output ---
-  if ((ITER == 1 .or. ITER == NUMITS) .and. IDEBUG == 1) then
-    write(6, '(10X,"RHOX",9X,"T",11X,"P",10X,"XNE",8X,"XNATOM",8X,"RHO")') 
-    do J = 1, NRHOX
-      write(6, '(I5,1P6E12.3)') J, RHOX(J), T(J), P(J), XNE(J), XNATOM(J), RHO(J)
-    end do
-  end if
+  IF ((ITER == 1 .OR. ITER == NUMITS) .AND. IDEBUG == 1) THEN
+    WRITE(6, '(10X,"RHOX",9X,"T",11X,"P",10X,"XNE",8X,"XNATOM",8X,"RHO")') 
+    DO J = 1, NRHOX
+      WRITE(6, '(I5,1P6E12.3)') J, RHOX(J), T(J), P(J), XNE(J), XNATOM(J), RHO(J)
+    END DO
+  END IF
 
-  if (ITER == NUMITS .and. IFSYNTHE == 1 .and. IFMOLOUT == 1) then
-    do JMOL1 = 1, NUMMOL, 10
+  IF (ITER == NUMITS .AND. IFSYNTHE == 1 .AND. IFMOLOUT == 1) THEN
+    DO JMOL1 = 1, NUMMOL, 10
       JMOL10 = min(JMOL1 + 9, NUMMOL)
-      write(35, '(49X,"MOLECULAR NUMBER DENSITIES"/5X,10F12.2)') &
+      WRITE(35, '(49X,"MOLECULAR NUMBER DENSITIES"/5X,10F12.2)') &
         (XNMOLCODE(JMOL), JMOL = JMOL1, JMOL10)
-      do J = 1, NRHOX
-        write(35, '(I5,1P10E12.3)') J, (XNMOL(J, JMOL), JMOL = JMOL1, JMOL10)
-      end do
-    end do
-  end if
+      DO J = 1, NRHOX
+        WRITE(35, '(I5,1P10E12.3)') J, (XNMOL(J, JMOL), JMOL = JMOL1, JMOL10)
+      END DO
+    END DO
+  END IF
 
   !=====================================================================
   ! MODE 1 or 11: compute n / partition_function for opacity
   !=====================================================================
-  if (MODE /= 2 .and. MODE /= 12) then
+  IF (MODE /= 2 .AND. MODE /= 12) THEN
 
   ! Convert element number densities to n/U
-  do K = 2, NEQUA
+  DO K = 2, NEQUA
     ID = IDEQUA(K)
-    if (ID == 100) then
+    IF (ID == 100) THEN
       ! Electrons: divide by electron partition function (= 2)
       ! and translational PF: (2*pi*m_e*kT/h^2)^(3/2) = 2.4148e15 * T^(3/2)
-      do J = 1, NRHOX
+      DO J = 1, NRHOX
         XNZ(J, K) = XNZ(J, K) / SAHA_PREFAC / T(J) / sqrt(T(J))
-      end do
-    else
+      END DO
+    ELSE
       ! Atoms: divide by partition function and translational PF
-      do J = 1, NRHOX
-        call PFSAHA(J, ID, 1, 3, FRAC)
+      DO J = 1, NRHOX
+        CALL PFSAHA(J, ID, 1, 3, FRAC)
         XNZ(J, K) = XNZ(J, K) / FRAC(J, 1) / 1.8786D20 &
                    / sqrt((ATMASS(ID) * T(J))**3)
-      end do
-    end if
-  end do
+      END DO
+    END IF
+  END DO
 
   ! Compute n/U for molecules and track element IDs for electron diagnostics
   IZ = 1
   IDZ(IZ) = 1
-  do JMOL = 1, NUMMOL
+  DO JMOL = 1, NUMMOL
     NCOMP = LOCJ(JMOL + 1) - LOCJ(JMOL)
 
-    if (EQUIL(1, JMOL) /= 0.0D0) then
+    IF (EQUIL(1, JMOL) /= 0.0D0) THEN
       ! True molecule: n_mol/U = exp(D0/kT) * product(n_k/U_k) * translational_PF
       AMASS = 0.0D0
       LOCJ1 = LOCJ(JMOL)
       LOCJ2 = LOCJ(JMOL + 1) - 1
 
-      do J = 1, NRHOX
+      DO J = 1, NRHOX
         XNFPMOL(J, JMOL) = exp(EQUIL(1, JMOL) / TKEV(J))
-      end do
+      END DO
 
-      do LOCK = LOCJ1, LOCJ2
+      DO LOCK = LOCJ1, LOCJ2
         K = KCOMPS(LOCK)
-        if (K == NEQUA1) then
-          do J = 1, NRHOX
+        IF (K == NEQUA1) THEN
+          DO J = 1, NRHOX
             XNFPMOL(J, JMOL) = XNFPMOL(J, JMOL) / XNZ(J, NEQUA)
-          end do
-        else
+          END DO
+        ELSE
           ID = IDEQUA(K)
-          if (ID < 100) AMASS = AMASS + ATMASS(ID)
-          do J = 1, NRHOX
+          IF (ID < 100) AMASS = AMASS + ATMASS(ID)
+          DO J = 1, NRHOX
             XNFPMOL(J, JMOL) = XNFPMOL(J, JMOL) * XNZ(J, K)
-          end do
-        end if
-      end do
+          END DO
+        END IF
+      END DO
 
-      do J = 1, NRHOX
+      DO J = 1, NRHOX
         XNFPMOL(J, JMOL) = XNFPMOL(J, JMOL) * 1.8786D20 * sqrt((AMASS * T(J))**3)
-      end do
+      END DO
 
-    else
+    ELSE
       ! Atom/ion: use PFSAHA to get n/U
       ID = int(XNMOLCODE(JMOL))
-      if (ID /= IDZ(IZ)) then
-        if (JMOL >= 3) NION_MOL(IZ) = LOCJ(JMOL - 1) - LOCJ(JMOL - 2)
+      IF (ID /= IDZ(IZ)) THEN
+        IF (JMOL >= 3) NION_MOL(IZ) = LOCJ(JMOL - 1) - LOCJ(JMOL - 2)
         IZ = IZ + 1
         IDZ(IZ) = ID
-      end if
+      END IF
 
-      do J = 1, NRHOX
-        call PFSAHA(J, ID, NCOMP, 3, FRAC)
+      DO J = 1, NRHOX
+        CALL PFSAHA(J, ID, NCOMP, 3, FRAC)
         XNFPMOL(J, JMOL) = XNMOL(J, JMOL) / FRAC(J, 1)
-      end do
-    end if
-  end do
+      END DO
+    END IF
+  END DO
 
   ! Compute electron contribution per element
   NZ = IZ
-  do IZ = 1, NZ
-    do J = 1, NRHOX
-      call PFSAHA(J, IDZ(IZ), NION_MOL(IZ), 4, E_CONTRIB)
+  DO IZ = 1, NZ
+    DO J = 1, NRHOX
+      CALL PFSAHA(J, IDZ(IZ), NION_MOL(IZ), 4, E_CONTRIB)
       XE_CONTRIB(J, IZ) = E_CONTRIB(J, 1) * XNATOM(J) &
                          * XABUND(J, IDZ(IZ)) / XNE(J)
-    end do
-  end do
+    END DO
+  END DO
 
-  end if  ! MODE /= 2 and MODE /= 12
+  END IF  ! MODE /= 2 and MODE /= 12
 
   ! --- Print n/U and electron contribution diagnostics ---
-  if (ITER == NUMITS.AND. IDEBUG == 1) then
+  IF (ITER == NUMITS.AND. IDEBUG == 1) THEN
     NN = ((NUMMOL / 10) + 1) * 10
-    do JMOL1 = 1, NN, 10
+    DO JMOL1 = 1, NN, 10
       JMOL10 = JMOL1 + 9
-      write(6, '("1",40X,"NUMBER DENSITIES / PARTITION FUNCTIONS"/5X,10F12.2/(I5,1P10E12.3))') &
+      WRITE(6, '("1",40X,"NUMBER DENSITIES / PARTITION FUNCTIONS"/5X,10F12.2/(I5,1P10E12.3))') &
         (XNMOLCODE(JMOL), JMOL = JMOL1, JMOL10), &
         (J, (XNFPMOL(J, JMOL), JMOL = JMOL1, JMOL10), J = 1, NRHOX)
-    end do
+    END DO
 
-    do IZ1 = 1, NZ, 10
+    DO IZ1 = 1, NZ, 10
       IZ10 = IZ1 + 9
-      write(6, '("1",40X,"ELECTRON CONTRIBUTION Ne(elem)/Ne_tot"/5X,10I12/(I5,1P10E12.3))') &
+      WRITE(6, '("1",40X,"ELECTRON CONTRIBUTION Ne(elem)/Ne_tot"/5X,10I12/(I5,1P10E12.3))') &
         (IDZ(IZ), IZ = IZ1, IZ10), &
         (J, (XE_CONTRIB(J, IZ), IZ = IZ1, IZ10), J = 1, NRHOX)
-    end do
-  end if
+    END DO
+  END IF
 
-  return
+  RETURN
 
-contains
+CONTAINS
 
   !-------------------------------------------------------------------
   ! Compute molecular contribution to energy density (IFEDNS=1 path).
   ! Called from CONVEC via COMPUTE_ONE_POP when energy density needed.
   !-------------------------------------------------------------------
-  subroutine nmolec_energy_density()
-    integer :: J_e, JMOL_e, NCOMP_e, ION_e, ID_e
-    integer :: LOCK_e, LOCJ1_e, LOCJ2_e, K_e
-    real*8  :: TPLUS_e, TMINUS_e
+  SUBROUTINE nmolec_energy_density()
+    INTEGER :: J_e, JMOL_e, NCOMP_e, ION_e, ID_e
+    INTEGER :: LOCK_e, LOCJ1_e, LOCJ2_e, K_e
+    REAL(8)  :: TPLUS_e, TMINUS_e
 
     ! Initialize with kinetic energy
-    do J_e = 1, NRHOX
+    DO J_e = 1, NRHOX
       XNTOT = P(J_e) / TK(J_e)
       EDENS(J_e) = 1.5D0 * XNTOT * TK(J_e)
-    end do
+    END DO
 
-    do JMOL_e = 1, NUMMOL
+    DO JMOL_e = 1, NUMMOL
       NCOMP_e = LOCJ(JMOL_e + 1) - LOCJ(JMOL_e)
 
-      if (EQUIL(1, JMOL_e) /= 0.0D0) then
+      IF (EQUIL(1, JMOL_e) /= 0.0D0) THEN
         !---------------------------------------------------------------
         ! Molecules: partition function derivative by finite differences
         !---------------------------------------------------------------
-        do J_e = 1, NRHOX
-          if (XNMOL(J_e, JMOL_e) <= 0.0D0) cycle
+        DO J_e = 1, NRHOX
+          IF (XNMOL(J_e, JMOL_e) <= 0.0D0) CYCLE
           TPLUS_e  = T(J_e) * 1.001D0
           TMINUS_e = T(J_e) * 0.999D0
           PFMIN(J_e)  = 0.0D0
           PFPLUS(J_e) = 0.0D0
 
-          if (XNMOLCODE(JMOL_e) == 101.0D0) then
+          IF (XNMOLCODE(JMOL_e) == 101.0D0) THEN
             ! H2: use dedicated partition function
             PFMIN(J_e)  = PARTFNH2(TMINUS_e)
             PFPLUS(J_e) = PARTFNH2(TPLUS_e)
-          else
+          ELSE
             ! General molecule: PF from equilibrium constant polynomial
-            if (T(J_e) <= 10000.0D0) then
+            IF (T(J_e) <= 10000.0D0) THEN
               PFPLUS(J_e) = exp(-EQUIL(2, JMOL_e) &
                 + (EQUIL(3, JMOL_e) + (-EQUIL(4, JMOL_e) &
                 + (EQUIL(5, JMOL_e) - EQUIL(6, JMOL_e) * TPLUS_e) &
@@ -6606,79 +6480,79 @@ contains
                 + (EQUIL(3, JMOL_e) + (-EQUIL(4, JMOL_e) &
                 + (EQUIL(5, JMOL_e) - EQUIL(6, JMOL_e) * TMINUS_e) &
                 * TMINUS_e) * TMINUS_e) * TMINUS_e) + 1.0D-30
-            end if
-          end if
-        end do
+            END IF
+          END IF
+        END DO
 
         ! For non-H2 molecules: multiply PF by component atom PFs at T+/T-
-        if (XNMOLCODE(JMOL_e) /= 101.0D0) then
+        IF (XNMOLCODE(JMOL_e) /= 101.0D0) THEN
           LOCJ1_e = LOCJ(JMOL_e)
           LOCJ2_e = LOCJ(JMOL_e + 1) - 1
-          do LOCK_e = LOCJ1_e, LOCJ2_e
+          DO LOCK_e = LOCJ1_e, LOCJ2_e
             K_e = KCOMPS(LOCK_e)
-            if (K_e == NEQUA) cycle    ! electron: skip
-            if (K_e > NEQUA) exit      ! past last equation
+            IF (K_e == NEQUA) CYCLE    ! electron: skip
+            IF (K_e > NEQUA) EXIT      ! past last equation
             ID_e = IDEQUA(K_e)
-            do J_e = 1, NRHOX
-              if (XNMOL(J_e, JMOL_e) <= 0.0D0) cycle
+            DO J_e = 1, NRHOX
+              IF (XNMOL(J_e, JMOL_e) <= 0.0D0) CYCLE
               ! PF at T+
               T(J_e) = T(J_e) * 1.001D0
               TK(J_e) = TK(J_e) * 1.001D0
               TKEV(J_e) = TKEV(J_e) * 1.001D0
-              call PFSAHA(J_e, ID_e, 1, 3, FRAC)
+              CALL PFSAHA(J_e, ID_e, 1, 3, FRAC)
               PFPLUS(J_e) = PFPLUS(J_e) * FRAC(J_e, 1)
               ! PF at T-
               T(J_e) = T(J_e) / 1.001D0 * 0.999D0
               TK(J_e) = TK(J_e) / 1.001D0 * 0.999D0
               TKEV(J_e) = TKEV(J_e) / 1.001D0 * 0.999D0
-              call PFSAHA(J_e, ID_e, 1, 3, FRAC)
+              CALL PFSAHA(J_e, ID_e, 1, 3, FRAC)
               PFMIN(J_e) = PFMIN(J_e) * FRAC(J_e, 1)
               ! Restore T
               T(J_e) = T(J_e) / 0.999D0
               TK(J_e) = TK(J_e) / 0.999D0
               TKEV(J_e) = TKEV(J_e) / 0.999D0
-            end do
-          end do
-        end if
+            END DO
+          END DO
+        END IF
 
         ! Accumulate energy density contribution
-        if (XNMOLCODE(JMOL_e) == 101.0D0) then
+        IF (XNMOLCODE(JMOL_e) == 101.0D0) THEN
           ! H2: dissociation energy = 36118.11 cm^-1
-          do J_e = 1, NRHOX
-            if (XNMOL(J_e, JMOL_e) <= 0.0D0) cycle
+          DO J_e = 1, NRHOX
+            IF (XNMOL(J_e, JMOL_e) <= 0.0D0) CYCLE
             EDENS(J_e) = EDENS(J_e) + XNMOL(J_e, JMOL_e) * TK(J_e) &
               * (-36118.11D0 * HCKT(J_e) &
               + (PFPLUS(J_e) - PFMIN(J_e)) / (PFPLUS(J_e) + PFMIN(J_e) + 1.0D-30) &
               * 1000.0D0)
-          end do
-        else
+          END DO
+        ELSE
           ! General molecule
-          do J_e = 1, NRHOX
-            if (XNMOL(J_e, JMOL_e) <= 0.0D0) cycle
+          DO J_e = 1, NRHOX
+            IF (XNMOL(J_e, JMOL_e) <= 0.0D0) CYCLE
             EDENS(J_e) = EDENS(J_e) + XNMOL(J_e, JMOL_e) * TK(J_e) &
               * (-EQUIL(1, JMOL_e) / TKEV(J_e) &
               + (PFPLUS(J_e) - PFMIN(J_e)) / (PFPLUS(J_e) + PFMIN(J_e) + 1.0D-30) &
               * 1000.0D0)
-          end do
-        end if
+          END DO
+        END IF
 
-      else
+      ELSE
         !---------------------------------------------------------------
         ! Atoms: partition function derivative by finite differences
         !---------------------------------------------------------------
         ID_e = int(XNMOLCODE(JMOL_e))
-        do J_e = 1, NRHOX
-          if (XNMOL(J_e, JMOL_e) <= 0.0D0) cycle
+        DO J_e = 1, NRHOX
+          IF (XNMOL(J_e, JMOL_e) <= 0.0D0) CYCLE
           ! PF at T+
           T(J_e) = T(J_e) * 1.001D0
           TK(J_e) = TK(J_e) * 1.001D0
           TKEV(J_e) = TKEV(J_e) * 1.001D0
-          call PFSAHA(J_e, ID_e, NCOMP_e, 5, PFP)
+          CALL PFSAHA(J_e, ID_e, NCOMP_e, 5, PFP)
           ! PF at T-
           T(J_e) = T(J_e) / 1.001D0 * 0.999D0
           TK(J_e) = TK(J_e) / 1.001D0 * 0.999D0
           TKEV(J_e) = TKEV(J_e) / 1.001D0 * 0.999D0
-          call PFSAHA(J_e, ID_e, NCOMP_e, 5, PFM)
+          CALL PFSAHA(J_e, ID_e, NCOMP_e, 5, PFM)
           ! Restore T
           T(J_e) = T(J_e) / 0.999D0
           TK(J_e) = TK(J_e) / 0.999D0
@@ -6690,17 +6564,17 @@ contains
             * (PFP(31 + ION_e) / TKEV(J_e) &
             + (PFP(ION_e) - PFM(ION_e)) / (PFP(ION_e) + PFM(ION_e)) &
             * 1000.0D0)
-        end do
+        END DO
 
-      end if
-    end do  ! JMOL_e
+      END IF
+    END DO  ! JMOL_e
 
     ! Convert to energy per unit mass
-    do J_e = 1, NRHOX
+    DO J_e = 1, NRHOX
       EDENS(J_e) = EDENS(J_e) / RHO(J_e)
-    end do
+    END DO
 
-  end subroutine nmolec_energy_density
+  END SUBROUTINE nmolec_energy_density
 
 END SUBROUTINE NMOLEC
 
@@ -6741,7 +6615,7 @@ END SUBROUTINE NMOLEC
 
 SUBROUTINE COMPUTE_ALL_POPS
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Species code tables for Z=1-30 ---
   ! CODE = IZ + NION/100:  IZ = atomic number, NION = number of ion stages
@@ -6749,21 +6623,21 @@ SUBROUTINE COMPUTE_ALL_POPS
   ! MODE=11 (XNFP): for continuum opacity — more stages for transition metals
 
   ! Number of ion stages per element for MODE=12 (XNF, line opacity)
-  integer, parameter :: NION_XNF(30) = (/ &
+  INTEGER, PARAMETER :: NION_XNF(30) = (/ &
     1, 2, 3, 3, 3,                        &  ! Z = 1-5  (H, He, Li, Be, B)
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,     &  ! Z = 6-16
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,  &  ! Z = 17-28
     2, 2 /)                                   ! Z = 29-30
 
   ! Number of ion stages per element for MODE=11 (XNFP, continuum opacity)
-  integer, parameter :: NION_XNFP(30) = (/ &
+  INTEGER, PARAMETER :: NION_XNFP(30) = (/ &
     1, 2, 3, 3, 3,                         &  ! Z = 1-5
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,      &  ! Z = 6-16
     5, 4, 5, 9, 9, 9, 9, 9, 9, 9, 9, 9,   &  ! Z = 17-28
     2, 2 /)                                    ! Z = 29-30
 
   ! NELION offsets: IZ*(IZ+1)/2 for Z=1-30
-  integer, parameter :: NOFF(30) = (/ &
+  INTEGER, PARAMETER :: NOFF(30) = (/ &
       1,   3,   6,  10,  15,  21,  28,  36,  45,  55, &
      66,  78,  91, 105, 120, 136, 153, 171, 190, 210, &
     231, 253, 276, 300, 325, 351, 378, 406, 435, 465 /)
@@ -6773,53 +6647,53 @@ SUBROUTINE COMPUTE_ALL_POPS
   ! H2=841, CH=846, NH=847, OH=848, MgH=851, SiH=853,
   ! CaH=858, CrH=862, FeH=864, C2=868, CN=869, CO=870,
   ! SiO=889, TiO=895, VO=896, H2O=940
-  integer, parameter :: NMOL_SPECIES = 16
-  real*8,  parameter :: MOL_CODE(16) = (/ &
+  INTEGER, PARAMETER :: NMOL_SPECIES = 16
+  REAL(8),  PARAMETER :: MOL_CODE(16) = (/ &
     101.0D0, 106.0D0, 107.0D0, 108.0D0, 112.0D0, 114.0D0, &
     120.0D0, 124.0D0, 126.0D0, 606.0D0, 607.0D0, 608.0D0, &
     814.0D0, 822.0D0, 823.0D0, 10108.0D0 /)
-  integer, parameter :: MOL_NELION(16) = (/ &
+  INTEGER, PARAMETER :: MOL_NELION(16) = (/ &
     841, 846, 847, 848, 851, 853, &
     858, 862, 864, 868, 869, 870, &
     889, 895, 896, 940 /)
 
   ! --- Local variables ---
-  real*8  :: CODE
-  integer :: IZ, J, IMOL
+  REAL(8)  :: CODE
+  INTEGER :: IZ, J, IMOL
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING COMPUTE_ALL_POPS'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COMPUTE_ALL_POPS'
 
   !=====================================================================
   ! Pass 1: XNF (MODE=12) — number densities for line opacity
   !=====================================================================
-  do IZ = 1, 30
+  DO IZ = 1, 30
     CODE = dble(IZ) + dble(NION_XNF(IZ)) / 100.0D0
-    call COMPUTE_ONE_POP(CODE, 12, XNF(1, NOFF(IZ)))
-  end do
+    CALL COMPUTE_ONE_POP(CODE, 12, XNF(1, NOFF(IZ)))
+  END DO
 
   !=====================================================================
   ! Pass 2: XNFP (MODE=11) — n/partition function for continuum opacity
   !=====================================================================
-  do IZ = 1, 30
+  DO IZ = 1, 30
     CODE = dble(IZ) + dble(NION_XNFP(IZ)) / 100.0D0
-    call COMPUTE_ONE_POP(CODE, 11, XNFP(1, NOFF(IZ)))
-  end do
+    CALL COMPUTE_ONE_POP(CODE, 11, XNFP(1, NOFF(IZ)))
+  END DO
 
   !=====================================================================
   ! Elements Z=31-99: 2 stages for both passes
   !=====================================================================
-  do IZ = 31, 99
+  DO IZ = 31, 99
     CODE = dble(IZ) + 0.02D0
-    call COMPUTE_ONE_POP(CODE, 11, XNFP(1, 496 + (IZ - 31) * 5))
-    call COMPUTE_ONE_POP(CODE, 12, XNF(1, 496 + (IZ - 31) * 5))
-  end do
+    CALL COMPUTE_ONE_POP(CODE, 11, XNFP(1, 496 + (IZ - 31) * 5))
+    CALL COMPUTE_ONE_POP(CODE, 12, XNF(1, 496 + (IZ - 31) * 5))
+  END DO
 
   !=====================================================================
   ! Approximate H2 and CO for cool stars when molecules are off
   ! (analytic equilibrium fits, valid for T < 9000 K)
   !=====================================================================
-  do J = 1, NRHOX
-    if (T(J) > 9000.0D0) cycle
+  DO J = 1, NRHOX
+    IF (T(J) > 9000.0D0) CYCLE
 
     ! H2 equilibrium: n(H2)/U(H2) from H partition functions
     XNFP(J, 841) = XNFP(J, 1)**2 * exp(4.478D0 / TKEV(J) - 4.64584D1 &
@@ -6833,18 +6707,18 @@ SUBROUTINE COMPUTE_ALL_POPS
       + 14.0306D-4 * T(J) - 26.6341D-8 * T(J)**2 &
       + 35.382D-12 * T(J)**3 - 26.5424D-16 * T(J)**4 &
       + 8.32385D-20 * T(J)**5 - 1.5D0 * TLOG(J))
-  end do
+  END DO
 
   !=====================================================================
   ! Molecular populations from NMOLEC (when molecular equilibrium is on)
   !=====================================================================
-  if (IFMOL == 0) return
+  IF (IFMOL == 0) RETURN
 
-  do IMOL = 1, NMOL_SPECIES
-    call COMPUTE_ONE_POP(MOL_CODE(IMOL), 1, XNFP(1, MOL_NELION(IMOL)))
-  end do
+  DO IMOL = 1, NMOL_SPECIES
+    CALL COMPUTE_ONE_POP(MOL_CODE(IMOL), 1, XNFP(1, MOL_NELION(IMOL)))
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE COMPUTE_ALL_POPS
 
@@ -6894,62 +6768,62 @@ END SUBROUTINE COMPUTE_ALL_POPS
 
 SUBROUTINE CONVEC
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Local arrays: finite-difference energy density and density ---
-  real*8 :: EDENS1(kw), EDENS2(kw)   ! E at T+, T-
-  real*8 :: EDENS3(kw), EDENS4(kw)   ! E at P+, P-
-  real*8 :: RHO1(kw),   RHO2(kw)     ! ρ at T+, T-
-  real*8 :: RHO3(kw),   RHO4(kw)     ! ρ at P+, P-
-  real*8 :: SAVXNE(kw),  SAVXNA(kw),  SAVRHO(kw)  ! saved state
-  real*8 :: DILUT(kw)                 ! dilution factor 1 - exp(-τ_Ross)
+  REAL(8) :: EDENS1(kw), EDENS2(kw)   ! E at T+, T-
+  REAL(8) :: EDENS3(kw), EDENS4(kw)   ! E at P+, P-
+  REAL(8) :: RHO1(kw),   RHO2(kw)     ! ρ at T+, T-
+  REAL(8) :: RHO3(kw),   RHO4(kw)     ! ρ at P+, P-
+  REAL(8) :: SAVXNE(kw),  SAVXNA(kw),  SAVRHO(kw)  ! saved state
+  REAL(8) :: DILUT(kw)                 ! dilution factor 1 - exp(-τ_Ross)
 
-  real*8 :: DTDRHX(kw)    ! dT/d(RHOX) from DERIV
-  real*8 :: ABCONV(kw)    ! convective opacity (harmonic mean at T±ΔT)
-  real*8 :: DELTAT(kw)    ! temperature excess of convective element
-  real*8 :: ROSST(kw)     ! Rosseland opacity at actual T, P
-  real*8 :: CNVINT(kw)    ! integrated convective flux (for overshooting)
-  real*8 :: DELHGT(kw)    ! overshooting height increment
+  REAL(8) :: DTDRHX(kw)    ! dT/d(RHOX) from DERIV
+  REAL(8) :: ABCONV(kw)    ! convective opacity (harmonic mean at T±ΔT)
+  REAL(8) :: DELTAT(kw)    ! temperature excess of convective element
+  REAL(8) :: ROSST(kw)     ! Rosseland opacity at actual T, P
+  REAL(8) :: CNVINT(kw)    ! integrated convective flux (for overshooting)
+  REAL(8) :: DELHGT(kw)    ! overshooting height increment
 
   ! --- Local scalars: thermodynamic derivatives ---
-  real*8  :: DEDT          ! (dE/dT)_P
-  real*8  :: DRDT          ! (dρ/dT)_P
-  real*8  :: DEDPG         ! (dE/dP)_T
-  real*8  :: DRDPG         ! (dρ/dP)_T
-  real*8  :: DPDPG         ! dP_total/dP_gas (= 1 when ignoring P_turb)
-  real*8  :: DPDT          ! dP_rad/dT ≈ 4*P_rad/T * dilution
-  real*8  :: HEATCV        ! specific heat at constant volume
+  REAL(8)  :: DEDT          ! (dE/dT)_P
+  REAL(8)  :: DRDT          ! (dρ/dT)_P
+  REAL(8)  :: DEDPG         ! (dE/dP)_T
+  REAL(8)  :: DRDPG         ! (dρ/dP)_T
+  REAL(8)  :: DPDPG         ! dP_total/dP_gas (= 1 when ignoring P_turb)
+  REAL(8)  :: DPDT          ! dP_rad/dT ≈ 4*P_rad/T * dilution
+  REAL(8)  :: HEATCV        ! specific heat at constant volume
 
   ! --- Local scalars: mixing length theory ---
-  real*8  :: DEL           ! superadiabatic excess ∇ - ∇_ad
-  real*8  :: VCO           ! convective velocity scale
-  real*8  :: FLUXCO        ! convective flux coefficient
-  real*8  :: D             ! radiative damping parameter
-  real*8  :: TAUB          ! optical thickness of convective bubble
-  real*8  :: DDD           ! discriminant for cubic equation
-  real*8  :: DELTA         ! convective efficiency parameter
-  real*8  :: TERM, UP, DOWN  ! series expansion variables
-  real*8  :: DPLUS, DMINUS ! opacity ratios at T±ΔT
-  real*8  :: OLDDELT       ! previous iteration's DELTAT
-  integer :: ITS30         ! max opacity iterations (30 or 1)
-  integer :: IDELTAT       ! opacity iteration counter
+  REAL(8)  :: DEL           ! superadiabatic excess ∇ - ∇_ad
+  REAL(8)  :: VCO           ! convective velocity scale
+  REAL(8)  :: FLUXCO        ! convective flux coefficient
+  REAL(8)  :: D             ! radiative damping parameter
+  REAL(8)  :: TAUB          ! optical thickness of convective bubble
+  REAL(8)  :: DDD           ! discriminant for cubic equation
+  REAL(8)  :: DELTA         ! convective efficiency parameter
+  REAL(8)  :: TERM, UP, DOWN  ! series expansion variables
+  REAL(8)  :: DPLUS, DMINUS ! opacity ratios at T±ΔT
+  REAL(8)  :: OLDDELT       ! previous iteration's DELTAT
+  INTEGER :: ITS30         ! max opacity iterations (30 or 1)
+  INTEGER :: IDELTAT       ! opacity iteration counter
 
   ! --- Local scalars: overshooting ---
-  real*8  :: WTCNV         ! overshooting weight
-  real*8  :: CNV1(1), CNV2(1)    ! interpolated integrated fluxes
-  real*8  :: XNEW_CNV(1)
-  integer :: M             ! MAP1 return value
+  REAL(8)  :: WTCNV         ! overshooting weight
+  REAL(8)  :: CNV1(1), CNV2(1)    ! interpolated integrated fluxes
+  REAL(8)  :: XNEW_CNV(1)
+  INTEGER :: M             ! MAP1 return value
 
   ! --- Other locals ---
-  integer :: J
-  integer :: JTOP, JBOT, JA, JB  ! gap-filling indices
-  real*8  :: WGHT                 ! interpolation weight
+  INTEGER :: J
+  INTEGER :: JTOP, JBOT, JA, JB  ! gap-filling indices
+  REAL(8)  :: WGHT                 ! interpolation weight
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING CONVEC'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING CONVEC'
 
-  call DERIV(RHOX, T, DTDRHX, NRHOX)
+  CALL DERIV(RHOX, T, DTDRHX, NRHOX)
 
   !=====================================================================
   ! Finite-difference thermodynamic derivatives
@@ -6958,27 +6832,27 @@ SUBROUTINE CONVEC
   IFEDNS = 1
 
   ! Save current state
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     DILUT(J) = 1.0D0 - exp(-TAUROS(J))
     ! DILUT(J) = PRAD(J) / PRADK(J)
     SAVXNE(J) = XNE(J)
     SAVXNA(J) = XNATOM(J)
     SAVRHO(J) = RHO(J)
-  end do
+  END DO
 
   ! --- Perturbation 1: T + 0.1% ---
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TLOG(J) = TLOG(J) + 0.0009995003D0
     T(J)    = T(J) * 1.001D0
     TK(J)   = TK(J) * 1.001D0
     HKT(J)  = HKT(J) / 1.001D0
     HCKT(J) = HCKT(J) / 1.001D0
     TKEV(J) = TKEV(J) * 1.001D0
-  end do
+  END DO
   ITEMP = ITEMP + 1
-  call COMPUTE_ONE_POP(0.0D0, 1, XNE)
+  CALL COMPUTE_ONE_POP(0.0D0, 1, XNE)
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ! 3*PRADK is approximately RADEN (radiation energy density).
     ! PRADK is used because it can be reconstructed from model decks
     ! whereas RADEN cannot. Rigorously the radiation field should be
@@ -6986,28 +6860,28 @@ SUBROUTINE CONVEC
     EDENS1(J) = EDENS(J) + 3.0D0 * PRADK(J) / RHO(J) &
               * (1.0D0 + DILUT(J) * (1.001D0**4 - 1.0D0))
     RHO1(J) = RHO(J)
-  end do
+  END DO
 
   ! --- Perturbation 2: T - 0.1% ---
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TLOG(J) = TLOG(J) - 0.0009995003D0 - 0.0010005003D0
     T(J)    = T(J) / 1.001D0 * 0.999D0
     TK(J)   = TK(J) / 1.001D0 * 0.999D0
     HKT(J)  = HKT(J) * 1.001D0 / 0.999D0
     HCKT(J) = HCKT(J) * 1.001D0 / 0.999D0
     TKEV(J) = TKEV(J) / 1.001D0 * 0.999D0
-  end do
+  END DO
   ITEMP = ITEMP + 1
-  call COMPUTE_ONE_POP(0.0D0, 1, XNE)
+  CALL COMPUTE_ONE_POP(0.0D0, 1, XNE)
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     EDENS2(J) = EDENS(J) + 3.0D0 * PRADK(J) / RHO(J) &
               * (1.0D0 + DILUT(J) * (0.999D0**4 - 1.0D0))
     RHO2(J) = RHO(J)
-  end do
+  END DO
 
   ! --- Perturbation 3: P + 0.1% (restore T first) ---
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TLOG(J) = TLOG(J) + 0.0010005003D0
     T(J)    = T(J) / 0.999D0
     TK(J)   = TK(J) / 0.999D0
@@ -7015,21 +6889,21 @@ SUBROUTINE CONVEC
     HCKT(J) = HCKT(J) * 0.999D0
     TKEV(J) = TKEV(J) / 0.999D0
     P(J)    = P(J) * 1.001D0
-  end do
+  END DO
   ITEMP = ITEMP + 1
-  call COMPUTE_ONE_POP(0.0D0, 1, XNE)
+  CALL COMPUTE_ONE_POP(0.0D0, 1, XNE)
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     EDENS3(J) = EDENS(J) + 3.0D0 * PRADK(J) / RHO(J)
     RHO3(J) = RHO(J)
     P(J) = P(J) / 1.001D0 * 0.999D0
-  end do
+  END DO
 
   ! --- Perturbation 4: P - 0.1% ---
   ITEMP = ITEMP + 1
-  call COMPUTE_ONE_POP(0.0D0, 1, XNE)
+  CALL COMPUTE_ONE_POP(0.0D0, 1, XNE)
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     EDENS4(J) = EDENS(J) + 3.0D0 * PRADK(J) / RHO(J)
     RHO4(J) = RHO(J)
     ! Restore saved state
@@ -7037,12 +6911,12 @@ SUBROUTINE CONVEC
     XNATOM(J) = SAVXNA(J)
     RHO(J)    = SAVRHO(J)
     P(J)      = P(J) / 0.999D0
-  end do
+  END DO
 
   !=====================================================================
   ! Compute thermodynamic quantities and convective flux at each depth
   !=====================================================================
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
 
     ! Finite-difference derivatives (factor 500 = 1/(2*0.001))
     DEDT  = (EDENS1(J) - EDENS2(J)) / T(J) * 500.0D0
@@ -7065,11 +6939,11 @@ SUBROUTINE CONVEC
               * (DRDT - DRDPG * DPDT / DPDPG)
 
     ! Sound speed
-    if (HEATCV <= 0.0D0) then
+    IF (HEATCV <= 0.0D0) THEN
       VELSND(J) = 0.0D0
-    else
+    ELSE
       VELSND(J) = sqrt(max(HEATCP(J) / HEATCV * DPDPG / DRDPG, 0.0D0))
-    end if
+    END IF
 
     ! Density response and adiabatic gradient
     DLRDLT(J) = T(J) / RHO(J) * (DRDT - DRDPG * DPDT / DPDPG)
@@ -7084,15 +6958,15 @@ SUBROUTINE CONVEC
     ROSST(J)   = 0.0D0
 
     ! --- Check if convection can operate ---
-    if (MIXLTH == 0.0D0) cycle
-    if (J < 4) cycle
+    IF (MIXLTH == 0.0D0) CYCLE
+    IF (J < 4) CYCLE
 
     DEL = DLTDLP(J) - GRDADB(J)
-    if (DEL < 0.0D0) cycle    ! subadiabatic: no convection
+    IF (DEL < 0.0D0) CYCLE    ! subadiabatic: no convection
 
     VCO = 0.5D0 * MIXLTH &
         * sqrt(max(-0.5D0 * PTOTAL(J) / RHO(J) * DLRDLT(J), 0.0D0))
-    if (VCO == 0.0D0) cycle
+    IF (VCO == 0.0D0) CYCLE
 
     FLUXCO = 0.5D0 * RHO(J) * HEATCP(J) * T(J) * MIXLTH / FOURPI
     ROSST(J) = ROSSTAB(T(J), P(J), VTURB(J))
@@ -7100,9 +6974,9 @@ SUBROUTINE CONVEC
 
     ! --- Iterate on the convective opacity ---
     ITS30 = 30
-    if (IFCONV == 0) ITS30 = 1
+    IF (IFCONV == 0) ITS30 = 1
 
-    do IDELTAT = 1, ITS30
+    DO IDELTAT = 1, ITS30
       DPLUS  = ROSSTAB(T(J) + DELTAT(J), P(J), VTURB(J)) / ROSST(J)
       DMINUS = ROSSTAB(T(J) - DELTAT(J), P(J), VTURB(J)) / ROSST(J)
       ABCONV(J) = 2.0D0 / (1.0D0 / DPLUS + 1.0D0 / DMINUS) * ABROSS(J)
@@ -7122,21 +6996,21 @@ SUBROUTINE CONVEC
       ! Solve for DELTA = convective efficiency
       ! Uses series expansion when DDD < 0.5 for numerical stability
       ! (binomial series for (1 - sqrt(1-x))/x)
-      if (DDD >= 0.5D0) then
+      IF (DDD >= 0.5D0) THEN
         DELTA = (1.0D0 - sqrt(1.0D0 - DDD)) / DDD
-      else
+      ELSE
         DELTA = 0.5D0
         TERM  = 0.5D0
         UP    = -1.0D0
         DOWN  = 2.0D0
-        do
+        DO
           UP   = UP + 2.0D0
           DOWN = DOWN + 2.0D0
           TERM = UP / DOWN * DDD * TERM
           DELTA = DELTA + TERM
-          if (TERM <= 1.0D-6) exit
-        end do
-      end if
+          IF (TERM <= 1.0D-6) EXIT
+        END DO
+      END IF
       DELTA = DELTA * DEL**2 / (D + DEL)
 
       ! Convective velocity and flux
@@ -7149,17 +7023,17 @@ SUBROUTINE CONVEC
       DELTAT(J) = min(DELTAT(J), T(J) * 0.15D0)
       DELTAT(J) = DELTAT(J) * 0.7D0 + OLDDELT * 0.3D0
 
-      if (DELTAT(J) < OLDDELT + 0.5D0 .and. &
-          DELTAT(J) > OLDDELT - 0.5D0) exit
+      IF (DELTAT(J) < OLDDELT + 0.5D0 .AND. &
+          DELTAT(J) > OLDDELT - 0.5D0) EXIT
       OLDDELT = DELTAT(J)
-    end do  ! IDELTAT
-    if (IDELTAT > ITS30) then
-      write(6,'(A,I3,A,F8.1,A,F8.1)') &
+    END DO  ! IDELTAT
+    IF (IDELTAT > ITS30) THEN
+      WRITE(6,'(A,I3,A,F8.1,A,F8.1)') &
         ' CONVEC WARNING: opacity iteration did not converge at layer ', &
         J, '  DELTAT=', DELTAT(J), '  OLDDELT=', OLDDELT
-    end if
+    END IF
 
-  end do  ! J depth loop
+  END DO  ! J depth loop
 
   !=====================================================================
   ! Post-processing: smoothing, artifact removal, overshooting
@@ -7187,13 +7061,13 @@ SUBROUTINE CONVEC
   !--- End commented-out code ---
 
   ! 1-2-1 smoothing of convective flux
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     FLXCNV0(J) = FLXCNV(J)
-  end do
-  do J = 2, NRHOX - 1
+  END DO
+  DO J = 2, NRHOX - 1
     FLXCNV(J) = 0.25D0 * FLXCNV0(J - 1) + 0.50D0 * FLXCNV0(J) &
               + 0.25D0 * FLXCNV0(J + 1)
-  end do
+  END DO
   ! Asymmetric boundary kernel at deepest layer: 75-25 split
   FLXCNV(NRHOX) = 0.75D0 * FLXCNV0(NRHOX) + 0.25D0 * FLXCNV0(NRHOX - 1)
 
@@ -7204,54 +7078,54 @@ SUBROUTINE CONVEC
   ! zero-flux layers between them by interpolating from the boundaries.
   JTOP = 0
   JBOT = 0
-  do J = 1, NRHOX
-    if (FLXCNV(J) > 0.0D0) then
-      if (JTOP == 0) JTOP = J
+  DO J = 1, NRHOX
+    IF (FLXCNV(J) > 0.0D0) THEN
+      IF (JTOP == 0) JTOP = J
       JBOT = J
-    end if
-  end do
-  if (JTOP > 0 .and. JBOT > JTOP + 1) then
-    do J = JTOP + 1, JBOT - 1
-      if (FLXCNV(J) == 0.0D0) then
+    END IF
+  END DO
+  IF (JTOP > 0 .AND. JBOT > JTOP + 1) THEN
+    DO J = JTOP + 1, JBOT - 1
+      IF (FLXCNV(J) == 0.0D0) THEN
         ! Linear interpolation in log between nearest convective neighbors
         ! Find nearest convective layer above
         JA = J - 1
-        do while (JA > JTOP .and. FLXCNV(JA) == 0.0D0)
+        DO WHILE (JA > JTOP .AND. FLXCNV(JA) == 0.0D0)
           JA = JA - 1
-        end do
+        END DO
         ! Find nearest convective layer below
         JB = J + 1
-        do while (JB < JBOT .and. FLXCNV(JB) == 0.0D0)
+        DO WHILE (JB < JBOT .AND. FLXCNV(JB) == 0.0D0)
           JB = JB + 1
-        end do
-        if (FLXCNV(JA) > 0.0D0 .and. FLXCNV(JB) > 0.0D0) then
+        END DO
+        IF (FLXCNV(JA) > 0.0D0 .AND. FLXCNV(JB) > 0.0D0) THEN
           WGHT = dble(J - JA) / dble(JB - JA)
           FLXCNV(J) = FLXCNV(JA) * (1.0D0 - WGHT) + FLXCNV(JB) * WGHT
-        end if
-      end if
-    end do
-  end if
+        END IF
+      END IF
+    END DO
+  END IF
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     FLXCNV0(J) = FLXCNV(J)
-  end do
+  END DO
 
   !=====================================================================
   ! Overshooting: extend convective flux above the formal boundary
   ! Assumes overshooting by 0.5 H_P if convection is strong,
   ! none if weak. Setting OVERWT=0 turns off overshooting entirely.
   !=====================================================================
-  if (OVERWT > 0.0D0) then
+  IF (OVERWT > 0.0D0) THEN
     ! Find maximum convective-to-total flux ratio
     !     WTCNV = MIN(FLXCNV(NRHOX)/FLUX, 1.D0) * OVERWT
     ! Correction from Fiorella Castelli:
     WTCNV = 0.0D0
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       WTCNV = max(WTCNV, FLXCNV(J) / FLUX)
-    end do
+    END DO
     WTCNV = min(WTCNV, 1.0D0) * OVERWT
 
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       !      DELHGT(J) = MIN(HSCALE(J)*MIXLTH*0.5D-5, HEIGHT(NRHOX)-HEIGHT(J),
       DELHGT(J) = min(HSCALE(J) * 0.5D-5 * WTCNV, &
                       HEIGHT(NRHOX) - HEIGHT(J), &
@@ -7259,31 +7133,31 @@ SUBROUTINE CONVEC
       !      WRITE(6,775) J, HEIGHT(J), DELHGT(J), CNVINT(J)
       FLXCNV0(J) = FLXCNV(J)
       FLXCNV1(J) = 0.0D0
-    end do
+    END DO
 
-    call INTEG(HEIGHT, FLXCNV, CNVINT, NRHOX, 0.0D0)
+    CALL INTEG(HEIGHT, FLXCNV, CNVINT, NRHOX, 0.0D0)
 
-    do J = NRHOX / 2, NRHOX - 1
-      if (DELHGT(J) == 0.0D0) cycle
+    DO J = NRHOX / 2, NRHOX - 1
+      IF (DELHGT(J) == 0.0D0) CYCLE
       XNEW_CNV(1) = HEIGHT(J) - DELHGT(J)
       M = MAP1(HEIGHT, CNVINT, NRHOX, XNEW_CNV, CNV1, 1)
       XNEW_CNV(1) = HEIGHT(J) + DELHGT(J)
       M = MAP1(HEIGHT, CNVINT, NRHOX, XNEW_CNV, CNV2, 1)
       FLXCNV1(J) = FLXCNV1(J) + (CNV2(1) - CNV1(1)) / DELHGT(J) / 2.0D0
-    end do
+    END DO
 
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       FLXCNV(J) = max(FLXCNV0(J), FLXCNV1(J))
-    end do
-  end if
+    END DO
+  END IF
 
   ! Patch to remove numerical artifacts in outermost layers
-  do J = 1, NCONV
+  DO J = 1, NCONV
     ! DO 7779 J=1,NRHOX/3
     FLXCNV(J) = 0.0D0
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE CONVEC
 
@@ -7301,20 +7175,20 @@ END SUBROUTINE CONVEC
 
 SUBROUTINE COMPUTE_HEIGHT
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8 :: RHOINV(kw)
-  integer :: J
+  REAL(8) :: RHOINV(kw)
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING COMPUTE_HEIGHT'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COMPUTE_HEIGHT'
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     RHOINV(J) = 1.0D-5 / RHO(J)
-  end do
+  END DO
 
-  call INTEG(RHOX, RHOINV, HEIGHT, NRHOX, 0.0D0)
+  CALL INTEG(RHOX, RHOINV, HEIGHT, NRHOX, 0.0D0)
 
-  return
+  RETURN
 
 END SUBROUTINE COMPUTE_HEIGHT
 
@@ -7345,24 +7219,24 @@ END SUBROUTINE COMPUTE_HEIGHT
 
 SUBROUTINE VTURB_VARYDEPTH(VNEW)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  real*8, intent(in) :: VNEW
+  REAL(8), INTENT(IN) :: VNEW
 
   ! --- Avrett Solar Model C microturbulence profile ---
   ! 30-point tabulation of v_turb (cm/s) vs log10(tau_Ross)
-  integer, parameter :: NSOLAR = 30
-  real*8, parameter :: VTURB_SOLAR_MAX = 1.83D5  ! peak value (cm/s)
+  INTEGER, PARAMETER :: NSOLAR = 30
+  REAL(8), PARAMETER :: VTURB_SOLAR_MAX = 1.83D5  ! peak value (cm/s)
 
-  real*8, parameter :: VSTANDARD(30) = (/ &
+  REAL(8), PARAMETER :: VSTANDARD(30) = (/ &
     0.50D5, 0.50D5, 0.50D5, 0.51D5, 0.52D5, 0.55D5, 0.63D5, &
     0.80D5, 0.90D5, 1.00D5, 1.10D5, 1.20D5, 1.30D5, 1.40D5, &
     1.46D5, 1.52D5, 1.56D5, 1.60D5, 1.64D5, 1.68D5, 1.71D5, &
     1.74D5, 1.76D5, 1.78D5, 1.80D5, 1.81D5, 1.82D5, 1.83D5, &
     1.83D5, 1.83D5 /)
 
-  real*8, parameter :: TAUSTANDARD(30) = (/ &
+  REAL(8), PARAMETER :: TAUSTANDARD(30) = (/ &
     -20.0D0, -3.0D0, -2.67313D0, -2.49296D0, -2.31296D0, &
     -1.95636D0, -1.60768D0, -1.26699D0, -1.10007D0, -0.93587D0, &
     -0.77416D0, -0.61500D0, -0.45564D0, -0.29176D0, -0.18673D0, &
@@ -7376,8 +7250,8 @@ SUBROUTINE VTURB_VARYDEPTH(VNEW)
   ! Entries = 0.0 indicate parameter combinations outside the valid range.
   ! Values are flux-weighted max convective velocities from model grids,
   ! smoothed for plausible behavior (range 0-8 km/s).
-  integer, parameter :: NG_TAB = 13, NT_TAB = 25
-  real*8, parameter :: VMAXSTD(NG_TAB, NT_TAB) = reshape( (/ &
+  INTEGER, PARAMETER :: NG_TAB = 13, NT_TAB = 25
+  REAL(8), PARAMETER :: VMAXSTD(NG_TAB, NT_TAB) = reshape( (/ &
     ! Teff=3000  (log g = -1.0 .. 5.0)
     3.3, 3.0, 2.7, 2.4, 2.1, 1.8, 1.3, 0.9, 0.6, 0.3, 0.2, 0.1, 0.1, &
     ! Teff=3250
@@ -7431,20 +7305,20 @@ SUBROUTINE VTURB_VARYDEPTH(VNEW)
     /), (/ NG_TAB, NT_TAB /) )
 
   ! --- Local variables ---
-  real*8  :: VMAX           ! amplitude scale for the profile (cm/s)
-  real*8  :: TAULOG(kw)     ! log10(tau_Ross) at each depth
-  real*8  :: DELG, DELT     ! bilinear interpolation weights
-  integer :: IG, IT         ! table indices
-  integer :: J, MM
+  REAL(8)  :: VMAX           ! amplitude scale for the profile (cm/s)
+  REAL(8)  :: TAULOG(kw)     ! log10(tau_Ross) at each depth
+  REAL(8)  :: DELG, DELT     ! bilinear interpolation weights
+  INTEGER :: IG, IT         ! table indices
+  INTEGER :: J, MM
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING VTURB_VARYDEPTH'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING VTURB_VARYDEPTH'
 
   !---------------------------------------------------------------------
   ! Determine VMAX: either from table or from user input
   !---------------------------------------------------------------------
-  if (VNEW == -99.0D5) then
+  IF (VNEW == -99.0D5) THEN
     ! Look up from (log g, Teff) table with bilinear interpolation
     IG = int((GLOG + 1.0D0) / 0.5D0) + 1
     IG = min(max(IG, 1), NG_TAB - 1)
@@ -7459,25 +7333,25 @@ SUBROUTINE VTURB_VARYDEPTH(VNEW)
          + VMAXSTD(IG,   IT+1) * (1.0D0 - DELG) * DELT            &
          + VMAXSTD(IG+1, IT+1) * DELG            * DELT
     VMAX = VMAX * 1.0D5   ! convert km/s → cm/s
-  else
+  ELSE
     VMAX = abs(VNEW)
-  end if
+  END IF
 
   !---------------------------------------------------------------------
   ! Build depth-dependent profile by interpolating the solar template
   ! onto the model's optical depth grid, then scaling by VMAX
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TAULOG(J) = log10(TAUSTD(J))
-  end do
+  END DO
 
   MM = MAP1(TAUSTANDARD, VSTANDARD, NSOLAR, TAULOG, VTURB, NRHOX)
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     VTURB(J) = VTURB(J) * VMAX / VTURB_SOLAR_MAX
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE VTURB_VARYDEPTH
 
@@ -7506,20 +7380,20 @@ END SUBROUTINE VTURB_VARYDEPTH
 
 SUBROUTINE COMPUTE_PTURB
 
-  implicit none
+  IMPLICIT NONE
 
-  integer :: J
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING COMPUTE_PTURB'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COMPUTE_PTURB'
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     VTURB(J) = (TRBFDG * RHO(J)**TRBPOW &
               + TRBSND * VELSND(J) / 1.0D5 &
               + TRBCON) * 1.0D5
     PTURB(J) = RHO(J) * VTURB(J)**2 * 0.5D0
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE COMPUTE_PTURB
 
@@ -7559,15 +7433,15 @@ END SUBROUTINE COMPUTE_PTURB
 
 SUBROUTINE KAPP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer :: J
-  real*8  :: A         ! sum of non-H, non-Hminus, non-extra continuum absorption
+  INTEGER :: J
+  REAL(8)  :: A         ! sum of non-H, non-Hminus, non-extra continuum absorption
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING KAPP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING KAPP'
 
   ! Zero all per-source opacity arrays
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AHYD(J)   = 0.0D0
     AH2P(J)   = 0.0D0
     AHMIN(J)  = 0.0D0
@@ -7597,24 +7471,24 @@ SUBROUTINE KAPP
     SFE1(J)   = 0.0D0
     SHE2(J)   = 0.0D0
     SC1(J)    = 0.0D0
-  end do
+  END DO
 
   ! Call each enabled opacity source
-  if (IFOP(1)  == 1) call HOP
-  if (IFOP(2)  == 1) call H2PLOP
-  if (IFOP(3)  == 1) call HMINOP
-  if (IFOP(4)  == 1) call HRAYOP
-  if (IFOP(5)  == 1) call HE1OP
-  if (IFOP(6)  == 1) call HE2OP
-  if (IFOP(7)  == 1) call HEMIOP
-  if (IFOP(8)  == 1) call HERAOP
-  if (IFOP(9)  == 1) call COOLOP
-  if (IFOP(10) == 1) call WARMOP
-  if (IFOP(11) == 1) call HOTOP
-  if (IFOP(12) == 1) call ELECOP
-  if (IFOP(13) == 1) call H2RAOP
-  if (IFOP(14) == 1) call HLINOP
-  if (IFOP(19) == 1) call XCONOP
+  IF (IFOP(1)  == 1) CALL HOP
+  IF (IFOP(2)  == 1) CALL H2PLOP
+  IF (IFOP(3)  == 1) CALL HMINOP
+  IF (IFOP(4)  == 1) CALL HRAYOP
+  IF (IFOP(5)  == 1) CALL HE1OP
+  IF (IFOP(6)  == 1) CALL HE2OP
+  IF (IFOP(7)  == 1) CALL HEMIOP
+  IF (IFOP(8)  == 1) CALL HERAOP
+  IF (IFOP(9)  == 1) CALL COOLOP
+  IF (IFOP(10) == 1) CALL WARMOP
+  IF (IFOP(11) == 1) CALL HOTOP
+  IF (IFOP(12) == 1) CALL ELECOP
+  IF (IFOP(13) == 1) CALL H2RAOP
+  IF (IFOP(14) == 1) CALL HLINOP
+  IF (IFOP(19) == 1) CALL XCONOP
 
   ! Assemble totals: true absorption, source function, and scattering.
   !
@@ -7641,7 +7515,7 @@ SUBROUTINE KAPP
   ! the lumped ACOOL bundle from atlas12.for, because the F90 broke
   ! the metal continua out into separate routines during translation.
   ! The numerical sum is identical -- just a regrouping.
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ! Sources weighted by BNU in the source function
     A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) + ALUKE(J) + AHOT(J) &
       + AC1(J)  + AMG1(J) + AAL1(J) + ASI1(J)   + AFE1(J)
@@ -7651,25 +7525,25 @@ SUBROUTINE KAPP
 
     ! Continuum source function (atlas12.for form)
     SCONT(J) = BNU(J)
-    if (ACONT(J) > 0.0D0) then
+    IF (ACONT(J) > 0.0D0) THEN
       SCONT(J) = (A * BNU(J) + AHYD(J) * SHYD(J) &
                + AHMIN(J) * SHMIN(J) + AXCONT(J) * SXCONT(J)) / ACONT(J)
-    end if
+    END IF
 
     ! Line absorption and source function
     ALINE(J) = AHLINE(J) + ALINES(J) + AXLINE(J)
     SLINE(J) = BNU(J)
-    if (ALINE(J) > 0.0D0) then
+    IF (ALINE(J) > 0.0D0) THEN
       SLINE(J) = (AHLINE(J) * SHLINE(J) + ALINES(J) * BNU(J) &
                + AXLINE(J) * SXLINE(J)) / ALINE(J)
-    end if
+    END IF
 
     ! Scattering: continuum and line
     SIGMAC(J) = SIGH(J) + SIGHE(J) + SIGEL(J) + SIGH2(J) + SIGX(J)
     SIGMAL(J) = SIGLIN(J) + SIGXL(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE KAPP
 
@@ -7708,7 +7582,7 @@ END SUBROUTINE KAPP
 
 SUBROUTINE HOP
 
-  implicit none
+  IMPLICIT NONE
 
   ! Maximum hydrogen level included in HOP.  The explicit-level loop runs
   ! n=1..15 (with full Karzas-Latter cross sections); a high-n extension
@@ -7716,20 +7590,29 @@ SUBROUTINE HOP
   ! from the n=15 table; and the dissolved-fraction pseudo-continuum
   ! covers n=7..NMAX_HLEVELS.  All three loops share the same upper bound
   ! so the bookkeeping stays consistent.
-  integer, parameter :: NMAX_HLEVELS = 30
+  !
+  ! NMAX_HLEVELS = 80 matches NMAX_OCC in HLINOP.  The motivation is cool,
+  ! low-density atmospheres (M dwarfs, n_e ~ 1e10): at those densities,
+  ! levels up to n ~ 40-60 still have non-negligible occupation probability
+  ! w_n, and their bound-free contribution near the Paschen/Brackett jumps
+  ! is real opacity that should not be dropped.  For hot/dense atmospheres
+  ! (B/O stars, WDs), levels with n >> 20 are fully dissolved and the
+  ! w_n < 1.0D-6 guard in the high-n loop cycles immediately, so the
+  ! larger cap costs essentially nothing there.
+  INTEGER, PARAMETER :: NMAX_HLEVELS = 80
 
-  real*8  :: X            ! bound-free cross-section from XKARZAS
-  real*8  :: A            ! single-level opacity contribution
-  real*8  :: H, S         ! running sums for opacity and source function
-  real*8  :: w_n          ! occupation probability for current level
-  real*8  :: E_n          ! excitation energy for the current level [cm^-1]
-  real*8  :: thresh_n     ! ionization threshold of the current level [cm^-1]
-  real*8  :: FREQ3_INV    ! 1 / FREQ^3 (precomputed for pseudo-continuum)
-  integer :: J, I_PC, n_hi
+  REAL(8)  :: X            ! bound-free cross-section from XKARZAS
+  REAL(8)  :: A            ! single-level opacity contribution
+  REAL(8)  :: H, S         ! running sums for opacity and source function
+  REAL(8)  :: w_n          ! occupation probability for current level
+  REAL(8)  :: E_n          ! excitation energy for the current level [cm^-1]
+  REAL(8)  :: thresh_n     ! ionization threshold of the current level [cm^-1]
+  REAL(8)  :: FREQ3_INV    ! 1 / FREQ^3 (precomputed for pseudo-continuum)
+  INTEGER :: J, I_PC, n_hi
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HOP'
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
 
     H = 0.0D0
     S = 0.0D0
@@ -7742,10 +7625,10 @@ SUBROUTINE HOP
     ! Levels 7-15: LTE (use STIM), weighted by w_n
     ! Levels 1-6:  non-LTE (use BHYD departure coefficients), w_n ~ 1
     ! ------------------------------------------------------------------
-    levels: do
+    levels: DO
 
       ! n=15  threshold =    487.456 cm^{-1}
-      IF (WAVENO < 487.456D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(15)) EXIT levels
       w_n = occupation_prob(15, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 15, 15)
       A = w_n * X * 450.0D0 * EXP(-109191.313D0 * HCKT(J)) * STIM(J)
@@ -7753,7 +7636,7 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=14  threshold =    559.579 cm^{-1}
-      IF (WAVENO < 559.579D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(14)) EXIT levels
       w_n = occupation_prob(14, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 14, 14)
       A = w_n * X * 392.0D0 * EXP(-109119.188D0 * HCKT(J)) * STIM(J)
@@ -7761,7 +7644,7 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=13  threshold =    648.980 cm^{-1}
-      IF (WAVENO < 648.980D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(13)) EXIT levels
       w_n = occupation_prob(13, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 13, 13)
       A = w_n * X * 338.0D0 * EXP(-109029.789D0 * HCKT(J)) * STIM(J)
@@ -7769,7 +7652,7 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=12  threshold =    761.649 cm^{-1}
-      IF (WAVENO < 761.649D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(12)) EXIT levels
       w_n = occupation_prob(12, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 12, 12)
       A = w_n * X * 288.0D0 * EXP(-108917.117D0 * HCKT(J)) * STIM(J)
@@ -7777,7 +7660,7 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=11  threshold =    906.426 cm^{-1}
-      IF (WAVENO < 906.426D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(11)) EXIT levels
       w_n = occupation_prob(11, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 11, 11)
       A = w_n * X * 242.0D0 * EXP(-108772.336D0 * HCKT(J)) * STIM(J)
@@ -7785,7 +7668,7 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=10  threshold =   1096.776 cm^{-1}
-      IF (WAVENO < 1096.776D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(10)) EXIT levels
       w_n = occupation_prob(10, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 10, 10)
       A = w_n * X * 200.0D0 * EXP(-108581.992D0 * HCKT(J)) * STIM(J)
@@ -7793,7 +7676,7 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=9   threshold =   1354.044 cm^{-1}
-      IF (WAVENO < 1354.044D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(9)) EXIT levels
       w_n = occupation_prob(9, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 9, 9)
       A = w_n * X * 162.0D0 * EXP(-108324.719D0 * HCKT(J)) * STIM(J)
@@ -7801,7 +7684,7 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=8   threshold =   1713.713 cm^{-1}
-      IF (WAVENO < 1713.713D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(8)) EXIT levels
       w_n = occupation_prob(8, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 8, 8)
       A = w_n * X * 128.0D0 * EXP(-107965.051D0 * HCKT(J)) * STIM(J)
@@ -7809,7 +7692,7 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=7   threshold =   2238.320 cm^{-1}
-      IF (WAVENO < 2238.320D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(7)) EXIT levels
       w_n = occupation_prob(7, XNE(J))
       X = XKARZAS(FREQ, 1.0D0, 7, 7)
       A = w_n * X * 98.0D0 * EXP(-107440.444D0 * HCKT(J)) * STIM(J)
@@ -7817,49 +7700,49 @@ SUBROUTINE HOP
       S = S + A * BNU(J)
 
       ! n=6   threshold =   3046.604 cm^{-1}   (non-LTE)
-      IF (WAVENO < 3046.604D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(6)) EXIT levels
       X = XKARZAS(FREQ, 1.0D0, 6, 6)
       A = X * 72.0D0 * EXP(-106632.160D0 * HCKT(J)) * (BHYD(J,6) - EHVKT(J))
       H = H + A
       S = S + A * BNU(J) * STIM(J) / (BHYD(J,6) - EHVKT(J))
 
       ! n=5   threshold =   4387.113 cm^{-1}   (non-LTE)
-      IF (WAVENO < 4387.113D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(5)) EXIT levels
       X = XKARZAS(FREQ, 1.0D0, 5, 5)
       A = X * 50.0D0 * EXP(-105291.651D0 * HCKT(J)) * (BHYD(J,5) - EHVKT(J))
       H = H + A
       S = S + A * BNU(J) * STIM(J) / (BHYD(J,5) - EHVKT(J))
 
       ! n=4   threshold =   6854.871 cm^{-1}   (non-LTE)
-      IF (WAVENO < 6854.871D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(4)) EXIT levels
       X = XKARZAS(FREQ, 1.0D0, 4, 4)
       A = X * 32.0D0 * EXP(-102823.893D0 * HCKT(J)) * (BHYD(J,4) - EHVKT(J))
       H = H + A
       S = S + A * BNU(J) * STIM(J) / (BHYD(J,4) - EHVKT(J))
 
       ! n=3   threshold =  12186.462 cm^{-1}   (non-LTE)
-      IF (WAVENO < 12186.462D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(3)) EXIT levels
       X = XKARZAS(FREQ, 1.0D0, 3, 3)
       A = X * 18.0D0 * EXP(-97492.302D0 * HCKT(J)) * (BHYD(J,3) - EHVKT(J))
       H = H + A
       S = S + A * BNU(J) * STIM(J) / (BHYD(J,3) - EHVKT(J))
 
       ! n=2   threshold =  27419.659 cm^{-1}   (non-LTE)  [Balmer limit]
-      IF (WAVENO < 27419.659D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(2)) EXIT levels
       X = XKARZAS(FREQ, 1.0D0, 2, 2)
       A = X * 8.0D0 * EXP(-82259.105D0 * HCKT(J)) * (BHYD(J,2) - EHVKT(J))
       H = H + A
       S = S + A * BNU(J) * STIM(J) / (BHYD(J,2) - EHVKT(J))
 
       ! n=1   threshold = 109678.764 cm^{-1}   (non-LTE)  [Lyman limit]
-      IF (WAVENO < 109678.764D0) EXIT levels
+      IF (WAVENO < H_SERIES_LIMITS(1)) EXIT levels
       X = XKARZAS(FREQ, 1.0D0, 1, 1)
       A = X * 2.0D0 * 1.0D0 * (BHYD(J,1) - EHVKT(J))
       H = H + A
       S = S + A * BNU(J) * STIM(J) / (BHYD(J,1) - EHVKT(J))
 
       EXIT levels  ! all levels processed
-    end do levels
+    END DO levels
 
     ! ------------------------------------------------------------------
     ! High-n explicit bound-free extension: levels 16 to NMAX_HLEVELS.
@@ -7882,17 +7765,17 @@ SUBROUTINE HOP
     ! Each level is weighted by w_n; the dissolved fraction (1-w_n) is
     ! handled by the pseudo-continuum loop below.
     ! ------------------------------------------------------------------
-    do n_hi = 16, NMAX_HLEVELS
+    DO n_hi = 16, NMAX_HLEVELS
       thresh_n = ELIM_HI / dble(n_hi)**2
-      if (WAVENO < thresh_n) cycle              ! below this level's threshold
+      IF (WAVENO < thresh_n) CYCLE              ! below this level's threshold
       w_n = occupation_prob(n_hi, XNE(J))
-      if (w_n < 1.0D-6) cycle                   ! fully dissolved -- skip
+      IF (w_n < 1.0D-6) CYCLE                   ! fully dissolved -- skip
       X = XKARZAS(FREQ, 1.0D0, n_hi, n_hi)
       E_n = ELIM_HI - RYDBERG_H / dble(n_hi)**2
       A = w_n * X * 2.0D0 * dble(n_hi)**2 * EXP(-E_n * HCKT(J)) * STIM(J)
       H = H + A
       S = S + A * BNU(J)
-    end do
+    END DO
 
     ! ------------------------------------------------------------------
     ! Pseudo-continuum from dissolved hydrogen levels.
@@ -7917,15 +7800,15 @@ SUBROUTINE HOP
     !   Tremblay, P.-E. & Bergeron, P. 2009, ApJ 696, 1755
     ! ------------------------------------------------------------------
     FREQ3_INV = 1.0D0 / (FREQ * FREQ * FREQ)
-    do I_PC = 7, NMAX_HLEVELS
+    DO I_PC = 7, NMAX_HLEVELS
       w_n = occupation_prob(I_PC, XNE(J))
-      if (1.0D0 - w_n < 1.0D-6) cycle   ! fully bound, no dissolved fraction
+      IF (1.0D0 - w_n < 1.0D-6) CYCLE   ! fully bound, no dissolved fraction
       E_n = ELIM_HI - RYDBERG_H / dble(I_PC)**2
       A = (1.0D0 - w_n) * 2.815D29 * FREQ3_INV &
         * 2.0D0 / dble(I_PC)**3 * EXP(-E_n * HCKT(J)) * STIM(J)
       H = H + A
       S = S + A * BNU(J)
-    end do
+    END DO
 
     ! ------------------------------------------------------------------
     ! Apply population normalization and add free-free
@@ -7942,9 +7825,9 @@ SUBROUTINE HOP
     AHYD(J) = H
     IF (H > 0.0D0) SHYD(J) = S / H
 
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE HOP
 
@@ -7975,167 +7858,166 @@ END SUBROUTINE HOP
 
 FUNCTION XKARZAS(FREQ, ZEFF2, N, L)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  real*8,  intent(in) :: FREQ    ! frequency (Hz)
-  real*8,  intent(in) :: ZEFF2   ! effective nuclear charge squared
-  integer, intent(in) :: N       ! principal quantum number
-  integer, intent(in) :: L       ! orbital quantum number
+  REAL(8),  INTENT(IN) :: FREQ    ! frequency (Hz)
+  REAL(8),  INTENT(IN) :: ZEFF2   ! effective nuclear charge squared
+  INTEGER, INTENT(IN) :: N       ! principal quantum number
+  INTEGER, INTENT(IN) :: L       ! orbital quantum number
 
   ! --- Return value ---
-  real*8 :: XKARZAS
+  REAL(8) :: XKARZAS
 
   ! --- Tabulated cross-section data (read from files on first call) ---
   ! Tables use REAL*4 as in the original Karzas & Latter tabulation
-  integer, parameter :: NPTS = 29   ! energy grid points per level
-  integer, parameter :: NMAX = 15   ! max tabulated level for XN
-  integer, parameter :: NLMAX = 6   ! max tabulated level for XL (l-resolved)
+  INTEGER, PARAMETER :: NPTS = 29   ! energy grid points per level
+  INTEGER, PARAMETER :: NMAX = 15   ! max tabulated level for XN
+  INTEGER, PARAMETER :: NLMAX = 6   ! max tabulated level for XL (l-resolved)
 
-  real*4, save :: FREQN(NPTS, NMAX)     ! log10(freq/Z^2) grid per level
-  real*4, save :: XN(NPTS, NMAX)        ! log10(sigma), level-averaged
-  real*4, save :: XL(NPTS, NLMAX, NLMAX) ! log10(sigma), l-resolved
-  real*4, save :: EKARZAS(NPTS)          ! energy grid for n>15 scaling
-  logical, save :: INITIALIZED = .false.
+  REAL(4), SAVE :: FREQN(NPTS, NMAX)     ! log10(freq/Z^2) grid per level
+  REAL(4), SAVE :: XN(NPTS, NMAX)        ! log10(sigma), level-averaged
+  REAL(4), SAVE :: XL(NPTS, NLMAX, NLMAX) ! log10(sigma), l-resolved
+  REAL(4), SAVE :: EKARZAS(NPTS)          ! energy grid for n>15 scaling
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! --- Local variables ---
-  real*4  :: FREQLG             ! log10(freq/Z^2)
-  real*4  :: X                  ! interpolated log10(sigma)
-  real*4  :: FREQN15(NPTS)     ! frequency grid for n>15 (constructed)
-  real*8, parameter :: LN10 = 2.30258509299405D0
-  integer :: I
+  REAL(4)  :: FREQLG             ! log10(freq/Z^2)
+  REAL(4)  :: X                  ! interpolated log10(sigma)
+  REAL(4)  :: FREQN15(NPTS)     ! frequency grid for n>15 (constructed)
+  INTEGER :: I
 
   ! --- First-call initialization: read tables from data files ---
-  if (.not. INITIALIZED) then
-    call read_karzas_tables()
-    INITIALIZED = .true.
-  end if
+  IF (.NOT. INITIALIZED) THEN
+    CALL read_karzas_tables()
+    INITIALIZED = .TRUE.
+  END IF
 
   ! --- Compute cross-section ---
-  FREQLG = real(log10(FREQ / ZEFF2))
+  FREQLG = REAL(log10(FREQ / ZEFF2))
   XKARZAS = 0.0D0
 
-  if (L >= N .or. N > NLMAX) then
+  IF (L >= N .OR. N > NLMAX) THEN
     !-----------------------------------------------------------------
     ! Level-averaged cross-section (L >= N means use averaged tables,
     ! or N > 6 where only averaged tables are available)
     !-----------------------------------------------------------------
-    if (N > NMAX) then
+    IF (N > NMAX) THEN
       ! N > 15: rescale from N=15 using hydrogenic frequency scaling
-      FREQN15(NPTS) = log10(FREQ_RYDH / real(N)**2)
-      if (FREQLG < FREQN15(NPTS)) return
-      do I = 2, NPTS - 1
-        FREQN15(I) = log10((EKARZAS(I) + 1.0 / real(N)**2) &
+      FREQN15(NPTS) = log10(FREQ_RYDH / REAL(N)**2)
+      IF (FREQLG < FREQN15(NPTS)) RETURN
+      DO I = 2, NPTS - 1
+        FREQN15(I) = log10((EKARZAS(I) + 1.0 / REAL(N)**2) &
                    * FREQ_RYDH)
-        if (FREQLG > FREQN15(I)) exit
-      end do
-      if (I > NPTS - 1) I = NPTS
+        IF (FREQLG > FREQN15(I)) EXIT
+      END DO
+      IF (I > NPTS - 1) I = NPTS
       X = (FREQLG - FREQN15(I)) / (FREQN15(I-1) - FREQN15(I)) &
         * (XN(I-1, NMAX) - XN(I, NMAX)) + XN(I, NMAX)
-    else
+    ELSE
       ! N = 1-15: direct table lookup
-      if (FREQLG < FREQN(NPTS, N)) return
-      do I = 2, NPTS
-        if (FREQLG > FREQN(I, N)) exit
-      end do
+      IF (FREQLG < FREQN(NPTS, N)) RETURN
+      DO I = 2, NPTS
+        IF (FREQLG > FREQN(I, N)) EXIT
+      END DO
       X = (FREQLG - FREQN(I, N)) / (FREQN(I-1, N) - FREQN(I, N)) &
         * (XN(I-1, N) - XN(I, N)) + XN(I, N)
-    end if
+    END IF
 
-  else
+  ELSE
     !-----------------------------------------------------------------
     ! L-resolved cross-section (N <= 6, L < N)
     !-----------------------------------------------------------------
-    if (FREQLG < FREQN(NPTS, N)) return
-    do I = 2, NPTS
-      if (FREQLG > FREQN(I, N)) exit
-    end do
+    IF (FREQLG < FREQN(NPTS, N)) RETURN
+    DO I = 2, NPTS
+      IF (FREQLG > FREQN(I, N)) EXIT
+    END DO
     X = (FREQLG - FREQN(I, N)) / (FREQN(I-1, N) - FREQN(I, N)) &
       * (XL(I-1, L+1, N) - XL(I, L+1, N)) + XL(I, L+1, N)
-  end if
+  END IF
 
   XKARZAS = exp(dble(X) * LN10) / ZEFF2
 
-  return
+  RETURN
 
-contains
+CONTAINS
 
   !-------------------------------------------------------------------
   ! Read Karzas & Latter cross-section tables from data files
   !-------------------------------------------------------------------
-  subroutine read_karzas_tables()
-    integer :: I, J, K, IU, IOS
-    character(256) :: FILEPATH
+  SUBROUTINE read_karzas_tables()
+    INTEGER :: I, J, K, IU, IOS
+    CHARACTER(256) :: FILEPATH
 
     IU = 89  ! scratch unit (same convention as other data reads)
 
     ! Read EKARZAS (energy grid)
     FILEPATH = trim(DATADIR) // 'karzas_ekarzas.dat'
-    open(unit=IU, file=FILEPATH, status='OLD', action='READ', iostat=IOS)
-    if (IOS /= 0) then
-      write(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
-      stop 'XKARZAS: cannot read Karzas-Latter data'
-    end if
-    read(IU, '(A)') FILEPATH  ! skip header
-    read(IU, '(A)') FILEPATH  ! skip header
-    do I = 1, NPTS
-      read(IU, *) EKARZAS(I)
-    end do
-    close(IU)
+    OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      WRITE(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
+      STOP 'XKARZAS: cannot read Karzas-Latter data'
+    END IF
+    READ(IU, '(A)') FILEPATH  ! skip header
+    READ(IU, '(A)') FILEPATH  ! skip header
+    DO I = 1, NPTS
+      READ(IU, *) EKARZAS(I)
+    END DO
+    CLOSE(IU)
 
     ! Read XN (level-averaged cross-sections, column-major)
     FILEPATH = trim(DATADIR) // 'karzas_xn.dat'
-    open(unit=IU, file=FILEPATH, status='OLD', action='READ', iostat=IOS)
-    if (IOS /= 0) then
-      write(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
-      stop 'XKARZAS: cannot read Karzas-Latter data'
-    end if
-    read(IU, '(A)') FILEPATH  ! skip header
-    read(IU, '(A)') FILEPATH  ! skip header
-    read(IU, '(A)') FILEPATH  ! skip header
-    do J = 1, NMAX
-      do I = 1, NPTS
-        read(IU, *) XN(I, J)
-      end do
-    end do
-    close(IU)
+    OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      WRITE(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
+      STOP 'XKARZAS: cannot read Karzas-Latter data'
+    END IF
+    READ(IU, '(A)') FILEPATH  ! skip header
+    READ(IU, '(A)') FILEPATH  ! skip header
+    READ(IU, '(A)') FILEPATH  ! skip header
+    DO J = 1, NMAX
+      DO I = 1, NPTS
+        READ(IU, *) XN(I, J)
+      END DO
+    END DO
+    CLOSE(IU)
 
     ! Read FREQN (frequency grids, column-major)
     FILEPATH = trim(DATADIR) // 'karzas_freqn.dat'
-    open(unit=IU, file=FILEPATH, status='OLD', action='READ', iostat=IOS)
-    if (IOS /= 0) then
-      write(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
-      stop 'XKARZAS: cannot read Karzas-Latter data'
-    end if
-    read(IU, '(A)') FILEPATH  ! skip header
-    read(IU, '(A)') FILEPATH  ! skip header
-    do J = 1, NMAX
-      do I = 1, NPTS
-        read(IU, *) FREQN(I, J)
-      end do
-    end do
-    close(IU)
+    OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      WRITE(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
+      STOP 'XKARZAS: cannot read Karzas-Latter data'
+    END IF
+    READ(IU, '(A)') FILEPATH  ! skip header
+    READ(IU, '(A)') FILEPATH  ! skip header
+    DO J = 1, NMAX
+      DO I = 1, NPTS
+        READ(IU, *) FREQN(I, J)
+      END DO
+    END DO
+    CLOSE(IU)
 
     ! Read XL (l-resolved cross-sections, column-major)
     FILEPATH = trim(DATADIR) // 'karzas_xl.dat'
-    open(unit=IU, file=FILEPATH, status='OLD', action='READ', iostat=IOS)
-    if (IOS /= 0) then
-      write(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
-      stop 'XKARZAS: cannot read Karzas-Latter data'
-    end if
-    read(IU, '(A)') FILEPATH  ! skip header
-    read(IU, '(A)') FILEPATH  ! skip header
-    read(IU, '(A)') FILEPATH  ! skip header
-    do K = 1, NLMAX
-      do J = 1, NLMAX
-        do I = 1, NPTS
-          read(IU, *) XL(I, J, K)
-        end do
-      end do
-    end do
-    close(IU)
+    OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      WRITE(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
+      STOP 'XKARZAS: cannot read Karzas-Latter data'
+    END IF
+    READ(IU, '(A)') FILEPATH  ! skip header
+    READ(IU, '(A)') FILEPATH  ! skip header
+    READ(IU, '(A)') FILEPATH  ! skip header
+    DO K = 1, NLMAX
+      DO J = 1, NLMAX
+        DO I = 1, NPTS
+          READ(IU, *) XL(I, J, K)
+        END DO
+      END DO
+    END DO
+    CLOSE(IU)
 
-  end subroutine read_karzas_tables
+  END SUBROUTINE read_karzas_tables
 
 END FUNCTION XKARZAS
 
@@ -8158,50 +8040,50 @@ END FUNCTION XKARZAS
 
 FUNCTION COULX(N, FREQ, Z)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  integer, intent(in) :: N       ! principal quantum number
-  real*8,  intent(in) :: FREQ    ! frequency (Hz)
-  real*8,  intent(in) :: Z       ! nuclear charge
+  INTEGER, INTENT(IN) :: N       ! principal quantum number
+  REAL(8),  INTENT(IN) :: FREQ    ! frequency (Hz)
+  REAL(8),  INTENT(IN) :: Z       ! nuclear charge
 
   ! --- Return value ---
-  real*8 :: COULX
+  REAL(8) :: COULX
 
   ! --- Gaunt factor polynomial coefficients for N=1-6 ---
   ! sigma = Kramers * (A + (B + C*(Z^2/nu)) * (Z^2/nu))
-  real*8, parameter :: A(6) = (/ 0.9916D0, 1.105D0, 1.101D0, &
+  REAL(8), PARAMETER :: A(6) = (/ 0.9916D0, 1.105D0, 1.101D0, &
                                   1.101D0, 1.102D0, 1.0986D0 /)
-  real*8, parameter :: B(6) = (/ 2.719D13, -2.375D14, -9.863D13, &
+  REAL(8), PARAMETER :: B(6) = (/ 2.719D13, -2.375D14, -9.863D13, &
                                   -5.765D13, -3.909D13, -2.704D13 /)
-  real*8, parameter :: C(6) = (/ -2.268D30, 4.077D28, 1.035D28, &
+  REAL(8), PARAMETER :: C(6) = (/ -2.268D30, 4.077D28, 1.035D28, &
                                   4.593D27, 2.371D27, 1.229D27 /)
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING COULX'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COULX'
 
   ! Check if frequency is above the ionization threshold: nu_edge = Z^2 * R_inf * c / n^2
-  if (FREQ < Z * Z * FREQ_RYDH / dble(N)**2) then
+  IF (FREQ < Z * Z * FREQ_RYDH / dble(N)**2) THEN
     COULX = 0.0D0
-    return
-  end if
+    RETURN
+  END IF
 
   ! Kramers cross-section
   COULX = 2.815D29 / FREQ**3 / dble(N)**5 * Z**4
 
   ! Apply Gaunt factor correction
-  if (N <= 6) then
-    if (N == 1) then
+  IF (N <= 6) THEN
+    IF (N == 1) THEN
       ! Exact 1s Gaunt factor from tabulation
       COULX = COULX * COULBF1S(FREQ, Z)
-    else
+    ELSE
       ! Polynomial fit for N=2-6
       COULX = COULX * (A(N) + (B(N) + C(N) * (Z * Z / FREQ)) * (Z * Z / FREQ))
-    end if
-  end if
+    END IF
+  END IF
 
-  return
+  RETURN
 
 END FUNCTION COULX
 
@@ -8220,21 +8102,21 @@ END FUNCTION COULX
 
 FUNCTION COULBF1S(FREQ, Z)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  real*8, intent(in) :: FREQ     ! frequency (Hz)
-  real*8, intent(in) :: Z        ! nuclear charge
+  REAL(8), INTENT(IN) :: FREQ     ! frequency (Hz)
+  REAL(8), INTENT(IN) :: Z        ! nuclear charge
 
   ! --- Return value ---
-  real*8 :: COULBF1S
+  REAL(8) :: COULBF1S
 
   ! --- 1s Gaunt factor table ---
   ! 151 points at log10(nu/nu_edge) = 0.00, 0.02, 0.04, ..., 3.00
-  integer, parameter :: NGAUNT = 151
-  real*8, parameter :: DLOG_STEP = 0.02D0
+  INTEGER, PARAMETER :: NGAUNT = 151
+  REAL(8), PARAMETER :: DLOG_STEP = 0.02D0
 
-  real*8, parameter :: GAUNT1S(151) = (/ &
+  REAL(8), PARAMETER :: GAUNT1S(151) = (/ &
     0.7973D0, 0.8094D0, 0.8212D0, 0.8328D0, 0.8439D0, &
     0.8548D0, 0.8653D0, 0.8754D0, 0.8852D0, 0.8946D0, &
     0.9035D0, 0.9120D0, 0.9201D0, 0.9278D0, 0.9351D0, &
@@ -8268,16 +8150,16 @@ FUNCTION COULBF1S(FREQ, Z)
     0.1987D0 /)
 
   ! --- Local variables ---
-  real*8  :: ELOG      ! log10(nu / nu_edge)
-  integer :: I         ! table index
+  REAL(8)  :: ELOG      ! log10(nu / nu_edge)
+  INTEGER :: I         ! table index
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING COULBF1S'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COULBF1S'
 
   ! Below ionization threshold
-  if (FREQ / Z**2 < FREQ_RYDH) then
+  IF (FREQ / Z**2 < FREQ_RYDH) THEN
     COULBF1S = 0.0D0
-    return
-  end if
+    RETURN
+  END IF
 
   ! Linear interpolation in log10(nu/nu_edge)
   ELOG = log10(FREQ / Z**2 / FREQ_RYDH)
@@ -8287,7 +8169,7 @@ FUNCTION COULBF1S(FREQ, Z)
   COULBF1S = GAUNT1S(I) + (GAUNT1S(I+1) - GAUNT1S(I)) / DLOG_STEP &
            * (ELOG - dble(I - 1) * DLOG_STEP)
 
-  return
+  RETURN
 
 END FUNCTION COULBF1S
 
@@ -8330,55 +8212,54 @@ END FUNCTION COULBF1S
 
 FUNCTION COULFF(J, NZ)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  integer, intent(in) :: J       ! depth index
-  integer, intent(in) :: NZ      ! charge index (1=H, 2=He+, ..., 6)
+  INTEGER, INTENT(IN) :: J       ! depth index
+  INTEGER, INTENT(IN) :: NZ      ! charge index (1=H, 2=He+, ..., 6)
 
   ! --- Return value ---
-  real*8 :: COULFF
+  REAL(8) :: COULFF
 
   ! --- log10(Z^2) for NZ = 1-6 (canonical gamma^2 scales as Z^2) ---
-  real*8, parameter :: Z2LOG(6) = (/ &
+  REAL(8), PARAMETER :: Z2LOG(6) = (/ &
     0.0D0, 0.60206D0, 0.95424D0, 1.20412D0, 1.39794D0, 1.55630D0 /)
 
   ! --- van Hoof (2014) table grid parameters ---
-  integer, parameter :: GFF_N_GAM2       = 81
-  integer, parameter :: GFF_N_U          = 146
-  real*8,  parameter :: GFF_LOG_GAM2_MIN = -6.0D0
-  real*8,  parameter :: GFF_LOG_U_MIN    = -16.0D0
-  real*8,  parameter :: GFF_DLOG         =  0.2D0
-  integer, parameter :: GFF_MAGIC        = 20140210
+  INTEGER, PARAMETER :: GFF_N_GAM2       = 81
+  INTEGER, PARAMETER :: GFF_N_U          = 146
+  REAL(8),  PARAMETER :: GFF_LOG_GAM2_MIN = -6.0D0
+  REAL(8),  PARAMETER :: GFF_LOG_U_MIN    = -16.0D0
+  REAL(8),  PARAMETER :: GFF_DLOG         =  0.2D0
+  INTEGER, PARAMETER :: GFF_MAGIC        = 20140210
 
   ! --- Cached Gaunt factor table (stored as log10(g_ff) for interpolation) ---
   ! First index: log(gamma^2); second index: log(u).
-  real*8, save :: GFF_LOGTAB(GFF_N_GAM2, GFF_N_U)
-  logical, save :: INITIALIZED = .false.
+  REAL(8), SAVE :: GFF_LOGTAB(GFF_N_GAM2, GFF_N_U)
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! --- Local variables ---
-  real*8  :: LGAM2          ! canonical log10(gamma^2)
-  real*8  :: LU             ! canonical log10(u)
-  real*8  :: XI, XJ         ! fractional grid indices
-  real*8  :: FI, FJ         ! fractional parts
-  real*8  :: LG00, LG01, LG10, LG11  ! log(g_ff) at 4 grid corners
-  real*8  :: LG             ! interpolated log(g_ff)
-  integer :: I0, J0         ! lower-corner grid indices (1-based Fortran)
+  REAL(8)  :: LGAM2          ! canonical log10(gamma^2)
+  REAL(8)  :: LU             ! canonical log10(u)
+  REAL(8)  :: XI, XJ         ! fractional grid indices
+  REAL(8)  :: FI, FJ         ! fractional parts
+  REAL(8)  :: LG00, LG01, LG10, LG11  ! log(g_ff) at 4 grid corners
+  REAL(8)  :: LG             ! interpolated log(g_ff)
+  INTEGER :: I0, J0         ! lower-corner grid indices (1-based Fortran)
 
   ! --- Derived physical constants (computed from mod_constants).
   !     log10(Ry_H / k) = log10(1.57881e5 K), with Ry in energy units.
   !     log10(k/h)      = log10(2.08366e10 Hz/K).
-  real*8, parameter :: LOG10_RYH_OVER_K = log10(FREQ_RYDH * HOVERK)
-  real*8, parameter :: LOG10_K_OVER_H   = -log10(HOVERK)
-  real*8, parameter :: LN10             = 2.30258509299405D0
+  REAL(8), PARAMETER :: LOG10_RYH_OVER_K = log10(FREQ_RYDH * HOVERK)
+  REAL(8), PARAMETER :: LOG10_K_OVER_H   = -log10(HOVERK)
 
   ! --- First-call initialization ---
-  if (.not. INITIALIZED) then
-    call read_gauntff_table()
-    INITIALIZED = .true.
-  end if
+  IF (.NOT. INITIALIZED) THEN
+    CALL read_gauntff_table()
+    INITIALIZED = .TRUE.
+  END IF
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING COULFF'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COULFF'
 
   ! --- Compute canonical log gamma^2 = log10(Z^2 * Ry / (k*T))
   !       = log10(Z^2) + log10(Ry/k) - log10(T)
@@ -8414,9 +8295,9 @@ FUNCTION COULFF(J, NZ)
 
   COULFF = 10.0D0 ** LG
 
-  return
+  RETURN
 
-contains
+CONTAINS
 
   !-------------------------------------------------------------------
   ! Read the van Hoof (2014) Gaunt factor table from
@@ -8432,46 +8313,46 @@ contains
   ! log10(gamma^2) and J indexes log10(u), so (I, J) order matches
   ! Fortran column-major layout (fast axis = gamma^2).
   !-------------------------------------------------------------------
-  subroutine read_gauntff_table()
-    integer :: IU, IOS, I, J
-    integer :: MAGIC_IN, N_GAM2_IN, N_U_IN
-    real*8  :: LOG_GAM2_IN, LOG_U_IN, DLOG_IN
-    real*8  :: ROW(GFF_N_GAM2)
-    character(256)  :: FILEPATH, LINE
-    character(2048) :: DATALINE   ! big enough for 81 %e values (~1300 chars)
+  SUBROUTINE read_gauntff_table()
+    INTEGER :: IU, IOS, I, J
+    INTEGER :: MAGIC_IN, N_GAM2_IN, N_U_IN
+    REAL(8)  :: LOG_GAM2_IN, LOG_U_IN, DLOG_IN
+    REAL(8)  :: ROW(GFF_N_GAM2)
+    CHARACTER(256)  :: FILEPATH, LINE
+    CHARACTER(2048) :: DATALINE   ! big enough for 81 %e values (~1300 chars)
 
     IU = 89
     FILEPATH = trim(DATADIR) // 'gauntff_vanhoof.dat'
-    open(unit=IU, file=FILEPATH, status='OLD', action='READ', iostat=IOS)
-    if (IOS /= 0) then
-      write(6,*) 'COULFF: ERROR opening ', trim(FILEPATH)
-      stop 'COULFF: cannot read van Hoof Gaunt factor table'
-    end if
+    OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      WRITE(6,*) 'COULFF: ERROR opening ', trim(FILEPATH)
+      STOP 'COULFF: cannot read van Hoof Gaunt factor table'
+    END IF
 
     ! --- Skip copyright header (lines starting with '#') and consume the
     !     5 numeric metadata lines (magic, grid dims, start values, step).
-    call read_nonblank_line(IU, LINE);  read(LINE, *) MAGIC_IN
-    call read_nonblank_line(IU, LINE);  read(LINE, *) N_GAM2_IN, N_U_IN
-    call read_nonblank_line(IU, LINE);  read(LINE, *) LOG_GAM2_IN
-    call read_nonblank_line(IU, LINE);  read(LINE, *) LOG_U_IN
-    call read_nonblank_line(IU, LINE);  read(LINE, *) DLOG_IN
+    CALL read_nonblank_line(IU, LINE);  READ(LINE, *) MAGIC_IN
+    CALL read_nonblank_line(IU, LINE);  READ(LINE, *) N_GAM2_IN, N_U_IN
+    CALL read_nonblank_line(IU, LINE);  READ(LINE, *) LOG_GAM2_IN
+    CALL read_nonblank_line(IU, LINE);  READ(LINE, *) LOG_U_IN
+    CALL read_nonblank_line(IU, LINE);  READ(LINE, *) DLOG_IN
 
     ! --- Validate header against expected constants ---
-    if (MAGIC_IN  /= GFF_MAGIC .or. &
-        N_GAM2_IN /= GFF_N_GAM2 .or. &
-        N_U_IN    /= GFF_N_U .or. &
-        abs(LOG_GAM2_IN - GFF_LOG_GAM2_MIN) > 1.0D-6 .or. &
-        abs(LOG_U_IN    - GFF_LOG_U_MIN)    > 1.0D-6 .or. &
-        abs(DLOG_IN     - GFF_DLOG)         > 1.0D-6) then
-      write(6,*) 'COULFF: ERROR file header mismatch for ', trim(FILEPATH)
-      write(6,*) '   magic:  expect ', GFF_MAGIC,        ' got ', MAGIC_IN
-      write(6,*) '   n_gam2: expect ', GFF_N_GAM2,       ' got ', N_GAM2_IN
-      write(6,*) '   n_u:    expect ', GFF_N_U,          ' got ', N_U_IN
-      write(6,*) '   log_gam2_min: expect ', GFF_LOG_GAM2_MIN, ' got ', LOG_GAM2_IN
-      write(6,*) '   log_u_min:    expect ', GFF_LOG_U_MIN,    ' got ', LOG_U_IN
-      write(6,*) '   dlog:         expect ', GFF_DLOG,         ' got ', DLOG_IN
-      stop 'COULFF: van Hoof table header does not match compiled constants'
-    end if
+    IF (MAGIC_IN  /= GFF_MAGIC .OR. &
+        N_GAM2_IN /= GFF_N_GAM2 .OR. &
+        N_U_IN    /= GFF_N_U .OR. &
+        abs(LOG_GAM2_IN - GFF_LOG_GAM2_MIN) > 1.0D-6 .OR. &
+        abs(LOG_U_IN    - GFF_LOG_U_MIN)    > 1.0D-6 .OR. &
+        abs(DLOG_IN     - GFF_DLOG)         > 1.0D-6) THEN
+      WRITE(6,*) 'COULFF: ERROR file header mismatch for ', trim(FILEPATH)
+      WRITE(6,*) '   magic:  expect ', GFF_MAGIC,        ' got ', MAGIC_IN
+      WRITE(6,*) '   n_gam2: expect ', GFF_N_GAM2,       ' got ', N_GAM2_IN
+      WRITE(6,*) '   n_u:    expect ', GFF_N_U,          ' got ', N_U_IN
+      WRITE(6,*) '   log_gam2_min: expect ', GFF_LOG_GAM2_MIN, ' got ', LOG_GAM2_IN
+      WRITE(6,*) '   log_u_min:    expect ', GFF_LOG_U_MIN,    ' got ', LOG_U_IN
+      WRITE(6,*) '   dlog:         expect ', GFF_DLOG,         ' got ', DLOG_IN
+      STOP 'COULFF: van Hoof table header does not match compiled constants'
+    END IF
 
     ! --- Skip blank lines and '#' comment lines between the metadata and
     !     the first data row, then read the 146 rows of Gaunt factor data.
@@ -8486,24 +8367,24 @@ contains
     !
     !     Each data line has 81 floating-point values occupying ~1300
     !     characters -- we need a large line buffer.
-    do J = 1, GFF_N_U
-      call read_nonblank_line(IU, DATALINE)
-      read(DATALINE, *, iostat=IOS) (ROW(I), I = 1, GFF_N_GAM2)
-      if (IOS /= 0) then
-        write(6,*) 'COULFF: error parsing row ', J, ' of Gaunt factor data'
-        stop 'COULFF: corrupted Gaunt factor data file'
-      end if
-      do I = 1, GFF_N_GAM2
+    DO J = 1, GFF_N_U
+      CALL read_nonblank_line(IU, DATALINE)
+      READ(DATALINE, *, IOSTAT=IOS) (ROW(I), I = 1, GFF_N_GAM2)
+      IF (IOS /= 0) THEN
+        WRITE(6,*) 'COULFF: error parsing row ', J, ' of Gaunt factor data'
+        STOP 'COULFF: corrupted Gaunt factor data file'
+      END IF
+      DO I = 1, GFF_N_GAM2
         GFF_LOGTAB(I, J) = log10(ROW(I))
-      end do
-    end do
+      END DO
+    END DO
 
-    close(IU)
+    CLOSE(IU)
     ! --- Uncertainty table (second half of file) is not read; it is only
     !     useful for sanity-checking the published data itself, not for
     !     runtime opacity calculation.
 
-  end subroutine read_gauntff_table
+  END SUBROUTINE read_gauntff_table
 
   !-------------------------------------------------------------------
   ! Read one non-blank, non-comment line from unit IU into LINE.
@@ -8511,24 +8392,24 @@ contains
   ! file format).  Also strips inline '# comment' tails so the caller
   ! can read numeric values with list-directed READ.
   !-------------------------------------------------------------------
-  subroutine read_nonblank_line(IU, LINE)
-    integer, intent(in) :: IU
-    character(*), intent(out) :: LINE
-    integer :: IOS, K
-    do
-      read(IU, '(A)', iostat=IOS) LINE
-      if (IOS /= 0) then
-        write(6,*) 'COULFF: unexpected EOF reading gauntff_vanhoof.dat'
-        stop 'COULFF: corrupted Gaunt factor data file'
-      end if
+  SUBROUTINE read_nonblank_line(IU, LINE)
+    INTEGER, INTENT(IN) :: IU
+    CHARACTER(*), INTENT(OUT) :: LINE
+    INTEGER :: IOS, K
+    DO
+      READ(IU, '(A)', IOSTAT=IOS) LINE
+      IF (IOS /= 0) THEN
+        WRITE(6,*) 'COULFF: unexpected EOF reading gauntff_vanhoof.dat'
+        STOP 'COULFF: corrupted Gaunt factor data file'
+      END IF
       LINE = adjustl(LINE)
-      if (len_trim(LINE) == 0) cycle
-      if (LINE(1:1) == '#')    cycle
+      IF (len_trim(LINE) == 0) CYCLE
+      IF (LINE(1:1) == '#')    CYCLE
       K = index(LINE, '#')
-      if (K > 0) LINE(K:) = ' '
-      return
-    end do
-  end subroutine read_nonblank_line
+      IF (K > 0) LINE(K:) = ' '
+      RETURN
+    END DO
+  END SUBROUTINE read_nonblank_line
 
 END FUNCTION COULFF
 
@@ -8560,16 +8441,16 @@ END FUNCTION COULFF
 
 SUBROUTINE H2PLOP
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8  :: FR        ! log cross-section frequency factor (polynomial in FREQLG)
-  real*8  :: ES        ! energy factor (polynomial in FREQ), in eV
-  integer :: J
+  REAL(8)  :: FR        ! log cross-section frequency factor (polynomial in FREQLG)
+  REAL(8)  :: ES        ! energy factor (polynomial in FREQ), in eV
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING H2PLOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING H2PLOP'
 
   ! No contribution above Lyman limit
-  if (FREQ > FREQ_RYDH) return
+  IF (FREQ > FREQ_RYDH) RETURN
 
   ! Frequency-dependent cross-section factor (polynomial in log10(freq))
   FR = -3.0233D3 + (3.7797D2 + (-1.82496D1 &
@@ -8580,13 +8461,13 @@ SUBROUTINE H2PLOP
      + (-4.230D-46 + (1.224D-61 - 1.351D-77 * FREQ) * FREQ) &
      * FREQ) * FREQ) * FREQ
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AH2P(J) = exp(-ES / TKEV(J) + FR) &
             * XNFP(J, 1) * 2.0D0 * BHYD(J, 1) * XNFP(J, 2) &
             / RHO(J) * STIM(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE H2PLOP
 
@@ -8689,14 +8570,14 @@ END SUBROUTINE H2PLOP
 
 SUBROUTINE HMINOP
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Bound-free cross-section table ---
   ! 85 points: wavelength (nm) and sigma (1e-18 cm^2)
   ! From Mathisen (1984) after Wishart (1979), Broad & Reinhardt (1976)
-  integer, parameter :: NBF = 85
+  INTEGER, PARAMETER :: NBF = 85
 
-  real*8, parameter :: WBF(85) = (/ &
+  REAL(8), PARAMETER :: WBF(85) = (/ &
     18.00D0, 19.60D0, 21.40D0, 23.60D0, 26.40D0, 29.80D0, 34.30D0, &
     40.40D0, 49.10D0, 62.60D0, 111.30D0, 112.10D0, 112.67D0, &
     112.95D0, 113.05D0, 113.10D0, 113.20D0, 113.23D0, 113.50D0, &
@@ -8713,7 +8594,7 @@ SUBROUTINE HMINOP
     1475.00D0, 1500.00D0, 1525.00D0, 1550.00D0, 1575.00D0, &
     1600.00D0, 1610.00D0, 1620.00D0, 1630.00D0, 1643.91D0 /)
 
-  real*8, parameter :: BF(85) = (/ &
+  REAL(8), PARAMETER :: BF(85) = (/ &
     0.067D0, 0.088D0, 0.117D0, 0.155D0, 0.206D0, 0.283D0, 0.414D0, &
     0.703D0, 1.24D0, 2.33D0, 11.60D0, 13.90D0, 24.30D0, 66.70D0, &
     95.00D0, 56.60D0, 20.00D0, 14.60D0, 8.50D0, 7.10D0, 5.43D0, &
@@ -8731,19 +8612,19 @@ SUBROUTINE HMINOP
   ! --- Free-free cross-section table ---
   ! Bell & Berrington (1987): FF(theta_index, wave_index)
   ! 11 theta values × 22 wavelength values (in units of 1e-26 cm^2)
-  integer, parameter :: NFF_THETA = 11, NFF_WAVE = 22
+  INTEGER, PARAMETER :: NFF_THETA = 11, NFF_WAVE = 22
 
-  real*8, parameter :: THETAFF(11) = (/ &
+  REAL(8), PARAMETER :: THETAFF(11) = (/ &
     0.5D0, 0.6D0, 0.8D0, 1.0D0, 1.2D0, 1.4D0, &
     1.6D0, 1.8D0, 2.0D0, 2.8D0, 3.6D0 /)
 
-  real*8, parameter :: WAVEK(22) = (/ &
+  REAL(8), PARAMETER :: WAVEK(22) = (/ &
     0.50D0, 0.40D0, 0.35D0, 0.30D0, 0.25D0, 0.20D0, 0.18D0, &
     0.16D0, 0.14D0, 0.12D0, 0.10D0, 0.09D0, 0.08D0, 0.07D0, &
     0.06D0, 0.05D0, 0.04D0, 0.03D0, 0.02D0, 0.01D0, 0.008D0, &
     0.006D0 /)
 
-  real*8, parameter :: FF(11, 22) = reshape( (/ &
+  REAL(8), PARAMETER :: FF(11, 22) = reshape( (/ &
     .0178, .0222, .0308, .0402, .0498, .0596, .0695, .0795, .0896, .131,  .172,  &
     .0228, .0280, .0388, .0499, .0614, .0732, .0851, .0972, .110,  .160,  .211,  &
     .0277, .0342, .0476, .0615, .0760, .0908, .105,  .121,  .136,  .199,  .262,  &
@@ -8769,85 +8650,85 @@ SUBROUTINE HMINOP
     /), (/ NFF_THETA, NFF_WAVE /) )
 
   ! --- Cached arrays (recomputed when ITEMP changes) ---
-  real*8,  save :: XHMIN(kw)       ! H⁻ number density / rho factor
-  real*8,  save :: THETA(kw)       ! 5040/T at each depth
-  integer, save :: ITEMP1 = 0      ! cached ITEMP for skip logic
+  REAL(8),  SAVE :: XHMIN(kw)       ! H⁻ number density / rho factor
+  REAL(8),  SAVE :: THETA(kw)       ! 5040/T at each depth
+  INTEGER, SAVE :: ITEMP1 = 0      ! cached ITEMP for skip logic
 
   ! --- One-time initialization arrays ---
-  real*8,  save :: WFFLOG(NFF_WAVE)              ! log(wavelength) grid for ff
-  real*8,  save :: FFLOG(NFF_WAVE, NFF_THETA)    ! log(cross-section) table
-  logical, save :: INITIALIZED = .false.
+  REAL(8),  SAVE :: WFFLOG(NFF_WAVE)              ! log(wavelength) grid for ff
+  REAL(8),  SAVE :: FFLOG(NFF_WAVE, NFF_THETA)    ! log(cross-section) table
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! --- Local variables ---
-  real*8  :: FFTT(NFF_THETA)  ! ff cross-section interpolated to current wavelength
-  real*8  :: FFTHETA(1)       ! ff cross-section interpolated to current depth's theta
-  real*8  :: WAVELOG(1)       ! log(wavelength) at current frequency
-  real*8  :: HMINBF_ARR(1)     ! bound-free cross-section (1e-18 cm^2)
-  real*8  :: WAVE_ARR(1)
-  real*8  :: HMINFF           ! free-free opacity per gram
-  real*8  :: H                ! bound-free opacity per gram
-  real*8  :: FFTLOG(1)        ! temporary for LINTER output
-  integer :: J, IWAVE, ITHETA, MAXWAVE
+  REAL(8)  :: FFTT(NFF_THETA)  ! ff cross-section interpolated to current wavelength
+  REAL(8)  :: FFTHETA(1)       ! ff cross-section interpolated to current depth's theta
+  REAL(8)  :: WAVELOG(1)       ! log(wavelength) at current frequency
+  REAL(8)  :: HMINBF_ARR(1)     ! bound-free cross-section (1e-18 cm^2)
+  REAL(8)  :: WAVE_ARR(1)
+  REAL(8)  :: HMINFF           ! free-free opacity per gram
+  REAL(8)  :: H                ! bound-free opacity per gram
+  REAL(8)  :: FFTLOG(1)        ! temporary for LINTER output
+  INTEGER :: J, IWAVE, ITHETA, MAXWAVE
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HMINOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HMINOP'
 
   !---------------------------------------------------------------------
   ! One-time initialization: precompute log(wavelength) and log(sigma)
   ! grids for free-free interpolation
   !---------------------------------------------------------------------
-  if (.not. INITIALIZED) then
-    do IWAVE = 1, NFF_WAVE
+  IF (.NOT. INITIALIZED) THEN
+    DO IWAVE = 1, NFF_WAVE
       ! 91.134 nm is the conversion factor from Bell & Berrington
       WFFLOG(IWAVE) = log(91.134D0 / WAVEK(IWAVE))
-      do ITHETA = 1, NFF_THETA
+      DO ITHETA = 1, NFF_THETA
         FFLOG(IWAVE, ITHETA) = log(FF(ITHETA, IWAVE) * 1.0D-26)
-      end do
-    end do
-    INITIALIZED = .true.
-  end if
+      END DO
+    END DO
+    INITIALIZED = .TRUE.
+  END IF
 
   !---------------------------------------------------------------------
   ! Recompute temperature-dependent quantities if T has changed
   !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       THETA(J) = THETA_COEFF / T(J)
       ! H⁻ population: Saha equation for H⁻ ↔ H + e⁻
       ! 0.754209 eV = H⁻ electron affinity (Hotop & Lineberger 1985)
       XHMIN(J) = exp(HMINUS_EA / TKEV(J)) &
                / (SAHA_PREFAC * T(J) * sqrt(T(J))) &
                * BMIN(J) * BHYD(J, 1) * XNFP(J, 1) * XNE(J)
-    end do
-  end if
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Free-free: interpolate table to current wavelength, then to each
   ! depth's theta value
   !---------------------------------------------------------------------
   WAVELOG(1) = log(WAVE)
-  do ITHETA = 1, NFF_THETA
-    call LINTER(WFFLOG, FFLOG(1, ITHETA), NFF_WAVE, WAVELOG(1), FFTLOG(1))
+  DO ITHETA = 1, NFF_THETA
+    CALL LINTER(WFFLOG, FFLOG(1, ITHETA), NFF_WAVE, WAVELOG(1), FFTLOG(1))
     FFTT(ITHETA) = exp(FFTLOG(1)) / THETAFF(ITHETA) * THETA_COEFF * KBOL
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! Bound-free: interpolate cross-section table at current wavelength
   ! (only contributes for lambda < 1643.91 nm, i.e. freq > 1.82365e14)
   !---------------------------------------------------------------------
   HMINBF_ARR(1) = 0.0D0
-  if (FREQ > 1.82365D14) then
+  IF (FREQ > 1.82365D14) THEN
     WAVE_ARR(1) = WAVE
     MAXWAVE = MAP1(WBF, BF, NBF, WAVE_ARR, HMINBF_ARR, 1)
-  end if
+  END IF
 
   !---------------------------------------------------------------------
   ! Assemble total opacity and source function at each depth
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
-    call LINTER(THETAFF, FFTT, NFF_THETA, THETA(J), FFTHETA(1))
+  DO J = 1, NRHOX
+    CALL LINTER(THETAFF, FFTT, NFF_THETA, THETA(J), FFTHETA(1))
 
     ! Free-free opacity per gram
     HMINFF = FFTHETA(1) * XNFP(J, 1) * 2.0D0 * BHYD(J, 1) * XNE(J) / RHO(J)
@@ -8861,9 +8742,9 @@ SUBROUTINE HMINOP
     ! Source function: bf weighted by non-LTE, ff in LTE
     SHMIN(J) = (H * BNU(J) * STIM(J) / (BMIN(J) - EHVKT(J)) &
              + HMINFF * BNU(J)) / AHMIN(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE HMINOP
 
@@ -8879,28 +8760,28 @@ END SUBROUTINE HMINOP
 
 SUBROUTINE LINTER(XOLD, YOLD, NOLD, XNEW, YNEW)
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Arguments ---
-  integer, intent(in)  :: NOLD
-  real*8,  intent(in)  :: XOLD(NOLD), YOLD(NOLD)
-  real*8,  intent(in)  :: XNEW
-  real*8,  intent(out) :: YNEW
+  INTEGER, INTENT(IN)  :: NOLD
+  REAL(8),  INTENT(IN)  :: XOLD(NOLD), YOLD(NOLD)
+  REAL(8),  INTENT(IN)  :: XNEW
+  REAL(8),  INTENT(OUT) :: YNEW
 
   ! --- Local variables ---
-  integer :: I
+  INTEGER :: I
 
   ! Find the bracketing interval
-  do I = 2, NOLD
-    if (XNEW < XOLD(I)) exit
-  end do
-  if (I > NOLD) I = NOLD
+  DO I = 2, NOLD
+    IF (XNEW < XOLD(I)) EXIT
+  END DO
+  IF (I > NOLD) I = NOLD
 
   ! Linear interpolation (or extrapolation at boundaries)
   YNEW = YOLD(I-1) + (YOLD(I) - YOLD(I-1)) &
        / (XOLD(I) - XOLD(I-1)) * (XNEW - XOLD(I-1))
 
-  return
+  RETURN
 
 END SUBROUTINE LINTER
 
@@ -8936,12 +8817,12 @@ END SUBROUTINE LINTER
 
 SUBROUTINE HRAYOP
 
-  implicit none
+  IMPLICIT NONE
 
   ! FREQ_RYDH and SIGMA_THOMSON from mod_constants
 
   ! Range 1: scattering amplitude f, ν/ν_L = 0.01 to 0.74 by 0.01
-  real*8, parameter :: GAVRILAM(74) = (/ &
+  REAL(8), PARAMETER :: GAVRILAM(74) = (/ &
    -0.000113D0,  -0.000450D0,  -0.001014D0,  -0.001804D0,  -0.002823D0, &
    -0.004072D0,  -0.005553D0,  -0.007269D0,  -0.009223D0,  -0.011419D0, &
    -0.013861D0,  -0.016553D0,  -0.019500D0,  -0.022709D0,  -0.026185D0, &
@@ -8959,7 +8840,7 @@ SUBROUTINE HRAYOP
    -3.979234D0,  -5.303624D0,  -7.930999D0, -15.763602D0 /)
 
   ! Range 3: near Ly β, ν/ν_L = 0.755 to 0.885 by 0.005
-  real*8, parameter :: GAVRILAMAB(27) = (/ &
+  REAL(8), PARAMETER :: GAVRILAMAB(27) = (/ &
    31.008832D0,  15.382871D0,  10.160646D0,   7.538338D0,   5.955062D0, &
     4.890397D0,   4.121176D0,   3.535672D0,   3.071659D0,   2.691623D0, &
     2.371483D0,   2.094936D0,   1.850395D0,   1.629203D0,   1.424526D0, &
@@ -8968,7 +8849,7 @@ SUBROUTINE HRAYOP
    -3.150374D0,  -8.326078D0 /)
 
   ! Range 4: near Ly γ, ν/ν_L = 0.890 to 0.936 by 0.002
-  real*8, parameter :: GAVRILAMBC(24) = (/ &
+  REAL(8), PARAMETER :: GAVRILAMBC(24) = (/ &
    32.260389D0,  11.880702D0,   7.418436D0,   5.442077D0,   4.313409D0, &
     3.573504D0,   3.043218D0,   2.637983D0,   2.312466D0,   2.039959D0, &
     1.803441D0,   1.591244D0,   1.394717D0,   1.206823D0,   1.021148D0, &
@@ -8976,7 +8857,7 @@ SUBROUTINE HRAYOP
    -0.667435D0,  -1.410661D0,  -2.906862D0,  -8.169314D0 /)
 
   ! Range 5: near Ly δ, ν/ν_L = 0.938 to 0.959 by 0.001
-  real*8, parameter :: GAVRILAMCD(22) = (/ &
+  REAL(8), PARAMETER :: GAVRILAMCD(22) = (/ &
    27.981406D0,   9.816495D0,   6.145775D0,   4.544224D0,   3.630968D0, &
     3.029081D0,   2.593248D0,   2.255265D0,   1.978565D0,   1.741426D0, &
     1.529699D0,   1.333240D0,   1.143898D0,   0.954154D0,   0.755875D0, &
@@ -8984,7 +8865,7 @@ SUBROUTINE HRAYOP
    -2.278530D0,  -5.705843D0 /)
 
   ! Range 7: above Lyman limit, correction factors
-  real*8, parameter :: GAVRILALYMANCONT(64) = (/ &
+  REAL(8), PARAMETER :: GAVRILALYMANCONT(64) = (/ &
     2.667783D0,   2.526696D0,   2.408970D0,   2.308970D0,   2.222736D0, &
     2.147415D0,   2.080913D0,   2.021653D0,   1.968431D0,   1.920304D0, &
     1.876527D0,   1.799739D0,   1.734455D0,   1.678180D0,   1.629118D0, &
@@ -9000,7 +8881,7 @@ SUBROUTINE HRAYOP
     1.004724D0,   1.003970D0,   1.003385D0,   1.003140D0 /)
 
   ! Frequency grid for Lyman continuum table (ν/ν_L)
-  real*8, parameter :: FGAVRILALYMANCONT(64) = (/ &
+  REAL(8), PARAMETER :: FGAVRILALYMANCONT(64) = (/ &
     1.00D0, 1.05D0, 1.10D0, 1.15D0, 1.20D0, 1.25D0, 1.30D0, 1.35D0, &
     1.40D0, 1.45D0, 1.5D0,  1.6D0,  1.7D0,  1.8D0,  1.9D0,  2.0D0,  &
     2.1D0,  2.2D0,  2.3D0,  2.4D0,  2.5D0,  2.6D0,  2.7D0,  2.8D0,  &
@@ -9011,24 +8892,24 @@ SUBROUTINE HRAYOP
    24.0D0, 28.0D0, 32.0D0, 36.0D0, 40.0D0, 44.0D0, 48.0D0, 50.0D0 /)
 
   ! Local variables
-  real*8  :: XSECT, G
-  integer :: I, J, IDUM
+  REAL(8)  :: XSECT, G
+  INTEGER :: I, J, IDUM
 
   ! Frequency step sizes for each range
-  real*8, parameter :: DFREQ1  = 0.01D0  * FREQ_RYDH  ! 0.01 × ν_L
-  real*8, parameter :: DFREQAB = 0.005D0 * FREQ_RYDH  ! 0.005 × ν_L
-  real*8, parameter :: DFREQBC = 0.002D0 * FREQ_RYDH  ! 0.002 × ν_L
-  real*8, parameter :: DFREQCD = 0.001D0 * FREQ_RYDH  ! 0.001 × ν_L
+  REAL(8), PARAMETER :: DFREQ1  = 0.01D0  * FREQ_RYDH  ! 0.01 × ν_L
+  REAL(8), PARAMETER :: DFREQAB = 0.005D0 * FREQ_RYDH  ! 0.005 × ν_L
+  REAL(8), PARAMETER :: DFREQBC = 0.002D0 * FREQ_RYDH  ! 0.002 × ν_L
+  REAL(8), PARAMETER :: DFREQCD = 0.001D0 * FREQ_RYDH  ! 0.001 × ν_L
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HRAYOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HRAYOP'
 
   XSECT = 0.0D0
 
-  if (FREQ < DFREQ1) then
+  IF (FREQ < DFREQ1) THEN
     ! Below 0.01 ν_L: extrapolate using lowest table value
     XSECT = SIGMA_THOMSON * GAVRILAM(1)**2 * (FREQ / DFREQ1)**4
 
-  else if (FREQ <= 0.74D0 * FREQ_RYDH) then
+  ELSE IF (FREQ <= 0.74D0 * FREQ_RYDH) THEN
     ! Range 1: 0.01–0.74 ν_L, table step = 0.01 ν_L
     I = int(FREQ / DFREQ1)
     I = MIN(I + 1, 74)
@@ -9036,11 +8917,11 @@ SUBROUTINE HRAYOP
       * (FREQ - dble(I-1) * DFREQ1)
     XSECT = SIGMA_THOMSON * G**2
 
-  else if (FREQ < 0.77D0 * FREQ_RYDH) then
+  ELSE IF (FREQ < 0.77D0 * FREQ_RYDH) THEN
     ! Gap between range 1 and Ly β region
     XSECT = 0.0D0
 
-  else if (FREQ <= 0.885D0 * FREQ_RYDH) then
+  ELSE IF (FREQ <= 0.885D0 * FREQ_RYDH) THEN
     ! Range 3: 0.755–0.885 ν_L (near Ly β), step = 0.005 ν_L
     I = int((FREQ - 0.755D0 * FREQ_RYDH) / DFREQAB)
     I = I + 1
@@ -9049,11 +8930,11 @@ SUBROUTINE HRAYOP
       * (FREQ - (0.755D0 * FREQ_RYDH + dble(I-1-1) * DFREQAB))
     XSECT = SIGMA_THOMSON * G**2
 
-  else if (FREQ < 0.890D0 * FREQ_RYDH) then
+  ELSE IF (FREQ < 0.890D0 * FREQ_RYDH) THEN
     ! Gap between Ly β and Ly γ regions
     XSECT = 0.0D0
 
-  else if (FREQ <= 0.936D0 * FREQ_RYDH) then
+  ELSE IF (FREQ <= 0.936D0 * FREQ_RYDH) THEN
     ! Range 4: 0.890–0.936 ν_L (near Ly γ), step = 0.002 ν_L
     I = int((FREQ - 0.890D0 * FREQ_RYDH) / DFREQBC)
     I = I + 1
@@ -9062,11 +8943,11 @@ SUBROUTINE HRAYOP
       * (FREQ - (0.890D0 * FREQ_RYDH + dble(I-1-1) * DFREQBC))
     XSECT = SIGMA_THOMSON * G**2
 
-  else if (FREQ < 0.938D0 * FREQ_RYDH) then
+  ELSE IF (FREQ < 0.938D0 * FREQ_RYDH) THEN
     ! Gap between Ly γ and Ly δ regions
     XSECT = 0.0D0
 
-  else if (FREQ <= 0.959D0 * FREQ_RYDH) then
+  ELSE IF (FREQ <= 0.959D0 * FREQ_RYDH) THEN
     ! Range 5: 0.938–0.959 ν_L (near Ly δ), step = 0.001 ν_L
     I = int((FREQ - 0.938D0 * FREQ_RYDH) / DFREQCD)
     I = I + 1
@@ -9075,32 +8956,32 @@ SUBROUTINE HRAYOP
       * (FREQ - (0.938D0 * FREQ_RYDH + dble(I-1-1) * DFREQCD))
     XSECT = SIGMA_THOMSON * G**2
 
-  else if (FREQ < 0.961D0 * FREQ_RYDH) then
+  ELSE IF (FREQ < 0.961D0 * FREQ_RYDH) THEN
     ! Gap between Ly δ and series limit
     XSECT = 0.0D0
 
-  else if (FREQ <= FREQ_RYDH) then
+  ELSE IF (FREQ <= FREQ_RYDH) THEN
     ! Near series limit: constant value
     XSECT = SIGMA_THOMSON * GAVRILALYMANCONT(1)
 
-  else
+  ELSE
     ! Above Lyman limit: interpolate from continuum table
     BLOCK
-      real*8 :: XNEW(1), FNEW(1)
+      REAL(8) :: XNEW(1), FNEW(1)
       XNEW(1) = FREQ / FREQ_RYDH
       IDUM = MAP1(FGAVRILALYMANCONT, GAVRILALYMANCONT, 64, &
                   XNEW, FNEW, 1)
       XSECT = SIGMA_THOMSON * FNEW(1)
     END BLOCK
 
-  end if
+  END IF
 
   ! Apply to all depth points
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     SIGH(J) = XSECT * XNFP(J, 1) * 2.0D0 * BHYD(J, 1) / RHO(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE HRAYOP
 
@@ -9137,64 +9018,64 @@ END SUBROUTINE HRAYOP
 
 SUBROUTINE HE1OP
 
-  implicit none
+  IMPLICIT NONE
 
   ! --- Energy level data for 10 resolved low-lying states ---
-  real*8, parameter :: CHI(10) = (/ &
+  REAL(8), PARAMETER :: CHI(10) = (/ &
     0.0D0, 19.819D0, 20.615D0, 20.964D0, 21.217D0, &
     22.718D0, 22.920D0, 23.006D0, 23.073D0, 23.086D0 /)
 
-  real*8, parameter :: HEFREQ(10) = (/ &
+  REAL(8), PARAMETER :: HEFREQ(10) = (/ &
     5.945209D15, 1.152844D15, 0.9603331D15, 0.8761076D15, &
     0.8147104D15, 0.4519048D15, 0.4030971D15, 0.3821191D15, &
     0.3660215D15, 0.3627891D15 /)
 
-  real*8, parameter :: G(10) = (/ &
+  REAL(8), PARAMETER :: G(10) = (/ &
     1.0D0, 3.0D0, 1.0D0, 9.0D0, 3.0D0, &
     3.0D0, 1.0D0, 9.0D0, 20.0D0, 3.0D0 /)
 
   ! --- Cached temperature-dependent arrays ---
-  real*8,  save :: BOLT(kw, 10)     ! Boltzmann factors for 10 levels
-  real*8,  save :: BOLTN(kw, 27)    ! Boltzmann factors for high-n levels
-  real*8,  save :: EXLIM(kw)        ! population at ionization limit (24.587 eV)
-  real*8,  save :: BOLTEX(kw)       ! population at dissolved limit (23.730 eV)
-  real*8,  save :: FREET(kw)        ! free-free factor: n_e * n(He+) / (rho * sqrt(T))
-  integer, save :: ITEMP1 = 0
+  REAL(8),  SAVE :: BOLT(kw, 10)     ! Boltzmann factors for 10 levels
+  REAL(8),  SAVE :: BOLTN(kw, 27)    ! Boltzmann factors for high-n levels
+  REAL(8),  SAVE :: EXLIM(kw)        ! population at ionization limit (24.587 eV)
+  REAL(8),  SAVE :: BOLTEX(kw)       ! population at dissolved limit (23.730 eV)
+  REAL(8),  SAVE :: FREET(kw)        ! free-free factor: n_e * n(He+) / (rho * sqrt(T))
+  INTEGER, SAVE :: ITEMP1 = 0
 
   ! --- Local variables ---
-  real*8  :: TRANS(10)     ! bound-free cross-sections for 10 levels
-  real*8  :: TRANSN(27)    ! bound-free cross-sections for high-n levels
-  real*8  :: FREQ3, CFREE, C
-  real*8  :: RYD, ELIM, FREQHE, ZEFF2
-  real*8  :: XR, EX, HE1
-  integer :: J, N, IMIN
+  REAL(8)  :: TRANS(10)     ! bound-free cross-sections for 10 levels
+  REAL(8)  :: TRANSN(27)    ! bound-free cross-sections for high-n levels
+  REAL(8)  :: FREQ3, CFREE, C
+  REAL(8)  :: RYD, ELIM, FREQHE, ZEFF2
+  REAL(8)  :: XR, EX, HE1
+  INTEGER :: J, N, IMIN
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE1OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HE1OP'
 
   !---------------------------------------------------------------------
   ! Recompute temperature-dependent quantities if T has changed
   !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
     RYD = RYDBERG_HE * CLIGHT
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       ! Boltzmann populations for 10 resolved levels
-      do N = 1, 10
+      DO N = 1, 10
         BOLT(J, N) = exp(-CHI(N) / TKEV(J)) * G(N) * XNFP(J, 3) / RHO(J)
-      end do
+      END DO
       ! High-n levels (n=4-27): hydrogenic with E_n = 24.587*(1-1/n^2) eV
-      do N = 4, 27
+      DO N = 4, 27
         BOLTN(J, N) = exp(-24.587D0 * (1.0D0 - 1.0D0 / dble(N)**2) / TKEV(J)) &
                     * 4.0D0 * dble(N)**2 * XNFP(J, 3) / RHO(J)
-      end do
+      END DO
       FREET(J) = XNE(J) * XNF(J, 4) / RHO(J) / sqrt(T(J))
       XR = XNFP(J, 3) * (4.0D0 / 2.0D0 / 13.595D0) * TKEV(J) / RHO(J)
       BOLTEX(J) = exp(-23.730D0 / TKEV(J)) * XR
       EXLIM(J) = exp(-24.587D0 / TKEV(J)) * XR
-    end do
-  end if
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Cross-sections at the current frequency
@@ -9206,12 +9087,12 @@ SUBROUTINE HE1OP
 
   ! Find lowest level whose threshold is at or below FREQ
   IMIN = 0
-  do N = 1, 10
-    if (HEFREQ(N) <= FREQ) then
+  DO N = 1, 10
+    IF (HEFREQ(N) <= FREQ) THEN
       IMIN = N
-      exit
-    end if
-  end do
+      EXIT
+    END IF
+  END DO
 
   ! Compute bound-free cross-sections for levels IMIN..10
   ! (HEFREQ is in decreasing order: ground state has the highest threshold.
@@ -9219,125 +9100,125 @@ SUBROUTINE HE1OP
   ! the original fell through from label 20+IMIN to 30, so all levels
   ! N = IMIN..10 are computed.)
   TRANS = 0.0D0
-  if (IMIN > 0 .and. IMIN <= 1)  TRANS(1)  = CROSSHE(FREQ)
-  if (IMIN > 0 .and. IMIN <= 2)  TRANS(2)  = HE12s3S(FREQ)
-  if (IMIN > 0 .and. IMIN <= 3)  TRANS(3)  = HE12s1S(FREQ)
-  if (IMIN > 0 .and. IMIN <= 4)  TRANS(4)  = HE12p3P(FREQ)
-  if (IMIN > 0 .and. IMIN <= 5)  TRANS(5)  = HE12p1P(FREQ)
+  IF (IMIN > 0 .AND. IMIN <= 1)  TRANS(1)  = CROSSHE(FREQ)
+  IF (IMIN > 0 .AND. IMIN <= 2)  TRANS(2)  = HE12s3S(FREQ)
+  IF (IMIN > 0 .AND. IMIN <= 3)  TRANS(3)  = HE12s1S(FREQ)
+  IF (IMIN > 0 .AND. IMIN <= 4)  TRANS(4)  = HE12p3P(FREQ)
+  IF (IMIN > 0 .AND. IMIN <= 5)  TRANS(5)  = HE12p1P(FREQ)
   ! 1s3s 3S
-  if (IMIN > 0 .and. IMIN <= 6)  TRANS(6)  = XKARZAS(FREQ, 1.236439D0, 3, 0)
+  IF (IMIN > 0 .AND. IMIN <= 6)  TRANS(6)  = XKARZAS(FREQ, 1.236439D0, 3, 0)
   ! 1s3s 1S
-  if (IMIN > 0 .and. IMIN <= 7)  TRANS(7)  = XKARZAS(FREQ, 1.102898D0, 3, 0)
+  IF (IMIN > 0 .AND. IMIN <= 7)  TRANS(7)  = XKARZAS(FREQ, 1.102898D0, 3, 0)
   ! 1s3p 3P
-  if (IMIN > 0 .and. IMIN <= 8)  TRANS(8)  = XKARZAS(FREQ, 1.045499D0, 3, 1)
+  IF (IMIN > 0 .AND. IMIN <= 8)  TRANS(8)  = XKARZAS(FREQ, 1.045499D0, 3, 1)
   ! 1s3d 3D+1D
-  if (IMIN > 0 .and. IMIN <= 9)  TRANS(9)  = XKARZAS(FREQ, 1.001427D0, 3, 2)
+  IF (IMIN > 0 .AND. IMIN <= 9)  TRANS(9)  = XKARZAS(FREQ, 1.001427D0, 3, 2)
   ! 1s3p 1P
-  if (IMIN > 0 .and. IMIN <= 10) TRANS(10) = XKARZAS(FREQ, 0.9926D0, 3, 1)
+  IF (IMIN > 0 .AND. IMIN <= 10) TRANS(10) = XKARZAS(FREQ, 0.9926D0, 3, 1)
 
   !---------------------------------------------------------------------
   ! Inner-shell ionization: He I excited state → He II n=2
   ! (Adds hydrogenic 1s cross-section at shifted threshold)
   !---------------------------------------------------------------------
-  if (IMIN >= 1) then
+  IF (IMIN >= 1) THEN
     ELIM = 527490.06D0
     ! 1s2p 1P → He II 2p
     FREQHE = (ELIM - 171135.000D0) * CLIGHT
-    if (FREQ >= FREQHE) then
+    IF (FREQ >= FREQHE) THEN
       ZEFF2 = FREQHE / RYD
       TRANS(5) = TRANS(5) + XKARZAS(FREQ, ZEFF2, 1, 0)
       ! 1s2p 3P → He II 2p
       FREQHE = (ELIM - 169087.0D0) * CLIGHT
-      if (FREQ >= FREQHE) then
+      IF (FREQ >= FREQHE) THEN
         ZEFF2 = FREQHE / RYD
         TRANS(4) = TRANS(4) + XKARZAS(FREQ, ZEFF2, 1, 0)
         ! 1s2s 1S → He II 2s
         FREQHE = (ELIM - 166277.546D0) * CLIGHT
-        if (FREQ >= FREQHE) then
+        IF (FREQ >= FREQHE) THEN
           ZEFF2 = FREQHE / RYD
           TRANS(3) = TRANS(3) + XKARZAS(FREQ, ZEFF2, 1, 0)
           ! 1s2s 3S → He II 2s
           FREQHE = (ELIM - 159856.069D0) * CLIGHT
-          if (FREQ >= FREQHE) then
+          IF (FREQ >= FREQHE) THEN
             ZEFF2 = FREQHE / RYD
             TRANS(2) = TRANS(2) + XKARZAS(FREQ, ZEFF2, 1, 0)
-          end if
-        end if
-      end if
-    end if
+          END IF
+        END IF
+      END IF
+    END IF
 
     !-------------------------------------------------------------------
     ! Inner-shell ionization: He I excited state → He II n=3
     !-------------------------------------------------------------------
     ELIM = 588451.59D0
     FREQHE = (ELIM - 186209.471D0) * CLIGHT
-    if (FREQ >= FREQHE) then
+    IF (FREQ >= FREQHE) THEN
       ZEFF2 = FREQHE / RYD
       TRANS(10) = TRANS(10) + XKARZAS(FREQ, ZEFF2, 1, 0)
       FREQHE = (ELIM - 186101.0D0) * CLIGHT
-      if (FREQ >= FREQHE) then
+      IF (FREQ >= FREQHE) THEN
         ZEFF2 = FREQHE / RYD
         TRANS(9) = TRANS(9) + XKARZAS(FREQ, ZEFF2, 1, 0)
         FREQHE = (ELIM - 185564.0D0) * CLIGHT
-        if (FREQ >= FREQHE) then
+        IF (FREQ >= FREQHE) THEN
           ZEFF2 = FREQHE / RYD
           TRANS(8) = TRANS(8) + XKARZAS(FREQ, ZEFF2, 1, 0)
           FREQHE = (ELIM - 184864.0D0) * CLIGHT
-          if (FREQ >= FREQHE) then
+          IF (FREQ >= FREQHE) THEN
             ZEFF2 = FREQHE / RYD
             TRANS(7) = TRANS(7) + XKARZAS(FREQ, ZEFF2, 1, 0)
             FREQHE = (ELIM - 183236.0D0) * CLIGHT
-            if (FREQ >= FREQHE) then
+            IF (FREQ >= FREQHE) THEN
               ZEFF2 = FREQHE / RYD
               TRANS(6) = TRANS(6) + XKARZAS(FREQ, ZEFF2, 1, 0)
-            end if
-          end if
-        end if
-      end if
-    end if
-  end if
+            END IF
+          END IF
+        END IF
+      END IF
+    END IF
+  END IF
 
   !---------------------------------------------------------------------
   ! High-n levels (n=4-27): hydrogenic with Z_eff^2 = 4 - 3/n^2
   !---------------------------------------------------------------------
   TRANSN = 0.0D0
-  if (FREQ >= 1.25408D16) then
-    do N = 4, 27
+  IF (FREQ >= 1.25408D16) THEN
+    DO N = 4, 27
       ZEFF2 = 4.0D0 - 3.0D0 / dble(N)**2
       TRANSN(N) = XKARZAS(FREQ, ZEFF2, 1, 0)
-    end do
-  end if
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Assemble total opacity at each depth
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ! Dissolved-level contribution
     EX = BOLTEX(J)
-    if (FREQ < 2.055D14) EX = EXLIM(J) / EHVKT(J)
+    IF (FREQ < 2.055D14) EX = EXLIM(J) / EHVKT(J)
     HE1 = (EX - EXLIM(J)) * C
 
     ! Bound-free from resolved levels
-    if (IMIN > 0) then
-      do N = IMIN, 10
+    IF (IMIN > 0) THEN
+      DO N = IMIN, 10
         HE1 = HE1 + TRANS(N) * BOLT(J, N)
-      end do
-    end if
+      END DO
+    END IF
 
     ! High-n levels
-    if (FREQ >= 1.25408D16) then
-      do N = 4, 27
+    IF (FREQ >= 1.25408D16) THEN
+      DO N = 4, 27
         HE1 = HE1 + TRANSN(N) * BOLTN(J, N)
-      end do
-    end if
+      END DO
+    END IF
 
     ! Total: bound + free-free (all LTE source function)
     !      AHE1BOUND(J) = HE1 * STIM(J)
     !      AHE1FREE(J) = (COULFF(J,1) * FREET(J) * CFREE) * STIM(J)
     AHE1(J) = (HE1 + COULFF(J, 1) * FREET(J) * CFREE) * STIM(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE HE1OP
 
@@ -9358,11 +9239,11 @@ END SUBROUTINE HE1OP
 
 FUNCTION CROSSHE(FREQ)
 
-  implicit none
-  real*8, intent(in) :: FREQ
-  real*8 :: CROSSHE
+  IMPLICIT NONE
+  REAL(8), INTENT(IN) :: FREQ
+  REAL(8) :: CROSSHE
 
-  real*8, parameter :: X505(92) = (/ &
+  REAL(8), PARAMETER :: X505(92) = (/ &
     7.58D0, 7.46D0, 7.33D0, 7.19D0, 7.06D0, 6.94D0, 6.81D0, &
     6.68D0, 6.55D0, 6.43D0, 6.30D0, 6.18D0, 6.05D0, 5.93D0, &
     5.81D0, 5.69D0, 5.57D0, 5.45D0, 5.33D0, 5.21D0, 5.10D0, &
@@ -9378,59 +9259,59 @@ FUNCTION CROSSHE(FREQ)
     0.233D0, 0.202D0, 0.174D0, 0.147D0, 0.123D0, 0.100D0, &
     0.0795D0, 0.0609D0, 0.0443D0, 0.0315D0 /)
 
-  real*8, parameter :: X50(16) = (/ &
+  REAL(8), PARAMETER :: X50(16) = (/ &
     0.0315D0, 0.0282D0, 0.0250D0, 0.0220D0, 0.0193D0, 0.0168D0, &
     0.0145D0, 0.0124D0, 0.0105D0, 0.00885D0, 0.00736D0, &
     0.00604D0, 0.00489D0, 0.00389D0, 0.00303D0, 0.00231D0 /)
 
-  real*8, parameter :: X20(11) = (/ &
+  REAL(8), PARAMETER :: X20(11) = (/ &
     0.00231D0, 0.00199D0, 0.00171D0, 0.00145D0, 0.00122D0, &
     0.00101D0, 0.000832D0, 0.000673D0, 0.000535D0, 0.000417D0, &
     0.000318D0 /)
 
-  real*8, parameter :: X10(21) = (/ &
+  REAL(8), PARAMETER :: X10(21) = (/ &
     0.000318D0, 0.000274D0, 0.000235D0, 0.000200D0, 0.000168D0, &
     0.000139D0, 0.000115D0, 0.000093D0, 0.000074D0, 0.000057D0, &
     0.000044D0, 0.000032D0, 0.000023D0, 0.000016D0, 0.000010D0, &
     0.000006D0, 0.000003D0, 0.000001D0, 0.0000006D0, &
     0.0000003D0, 0.0D0 /)
 
-  real*8  :: WAVE
-  integer :: I
+  REAL(8)  :: WAVE
+  INTEGER :: I
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING CROSSHE'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING CROSSHE'
 
   CROSSHE = 0.0D0
-  if (FREQ < 5.945209D15) return
+  IF (FREQ < 5.945209D15) RETURN
 
   WAVE = CLIGHT_ANGS / FREQ
 
-  if (WAVE > 50.0D0) then
+  IF (WAVE > 50.0D0) THEN
     ! 50–505 Å regime (Δλ = 5 Å)
     I = int(93.0D0 - (WAVE - 50.0D0) / 5.0D0)
     I = min(92, max(2, I))
     CROSSHE = ((WAVE - (92 - I) * 5.0D0 - 50.0D0) / 5.0D0 &
              * (X505(I-1) - X505(I)) + X505(I)) * 1.D-18
-  else if (WAVE > 20.0D0) then
+  ELSE IF (WAVE > 20.0D0) THEN
     ! 20–50 Å regime (Δλ = 2 Å)
     I = int(17.0D0 - (WAVE - 20.0D0) / 2.0D0)
     I = min(16, max(2, I))
     CROSSHE = ((WAVE - (16 - I) * 2.0D0 - 20.0D0) / 2.0D0 &
              * (X50(I-1) - X50(I)) + X50(I)) * 1.D-18
-  else if (WAVE > 10.0D0) then
+  ELSE IF (WAVE > 10.0D0) THEN
     ! 10–20 Å regime (Δλ = 1 Å)
     I = int(12.0D0 - (WAVE - 10.0D0) / 1.0D0)
     I = min(11, max(2, I))
     CROSSHE = ((WAVE - (11 - I) * 1.0D0 - 10.0D0) / 1.0D0 &
              * (X20(I-1) - X20(I)) + X20(I)) * 1.D-18
-  else
+  ELSE
     ! 0–10 Å regime (Δλ = 0.5 Å)
     I = int(22.0D0 - WAVE / 0.5D0)
     I = min(21, max(2, I))
     CROSSHE = ((WAVE - (21 - I) * 0.5D0) / 0.5D0 &
              * (X10(I-1) - X10(I)) + X10(I)) * 1.D-18
-  end if
-  return
+  END IF
+  RETURN
 
 END FUNCTION CROSSHE
 
@@ -9446,14 +9327,14 @@ END FUNCTION CROSSHE
 
 FUNCTION HE111S(FREQ)
 
-  implicit none
-  real*8, intent(in) :: FREQ
-  real*8 :: HE111S
+  IMPLICIT NONE
+  REAL(8), INTENT(IN) :: FREQ
+  REAL(8) :: HE111S
 
   ! He I 1s² ¹S ground-state bound-free cross-section (after Mathisen)
   ! Linear interpolation in σ vs wavelength, 64-point table
-  integer, parameter :: NP = 64
-  real*8, parameter :: W(64) = (/ &
+  INTEGER, PARAMETER :: NP = 64
+  REAL(8), PARAMETER :: W(64) = (/ &
     504.3D0, 501.5D0, 498.7D0, 493.3D0, 488.1D0, 480.3D0, 477.8D0, &
     454.0D0, 443.0D0, 395.0D0, 356.4D0, 348.2D0, 324.6D0, 302.0D0, &
     298.1D0, 275.6D0, 260.6D0, 256.2D0, 239.4D0, 224.6D0, 220.0D0, &
@@ -9463,7 +9344,7 @@ FUNCTION HE111S(FREQ)
     105.0D0, 100.0D0, 95.0D0, 90.0D0, 85.0D0, 80.0D0, 75.0D0, &
     70.0D0, 65.0D0, 60.0D0, 55.0D0, 50.0D0, 45.0D0, 40.0D0, &
     35.0D0, 30.0D0, 25.0D0, 20.0D0, 15.0D0, 10.0D0, 5.0D0, 0.0D0 /)
-  real*8, parameter :: X(64) = (/ &
+  REAL(8), PARAMETER :: X(64) = (/ &
     7.346D0, 7.317D0, 7.259D0, 7.143D0, 7.030D0, 6.857D0, 6.800D0, &
     6.284D0, 6.041D0, 4.977D0, 4.138D0, 3.961D0, 3.474D0, 3.025D0, &
     2.945D0, 2.522D0, 2.259D0, 2.179D0, 1.901D0, 1.684D0, 1.61D0, &
@@ -9475,22 +9356,22 @@ FUNCTION HE111S(FREQ)
     0.0266D0, 0.0158D0, 0.0104D0, 0.00637D0, 0.00349D0, 0.00161D0, &
     0.00054D0, 0.000083D0, 0.0D0 /)
 
-  real*8  :: WAVE
-  integer :: I
+  REAL(8)  :: WAVE
+  INTEGER :: I
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE111S'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HE111S'
 
   HE111S = 0.0D0
-  if (FREQ < 5.945209D15) return
+  IF (FREQ < 5.945209D15) RETURN
 
   WAVE = CLIGHT_ANGS / FREQ
-  do I = 2, NP
-    if (WAVE > W(I)) exit
-  end do
-  if (I > NP) I = NP
+  DO I = 2, NP
+    IF (WAVE > W(I)) EXIT
+  END DO
+  IF (I > NP) I = NP
 
   HE111S = ((WAVE - W(I)) / (W(I-1) - W(I)) * (X(I-1) - X(I)) + X(I)) * 1.0D-18
-  return
+  RETURN
 
 END FUNCTION HE111S
 
@@ -9506,51 +9387,51 @@ END FUNCTION HE111S
 
 FUNCTION HE12S1S(FREQ)
 
-  implicit none
-  real*8, intent(in) :: FREQ
-  real*8 :: HE12S1S
+  IMPLICIT NONE
+  REAL(8), INTENT(IN) :: FREQ
+  REAL(8) :: HE12S1S
 
   ! He I 1s2s ¹S bound-free cross-section
   ! Table interpolation below 2.4 Rydberg, resonance formula above
-  integer, parameter :: NP = 16
-  real*8, parameter :: FREQ1S(16) = (/ &
+  INTEGER, PARAMETER :: NP = 16
+  REAL(8), PARAMETER :: FREQ1S(16) = (/ &
     15.947182D0, 15.913654D0, 15.877320D0, 15.837666D0, 15.794025D0, &
     15.745503D0, 15.690869D0, 15.628361D0, 15.555317D0, 15.467455D0, &
     15.357189D0, 15.289399D0, 15.251073D0, 15.209035D0, 15.162487D0, &
     14.982421D0 /)
-  real*8, parameter :: X1S(16) = (/ &
+  REAL(8), PARAMETER :: X1S(16) = (/ &
     -19.635557D0, -19.159345D0, -18.958474D0, -18.809535D0, &
     -18.676481D0, -18.546006D0, -18.410962D0, -18.264821D0, &
     -18.100205D0, -17.909165D0, -17.684370D0, -17.557867D0, &
     -17.490360D0, -17.417876D0, -17.349386D0, -17.084441D0 /)
 
-  real*8  :: FREQLG, X, EK, EPS, WAVNO
-  integer :: I
+  REAL(8)  :: FREQLG, X, EK, EPS, WAVNO
+  INTEGER :: I
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE12S1S'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HE12S1S'
 
   HE12S1S = 0.0D0
-  if (FREQ < 32033.214D0 * CLIGHT) return
+  IF (FREQ < 32033.214D0 * CLIGHT) RETURN
 
-  if (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) then
+  IF (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) THEN
     ! High-energy resonance formula
     WAVNO = FREQ / CLIGHT
     EK = (WAVNO - 32033.214D0) / RYDBERG_HE
     EPS = 2.0D0 * (EK - 2.612316D0) / 0.00322D0
     HE12S1S = 0.008175D0 * (484940.0D0 / WAVNO)**2.71D0 * 8.067D-18 &
             * (EPS + 76.21D0)**2 / (1.0D0 + EPS**2)
-  else
+  ELSE
     ! Table interpolation in log₁₀(σ) vs log₁₀(ν)
     FREQLG = log10(FREQ)
-    do I = 2, NP
-      if (FREQLG > FREQ1S(I)) exit
-    end do
-    if (I > NP) I = NP
+    DO I = 2, NP
+      IF (FREQLG > FREQ1S(I)) EXIT
+    END DO
+    IF (I > NP) I = NP
     X = (FREQLG - FREQ1S(I)) / (FREQ1S(I-1) - FREQ1S(I)) &
       * (X1S(I-1) - X1S(I)) + X1S(I)
-    HE12S1S = exp(X * 2.30258509299405D0)
-  end if
-  return
+    HE12S1S = exp(X * LN10)
+  END IF
+  RETURN
 
 END FUNCTION HE12S1S
 
@@ -9566,51 +9447,51 @@ END FUNCTION HE12S1S
 
 FUNCTION HE12S3S(FREQ)
 
-  implicit none
-  real*8, intent(in) :: FREQ
-  real*8 :: HE12S3S
+  IMPLICIT NONE
+  REAL(8), INTENT(IN) :: FREQ
+  REAL(8) :: HE12S3S
 
   ! He I 1s2s ³S bound-free cross-section
   ! Table interpolation below 2.4 Rydberg, resonance formula above
-  integer, parameter :: NP = 16
-  real*8, parameter :: FREQ3S(16) = (/ &
+  INTEGER, PARAMETER :: NP = 16
+  REAL(8), PARAMETER :: FREQ3S(16) = (/ &
     15.956523D0, 15.923736D0, 15.888271D0, 15.849649D0, 15.807255D0, &
     15.760271D0, 15.707580D0, 15.647601D0, 15.577992D0, 15.495055D0, &
     15.392451D0, 15.330345D0, 15.295609D0, 15.257851D0, 15.216496D0, &
     15.061770D0 /)
-  real*8, parameter :: X3S(16) = (/ &
+  REAL(8), PARAMETER :: X3S(16) = (/ &
     -18.426022D0, -18.610700D0, -18.593051D0, -18.543304D0, &
     -18.465513D0, -18.378707D0, -18.278574D0, -18.164329D0, &
     -18.033346D0, -17.882435D0, -17.705542D0, -17.605584D0, &
     -17.553459D0, -17.500667D0, -17.451318D0, -17.266686D0 /)
 
-  real*8  :: FREQLG, X, EK, EPS, WAVNO
-  integer :: I
+  REAL(8)  :: FREQLG, X, EK, EPS, WAVNO
+  INTEGER :: I
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE12S3S'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HE12S3S'
 
   HE12S3S = 0.0D0
-  if (FREQ < 38454.691D0 * CLIGHT) return
+  IF (FREQ < 38454.691D0 * CLIGHT) RETURN
 
-  if (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) then
+  IF (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) THEN
     ! High-energy resonance formula
     WAVNO = FREQ / CLIGHT
     EK = (WAVNO - 38454.691D0) / RYDBERG_HE
     EPS = 2.0D0 * (EK - 2.47898D0) / 0.000780D0
     HE12S3S = 0.01521D0 * (470310.0D0 / WAVNO)**3.12D0 * 8.067D-18 &
             * (EPS - 122.4D0)**2 / (1.0D0 + EPS**2)
-  else
+  ELSE
     ! Table interpolation in log₁₀(σ) vs log₁₀(ν)
     FREQLG = log10(FREQ)
-    do I = 2, NP
-      if (FREQLG > FREQ3S(I)) exit
-    end do
-    if (I > NP) I = NP
+    DO I = 2, NP
+      IF (FREQLG > FREQ3S(I)) EXIT
+    END DO
+    IF (I > NP) I = NP
     X = (FREQLG - FREQ3S(I)) / (FREQ3S(I-1) - FREQ3S(I)) &
       * (X3S(I-1) - X3S(I)) + X3S(I)
-    HE12S3S = exp(X * 2.30258509299405D0)
-  end if
-  return
+    HE12S3S = exp(X * LN10)
+  END IF
+  RETURN
 
 END FUNCTION HE12S3S
 
@@ -9626,33 +9507,33 @@ END FUNCTION HE12S3S
 
 FUNCTION HE12P1P(FREQ)
 
-  implicit none
-  real*8, intent(in) :: FREQ
-  real*8 :: HE12P1P
+  IMPLICIT NONE
+  REAL(8), INTENT(IN) :: FREQ
+  REAL(8) :: HE12P1P
 
   ! He I 1s2p ¹P bound-free cross-section
   ! Table interpolation below 2.4 Rydberg, two-resonance formula above
-  integer, parameter :: NP = 16
-  real*8, parameter :: FREQ1P(16) = (/ &
+  INTEGER, PARAMETER :: NP = 16
+  REAL(8), PARAMETER :: FREQ1P(16) = (/ &
     15.939981D0, 15.905870D0, 15.868850D0, 15.828377D0, 15.783742D0, &
     15.733988D0, 15.677787D0, 15.613218D0, 15.537343D0, 15.445346D0, &
     15.328474D0, 15.255641D0, 15.214064D0, 15.168081D0, 15.116647D0, &
     14.911002D0 /)
-  real*8, parameter :: X1P(16) = (/ &
+  REAL(8), PARAMETER :: X1P(16) = (/ &
     -18.798876D0, -19.685922D0, -20.011664D0, -20.143030D0, &
     -20.091354D0, -19.908333D0, -19.656788D0, -19.367745D0, &
     -19.043016D0, -18.674484D0, -18.240861D0, -17.989700D0, &
     -17.852015D0, -17.702677D0, -17.525347D0, -16.816344D0 /)
 
-  real*8  :: FREQLG, X, EK, EPS1S, EPS1D, WAVNO
-  integer :: I
+  REAL(8)  :: FREQLG, X, EK, EPS1S, EPS1D, WAVNO
+  INTEGER :: I
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE12P1P'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HE12P1P'
 
   HE12P1P = 0.0D0
-  if (FREQ < 27175.76D0 * CLIGHT) return
+  IF (FREQ < 27175.76D0 * CLIGHT) RETURN
 
-  if (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) then
+  IF (FREQ > 2.4D0 * RYDBERG_HE * CLIGHT) THEN
     ! High-energy: two autoionization resonances (¹S and ¹D channels)
     WAVNO = FREQ / CLIGHT
     EK = (WAVNO - 27175.76D0) / RYDBERG_HE
@@ -9661,18 +9542,18 @@ FUNCTION HE12P1P(FREQ)
     HE12P1P = 0.0009487D0 * (466750.0D0 / WAVNO)**3.69D0 * 8.067D-18 &
             * ((EPS1S - 29.30D0)**2 / (1.0D0 + EPS1S**2) &
             + (EPS1D + 172.4D0)**2 / (1.0D0 + EPS1D**2))
-  else
+  ELSE
     ! Table interpolation in log₁₀(σ) vs log₁₀(ν)
     FREQLG = log10(FREQ)
-    do I = 2, NP
-      if (FREQLG > FREQ1P(I)) exit
-    end do
-    if (I > NP) I = NP
+    DO I = 2, NP
+      IF (FREQLG > FREQ1P(I)) EXIT
+    END DO
+    IF (I > NP) I = NP
     X = (FREQLG - FREQ1P(I)) / (FREQ1P(I-1) - FREQ1P(I)) &
       * (X1P(I-1) - X1P(I)) + X1P(I)
-    HE12P1P = exp(X * 2.30258509299405D0)
-  end if
-  return
+    HE12P1P = exp(X * LN10)
+  END IF
+  RETURN
 
 END FUNCTION HE12P1P
 
@@ -9686,42 +9567,42 @@ END FUNCTION HE12P1P
 
 FUNCTION HE12P3P(FREQ)
 
-  implicit none
-  real*8, intent(in) :: FREQ
-  real*8 :: HE12P3P
+  IMPLICIT NONE
+  REAL(8), INTENT(IN) :: FREQ
+  REAL(8) :: HE12P3P
 
   ! He I 1s2p ³P bound-free cross-section
   ! Linear interpolation in log₁₀(σ) vs log₁₀(ν), 16-point table
-  integer, parameter :: NP = 16
-  real*8, parameter :: FREQ3P(16) = (/ &
+  INTEGER, PARAMETER :: NP = 16
+  REAL(8), PARAMETER :: FREQ3P(16) = (/ &
     15.943031D0, 15.909169D0, 15.872441D0, 15.832318D0, 15.788107D0, &
     15.738880D0, 15.683351D0, 15.619667D0, 15.545012D0, 15.454805D0, &
     15.340813D0, 15.270195D0, 15.230054D0, 15.185821D0, 15.136567D0, &
     14.942557D0 /)
-  real*8, parameter :: X3P(16) = (/ &
+  REAL(8), PARAMETER :: X3P(16) = (/ &
     -19.791021D0, -19.697886D0, -19.591421D0, -19.471855D0, &
     -19.337053D0, -19.183958D0, -19.009750D0, -18.807990D0, &
     -18.570571D0, -18.288361D0, -17.943476D0, -17.738737D0, &
     -17.624154D0, -17.497163D0, -17.403183D0, -17.032999D0 /)
 
-  real*8  :: FREQLG, X
-  integer :: I
+  REAL(8)  :: FREQLG, X
+  INTEGER :: I
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE12P3P'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HE12P3P'
 
   HE12P3P = 0.0D0
-  if (FREQ < 29223.753D0 * CLIGHT) return
+  IF (FREQ < 29223.753D0 * CLIGHT) RETURN
 
   FREQLG = log10(FREQ)
-  do I = 2, NP
-    if (FREQLG > FREQ3P(I)) exit
-  end do
-  if (I > NP) I = NP
+  DO I = 2, NP
+    IF (FREQLG > FREQ3P(I)) EXIT
+  END DO
+  IF (I > NP) I = NP
 
   X = (FREQLG - FREQ3P(I)) / (FREQ3P(I-1) - FREQ3P(I)) &
     * (X3P(I-1) - X3P(I)) + X3P(I)
-  HE12P3P = exp(X * 2.30258509299405D0)
-  return
+  HE12P3P = exp(X * LN10)
+  RETURN
 
 END FUNCTION HE12P3P
 
@@ -9767,17 +9648,17 @@ END FUNCTION HE12P3P
 
 SUBROUTINE HE2OP
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8  :: FREQ3, XNFPRHO
-  real*8  :: H, S, A, X
-  integer :: J
+  REAL(8)  :: FREQ3, XNFPRHO
+  REAL(8)  :: H, S, A, X
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HE2OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HE2OP'
 
   FREQ3 = 2.815D29 / FREQ / FREQ / FREQ
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
 
     ! Population factor: He II (mode-11) / rho
     XNFPRHO = XNFP(J, 4) / RHO(J)
@@ -9790,42 +9671,42 @@ SUBROUTINE HE2OP
        - EXP(-438908.85D0 * HCKT(J))) * STIM(J) * XNFPRHO
     S = H * BNU(J)
 
-    levels: do
+    levels: DO
 
       ! --- n = 9 (threshold 5418.390 cm⁻¹) : hydrogenic ---
-      if (WAVENO < 5418.390D0) exit levels
+      IF (WAVENO < 5418.390D0) EXIT levels
       X = FREQ3 / 59049.0D0 * 16.0D0
       A = X * 162.0D0 * EXP(-433490.46D0 * HCKT(J)) * STIM(J) * XNFPRHO
       H = H + A;  S = S + A * BNU(J)
 
       ! --- n = 8 (threshold 6857.660 cm⁻¹) : hydrogenic ---
-      if (WAVENO < 6857.660D0) exit levels
+      IF (WAVENO < 6857.660D0) EXIT levels
       X = FREQ3 * 16.0D0 / 32768.0D0
       A = X * 128.0D0 * EXP(-432051.19D0 * HCKT(J)) * STIM(J) * XNFPRHO
       H = H + A;  S = S + A * BNU(J)
 
       ! --- n = 7 (threshold 8956.950 cm⁻¹) : hydrogenic ---
-      if (WAVENO < 8956.950D0) exit levels
+      IF (WAVENO < 8956.950D0) EXIT levels
       X = FREQ3 * 16.0D0 / 16807.0D0
       A = X * 98.0D0 * EXP(-429951.90D0 * HCKT(J)) * STIM(J) * XNFPRHO
       H = H + A;  S = S + A * BNU(J)
 
       ! --- n = 6 (threshold 12191.437 cm⁻¹) : Gaunt-corrected, LTE ---
-      if (WAVENO < 12191.437D0) exit levels
+      IF (WAVENO < 12191.437D0) EXIT levels
       X = FREQ3 * 16.0D0 / 7776.0D0 &
         * (1.0986D0 + (-2.704D13 + 1.229D27 / FREQ) / FREQ)
       A = X * 72.0D0 * EXP(-426717.413D0 * HCKT(J)) * STIM(J) * XNFPRHO
       H = H + A;  S = S + A * BNU(J)
 
       ! --- n = 5 (threshold 17555.715 cm⁻¹) : Gaunt-corrected, LTE ---
-      if (WAVENO < 17555.715D0) exit levels
+      IF (WAVENO < 17555.715D0) EXIT levels
       X = FREQ3 * 16.0D0 / 3125.0D0 &
         * (1.102D0 + (-3.909D13 + 2.371D27 / FREQ) / FREQ)
       A = X * 50.0D0 * EXP(-421353.135D0 * HCKT(J)) * STIM(J) * XNFPRHO
       H = H + A;  S = S + A * BNU(J)
 
       ! --- n = 4 (threshold 27430.925 cm⁻¹) : Gaunt-corrected, LTE ---
-      if (WAVENO < 27430.925D0) exit levels
+      IF (WAVENO < 27430.925D0) EXIT levels
       X = FREQ3 * 16.0D0 / 1024.0D0 &
         * (1.101D0 + (-5.765D13 + 4.593D27 / FREQ) / FREQ)
       A = X * 32.0D0 * EXP(-411477.925D0 * HCKT(J)) * STIM(J) * XNFPRHO
@@ -9833,28 +9714,28 @@ SUBROUTINE HE2OP
 
       ! --- n = 3 (threshold 48766.491 cm⁻¹) : Gaunt-corrected, LTE ---
       ! Note: denominator is 243 (= 3⁵), not 343 (typo corrected in atlas7lib)
-      if (WAVENO < 48766.491D0) exit levels
+      IF (WAVENO < 48766.491D0) EXIT levels
       X = FREQ3 * 16.0D0 / 243.0D0 &
         * (1.101D0 + (-9.863D13 + 1.035D28 / FREQ) / FREQ)
       A = X * 18.0D0 * EXP(-390142.359D0 * HCKT(J)) * STIM(J) * XNFPRHO
       H = H + A;  S = S + A * BNU(J)
 
       ! --- n = 2 (threshold 109726.529 cm⁻¹) : Gaunt-corrected, LTE ---
-      if (WAVENO < 109726.529D0) exit levels
+      IF (WAVENO < 109726.529D0) EXIT levels
       X = FREQ3 * 16.0D0 / 32.0D0 &
         * (1.105D0 + (-2.375D14 + 4.077D28 / FREQ) / FREQ)
       A = X * 8.0D0 * EXP(-329182.321D0 * HCKT(J)) * STIM(J) * XNFPRHO
       H = H + A;  S = S + A * BNU(J)
 
       ! --- n = 1 (threshold 438908.850 cm⁻¹) : Gaunt-corrected, LTE ---
-      if (WAVENO < 438908.850D0) exit levels
+      IF (WAVENO < 438908.850D0) EXIT levels
       X = FREQ3 * 16.0D0 / 1.0D0 &
         * (0.9916D0 + (2.719D13 - 2.268D30 / FREQ) / FREQ)
       A = X * 2.0D0 * STIM(J) * XNFPRHO
       H = H + A;  S = S + A * BNU(J)
 
-      exit levels
-    end do levels
+      EXIT levels
+    END DO levels
 
     ! --- Free-free (bremsstrahlung, Z²=4) ---
     A = COEFF_FF * 4.0D0 / SQRT(T(J)) * COULFF(J, 2) / FREQ * XNE(J) &
@@ -9864,11 +9745,11 @@ SUBROUTINE HE2OP
 
     AHE2(J) = H
     SHE2(J) = BNU(J)
-    if (H > 0.0D0) SHE2(J) = S / H
+    IF (H > 0.0D0) SHE2(J) = S / H
 
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE HE2OP
 
@@ -9878,19 +9759,19 @@ END SUBROUTINE HE2OP
 
 SUBROUTINE HEMIOP
 
-  implicit none
-  real*8  :: A, B, C
-  integer :: J
+  IMPLICIT NONE
+  REAL(8)  :: A, B, C
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HEMIOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HEMIOP'
   ! He⁻ free-free opacity: polynomial fit in 1/freq and T
   A = 3.397D-46 + (-5.216D-31 + 7.039D-15 / FREQ) / FREQ
   B = -4.116D-42 + (1.067D-26 + 8.135D-11 / FREQ) / FREQ
   C = 5.081D-37 + (-8.724D-23 - 5.659D-8 / FREQ) / FREQ
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AHEMIN(J) = (A * T(J) + B + C / T(J)) * XNE(J) * XNFP(J, 3) / RHO(J)
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE HEMIOP
 
@@ -9978,11 +9859,11 @@ END SUBROUTINE HEMIOP
 !=======================================================================
 
 SUBROUTINE HERAOP
-  implicit none
-  real*8  :: W, WW, SIG
-  integer :: J
+  IMPLICIT NONE
+  REAL(8)  :: W, WW, SIG
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HERAOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HERAOP'
 
   ! Wavelength in Å, capped just redward of the He I 584 Å resonance
   ! to prevent the dispersion denominator from going singular.
@@ -9997,10 +9878,10 @@ SUBROUTINE HERAOP
 
   ! Apply to each depth point using neutral He number density
   ! (XNFP(J,3) is N(He I)); /RHO converts to mass opacity [cm²/g].
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     SIGHE(J) = SIG * XNFP(J, 3) / RHO(J)
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE HERAOP
 
@@ -10010,25 +9891,25 @@ END SUBROUTINE HERAOP
 
 SUBROUTINE COOLOP
 
-  implicit none
-  integer :: J
-  real*8  :: AH2COLL(kw)
+  IMPLICIT NONE
+  INTEGER :: J
+  REAL(8)  :: AH2COLL(kw)
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING COOLOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING COOLOP'
   ! Cool-star opacities: only contribute below Lyman limit
-  if (FREQ > FREQ_RYDH) return
-  call C1OP
-  call MG1OP
-  call AL1OP
-  call SI1OP
-  call FE1OP
-  call H2COLLOP(AH2COLL)
-  do J = 1, NRHOX
+  IF (FREQ > FREQ_RYDH) RETURN
+  CALL C1OP
+  CALL MG1OP
+  CALL AL1OP
+  CALL SI1OP
+  CALL FE1OP
+  CALL H2COLLOP(AH2COLL)
+  DO J = 1, NRHOX
     ACOOL(J) = AC1(J) + AMG1(J) + AAL1(J) + ASI1(J) + AFE1(J) &
              + (CHOP(J) * XNFP(J, 846) + OHOP(J) * XNFP(J, 848)) &
              * STIM(J) / RHO(J) + AH2COLL(J)
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE COOLOP
 
@@ -10070,62 +9951,62 @@ END SUBROUTINE COOLOP
 
 SUBROUTINE C1OP
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8, parameter :: RYD = 109732.298D0
+  REAL(8), PARAMETER :: RYD = 109732.298D0
 
-  real*8  :: H, S, A, B, X, EPS
-  integer :: J
+  REAL(8)  :: H, S, A, B, X, EPS
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING C1OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING C1OP'
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     H = 1.0D-30
     S = 0.0D0
 
-    levels: do
+    levels: DO
 
       ! --- Level 13: 3p 1S (E=73975.91, g=1, threshold 16886.790) X=0 ---
-      if (WAVENO < 16886.790D0) exit levels
+      IF (WAVENO < 16886.790D0) EXIT levels
 
       ! --- Level 12: 3p 1D (E=72610.72, g=5, threshold 18251.980) X=0 ---
-      if (WAVENO < 18251.980D0) exit levels
+      IF (WAVENO < 18251.980D0) EXIT levels
 
       ! --- Level 11: 3p 3P (E=71374.90, g=9, threshold 19487.800) X=0 ---
-      if (WAVENO < 19487.800D0) exit levels
+      IF (WAVENO < 19487.800D0) EXIT levels
 
       ! --- Level 10: 3p 3S (E=70743.95, g=3, threshold 20118.750) X=0 ---
-      if (WAVENO < 20118.750D0) exit levels
+      IF (WAVENO < 20118.750D0) EXIT levels
 
       ! --- Level 9: 3p 3D (E=69722.00, g=15, threshold 21140.700) X=0 ---
-      if (WAVENO < 21140.700D0) exit levels
+      IF (WAVENO < 21140.700D0) EXIT levels
 
       ! --- Level 8: 3p 1P (E=68856.33, g=3, threshold 22006.370) ---
-      if (WAVENO < 22006.370D0) exit levels
+      IF (WAVENO < 22006.370D0) EXIT levels
       X = 2.1D-18 * (22006.370D0 / WAVENO)**1.5D0
       A = X * 3.0D0 * EXP(-68856.33D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! --- Level 6: 3s 1P (E=61981.82, g=3, threshold 28880.880) ---
-      if (WAVENO < 28880.880D0) exit levels
+      IF (WAVENO < 28880.880D0) EXIT levels
       X = 1.54D-18 * (28880.880D0 / WAVENO)**1.2D0
       A = X * 3.0D0 * EXP(-61981.82D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! --- Level 5: 3s 3P (E=60373.00, g=9, threshold 30489.700) ---
-      if (WAVENO < 30489.700D0) exit levels
+      IF (WAVENO < 30489.700D0) EXIT levels
       X = 0.2D-18 * (30489.700D0 / WAVENO)**1.2D0
       A = X * 9.0D0 * EXP(-60373.00D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! --- Level 14: 2s2p3 3P (E=75254.93, g=9, threshold 58601.270) X=0 ---
       !     Ionizes to 4P limit at 133856.20 cm-1
-      if (WAVENO < 58601.270D0) exit levels
+      IF (WAVENO < 58601.270D0) EXIT levels
 
       ! --- Level 3: 2p2 1S (E=21648.02, g=1) ---
       !     Ionizes to 2P_0.5 at 90820.42 -> threshold 69172.400
       !     Luo & Pradhan background + Burke & Taylor Fano resonance
-      if (WAVENO < 69172.400D0) exit levels
+      IF (WAVENO < 69172.400D0) EXIT levels
       X = 10.0D0**(-16.80D0 - (WAVENO - 69172.400D0) / 3.0D0 / RYD)
       EPS = (WAVENO - 97700.0D0) * 2.0D0 / 2743.0D0
       A = 68.0D-18;  B = 118.0D-18
@@ -10135,13 +10016,13 @@ SUBROUTINE C1OP
       H = H + A;  S = S + A * BNU(J)
 
       !     Also ionizes to 2P_1.5 at 90883.84 -> threshold 69235.820
-      if (WAVENO < 69235.820D0) exit levels
+      IF (WAVENO < 69235.820D0) EXIT levels
       A = A * 2.0D0
       H = H + A;  S = S + A * BNU(J)
 
       ! --- Level 7: 2s2p3 3D (E=64088.85, g=15, threshold 69767.350) ---
       !     Ionizes to 4P limit at 133856.20
-      if (WAVENO < 69767.350D0) exit levels
+      IF (WAVENO < 69767.350D0) EXIT levels
       X = 16.0D-18 * (69767.350D0 / WAVENO)**3
       A = X * 15.0D0 * EXP(-64088.85D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
@@ -10149,7 +10030,7 @@ SUBROUTINE C1OP
       ! --- Level 2: 2p2 1D (E=10192.66, g=5) ---
       !     Ionizes to 2P_0.5 at 90820.42 -> threshold 80627.760
       !     Luo & Pradhan background + two Burke & Taylor Fano resonances
-      if (WAVENO < 80627.760D0) exit levels
+      IF (WAVENO < 80627.760D0) EXIT levels
       X = 10.0D0**(-16.80D0 - (WAVENO - 80627.760D0) / 3.0D0 / RYD)
       EPS = (WAVENO - 93917.0D0) * 2.0D0 / 9230.0D0
       A = 22.0D-18;  B = 26.0D-18
@@ -10162,66 +10043,66 @@ SUBROUTINE C1OP
       H = H + A;  S = S + A * BNU(J)
 
       !     Also ionizes to 2P_1.5 -> threshold 80691.180
-      if (WAVENO < 80691.180D0) exit levels
+      IF (WAVENO < 80691.180D0) EXIT levels
       A = A * 2.0D0
       H = H + A;  S = S + A * BNU(J)
 
       ! --- Level 1: 2p2 3P (ground term, 3 fine-structure components) ---
       !     Ionizes to 2P_0.5 at 90820.42
       !     3P_2 (E=43.42, g=5) -> threshold 90777.000
-      if (WAVENO < 90777.000D0) exit levels
+      IF (WAVENO < 90777.000D0) EXIT levels
       X = 10.0D0**(-16.80D0 - (WAVENO - 90777.000D0) / 3.0D0 / RYD)
       X = X / 3.0D0
       A = X * 5.0D0 * EXP(-43.42D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       !     3P_1 (E=16.42, g=3) -> threshold 90804.000
-      if (WAVENO < 90804.000D0) exit levels
+      IF (WAVENO < 90804.000D0) EXIT levels
       A = X * 3.0D0 * EXP(-16.42D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       !     3P_0 (E=0.00, g=1) -> threshold 90820.420
-      if (WAVENO < 90820.420D0) exit levels
+      IF (WAVENO < 90820.420D0) EXIT levels
       A = X * 1.0D0 * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       !     Ionizes to 2P_1.5 at 90883.84 (cross-section x 2)
       !     3P_2 -> threshold 90840.420
-      if (WAVENO < 90840.420D0) exit levels
+      IF (WAVENO < 90840.420D0) EXIT levels
       X = X * 2.0D0
       A = X * 5.0D0 * EXP(-43.42D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       !     3P_1 -> threshold 90867.420
-      if (WAVENO < 90867.420D0) exit levels
+      IF (WAVENO < 90867.420D0) EXIT levels
       A = X * 3.0D0 * EXP(-16.42D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       !     3P_0 -> threshold 90883.840
-      if (WAVENO < 90883.840D0) exit levels
+      IF (WAVENO < 90883.840D0) EXIT levels
       A = X * 1.0D0 * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! --- Level 4: 2s2p3 5S (E=33735.20, g=5, threshold 100121.000) ---
       !     Ionizes to 4P limit at 133856.20
-      if (WAVENO < 100121.000D0) exit levels
+      IF (WAVENO < 100121.000D0) EXIT levels
       X = 1.0D-18 * (100121.000D0 / WAVENO)**3
       A = X * 5.0D0 * EXP(-33735.20D0 * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
-      exit levels
-    end do levels
+      EXIT levels
+    END DO levels
 
     ! Scale by C I population / rho
     H = H * XNFP(J, 21) / RHO(J)
     S = S * XNFP(J, 21) / RHO(J)
 
     AC1(J) = H
-    if (H > 0.0D0) SC1(J) = S / H
+    IF (H > 0.0D0) SC1(J) = S / H
 
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE C1OP
 
@@ -10231,16 +10112,16 @@ END SUBROUTINE C1OP
 
 FUNCTION SEATON(FREQ0, XSECT, POWER, A)
 
-  implicit none
-  real*8, intent(in) :: FREQ0, XSECT, POWER, A
-  real*8 :: SEATON
+  IMPLICIT NONE
+  REAL(8), INTENT(IN) :: FREQ0, XSECT, POWER, A
+  REAL(8) :: SEATON
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING SEATON'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING SEATON'
   ! Seaton (1958) photoionization cross-section formula:
   ! sigma(nu) = sigma_0 * [A + (1-A)*(nu_0/nu)] * (nu_0/nu)^POWER
   SEATON = XSECT * (A + (1.0D0 - A) * (FREQ0 / FREQ)) &
          * sqrt((FREQ0 / FREQ)**int(2.0D0 * POWER + 0.01D0))
-  return
+  RETURN
 
 END FUNCTION SEATON
 
@@ -10276,9 +10157,9 @@ END FUNCTION SEATON
 
 SUBROUTINE MG1OP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NLEV = 15
+  INTEGER, PARAMETER :: NLEV = 15
 
   ! --- Atomic data: energy levels (cm⁻¹) and statistical weights ---
   !
@@ -10297,131 +10178,131 @@ SUBROUTINE MG1OP
   !   (NIST 3s4s ³S₁); power-law threshold 20473.617 = ELIM - 41197.403
   ! NOTE: ELEV(12)=21919.178 may be a typo for 21911.178
   !   (original comment says 21911.178; power-law threshold 39759.842 = ELIM - 21911.178)
-  real*8, parameter :: ELEV(NLEV) = (/ &
+  REAL(8), PARAMETER :: ELEV(NLEV) = (/ &
     54676.710D0, 54676.438D0, 54192.284D0, 53134.642D0, 49346.729D0, &
     47957.034D0, 47847.797D0, 46403.065D0, 43503.333D0, 41197.043D0, &  
                                                                         
     35051.264D0, 21919.178D0, 21870.464D0, 21850.405D0,     0.000D0 /)
 
-  real*8, parameter :: GLEV(NLEV) = (/ &
+  REAL(8), PARAMETER :: GLEV(NLEV) = (/ &
     21.D0, 7.D0, 15.D0, 5.D0, 3.D0, 15.D0, 9.D0, 5.D0, &
      1.D0, 3.D0,  3.D0, 5.D0, 3.D0,  1.D0, 1.D0 /)
 
   ! Quantum numbers (n,l) for XKARZAS — only levels 1–5 are hydrogenic
-  integer, parameter :: NQ(5) = (/ 4, 4, 4, 4, 4 /)
-  integer, parameter :: LQ(5) = (/ 3, 3, 2, 2, 1 /)
+  INTEGER, PARAMETER :: NQ(5) = (/ 4, 4, 4, 4, 4 /)
+  INTEGER, PARAMETER :: LQ(5) = (/ 3, 3, 2, 2, 1 /)
 
   ! Ionization limit (cm⁻¹): Mg II 3s ²S
-  real*8, parameter :: ELIM = 61671.02D0
-  real*8, parameter :: RYD  = 109732.298D0
+  REAL(8), PARAMETER :: ELIM = 61671.02D0
+  REAL(8), PARAMETER :: RYD  = 109732.298D0
 
   ! Threshold wavenumbers for power-law fits (ELIM - ELEV)
-  real*8, parameter :: THR6  = 13713.986D0   ! 3s3d ³D
-  real*8, parameter :: THR7  = 13823.223D0   ! 3s4p ³P
-  real*8, parameter :: THR8  = 15267.955D0   ! 3s3d ¹D
-  real*8, parameter :: THR9  = 18167.687D0   ! 3s4s ¹S
-  real*8, parameter :: THR10 = 20473.617D0   ! 3s4s ³S
-  real*8, parameter :: THR11 = 26619.756D0   ! 3s3p ¹P
-  real*8, parameter :: THR12 = 39759.842D0   ! 3s3p ³P
+  REAL(8), PARAMETER :: THR6  = 13713.986D0   ! 3s3d ³D
+  REAL(8), PARAMETER :: THR7  = 13823.223D0   ! 3s4p ³P
+  REAL(8), PARAMETER :: THR8  = 15267.955D0   ! 3s3d ¹D
+  REAL(8), PARAMETER :: THR9  = 18167.687D0   ! 3s4s ¹S
+  REAL(8), PARAMETER :: THR10 = 20473.617D0   ! 3s4s ³S
+  REAL(8), PARAMETER :: THR11 = 26619.756D0   ! 3s3p ¹P
+  REAL(8), PARAMETER :: THR12 = 39759.842D0   ! 3s3p ³P
 
   ! --- Persistent state ---
-  real*8,  save :: BOLT(NLEV, kw)
-  integer, save :: ITEMP1 = 0
+  REAL(8),  SAVE :: BOLT(NLEV, kw)
+  INTEGER, SAVE :: ITEMP1 = 0
 
   ! --- Local variables ---
-  real*8  :: X(NLEV)
-  real*8  :: ZEFF2, FREQ3, H, RATIO
-  integer :: I, J, K
+  REAL(8)  :: X(NLEV)
+  REAL(8)  :: ZEFF2, FREQ3, H, RATIO
+  INTEGER :: I, J, K
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING MG1OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING MG1OP'
 
   !---------------------------------------------------------------------
   ! Recompute Boltzmann factors when temperature structure changes
   !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do K = 1, NRHOX
-      do I = 1, NLEV
+    DO K = 1, NRHOX
+      DO I = 1, NLEV
         BOLT(I, K) = GLEV(I) * exp(-ELEV(I) * HCKT(K))
-      end do
-    end do
-  end if
+      END DO
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Compute cross-sections at the current frequency
   !---------------------------------------------------------------------
   X(:) = 0.0D0
 
-  levels: do
+  levels: DO
 
     ! Levels 1–5: hydrogenic (XKARZAS)
-    do I = 1, 5
-      if (WAVENO < ELIM - ELEV(I)) exit levels
+    DO I = 1, 5
+      IF (WAVENO < ELIM - ELEV(I)) EXIT levels
       ZEFF2 = 16.0D0 / RYD * (ELIM - ELEV(I))
       X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
-    end do
+    END DO
 
     ! Level 6: 3s3d ³D — power-law fit
-    if (WAVENO < ELIM - ELEV(6)) exit levels
+    IF (WAVENO < ELIM - ELEV(6)) EXIT levels
     X(6) = 25.0D-18 * (THR6 / WAVENO)**2.7D0
 
     ! Level 7: 3s4p ³P — power-law fit
-    if (WAVENO < ELIM - ELEV(7)) exit levels
+    IF (WAVENO < ELIM - ELEV(7)) EXIT levels
     X(7) = 33.8D-18 * (THR7 / WAVENO)**2.8D0
 
     ! Level 8: 3s3d ¹D — power-law fit
-    if (WAVENO < ELIM - ELEV(8)) exit levels
+    IF (WAVENO < ELIM - ELEV(8)) EXIT levels
     X(8) = 45.0D-18 * (THR8 / WAVENO)**2.7D0
 
     ! Level 9: 3s4s ¹S — power-law fit
-    if (WAVENO < ELIM - ELEV(9)) exit levels
+    IF (WAVENO < ELIM - ELEV(9)) EXIT levels
     X(9) = 0.43D-18 * (THR9 / WAVENO)**2.6D0
 
     ! Level 10: 3s4s ³S — power-law fit
-    if (WAVENO < ELIM - ELEV(10)) exit levels
+    IF (WAVENO < ELIM - ELEV(10)) EXIT levels
     X(10) = 2.1D-18 * (THR10 / WAVENO)**2.6D0
 
     ! Level 11: 3s3p ¹P — two-term power-law
-    if (WAVENO < ELIM - ELEV(11)) exit levels
+    IF (WAVENO < ELIM - ELEV(11)) EXIT levels
     RATIO = THR11 / WAVENO
     X(11) = 16.0D-18 * RATIO**2.1D0 - 7.8D-18 * RATIO**9.5D0
 
     ! Levels 12–14: 3s3p ³P₂,₁,₀ — power-law with floor
-    do I = 12, 14
-      if (WAVENO < ELIM - ELEV(I)) exit levels
+    DO I = 12, 14
+      IF (WAVENO < ELIM - ELEV(I)) EXIT levels
       RATIO = THR12 / WAVENO
       X(I) = max(20.0D-18 * RATIO**2.7D0, 40.0D-18 * RATIO**14.0D0)
-    end do
+    END DO
 
     ! Level 15: 3s² ¹S ground state — steep power-law
     ! (Castelli index correction 25 Sep 2002: test on level 15, not 13)
-    if (WAVENO < ELIM - ELEV(15)) exit levels
+    IF (WAVENO < ELIM - ELEV(15)) EXIT levels
     X(15) = 1.1D-18 * ((ELIM - ELEV(15)) / WAVENO)**10.0D0
 
-    exit levels
-  end do levels
+    EXIT levels
+  END DO levels
 
   !---------------------------------------------------------------------
   ! Assemble opacity over depth: levels + dissolved high-n contribution
   !---------------------------------------------------------------------
   FREQ3 = 2.815D29 / (FREQ * FREQ * FREQ)
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ! High-n dissolved levels (n >= 5 to infinity), GFACTOR = 2
     H = FREQ3 * 2.0D0 * 2.0D0 / 2.0D0 / (RYD * HCKT(J)) &
       * (exp(-max(ELIM - RYD / 25.0D0, ELIM - WAVENO) * HCKT(J)) &
        - exp(-ELIM * HCKT(J)))
 
-    do I = 1, NLEV
+    DO I = 1, NLEV
       H = H + X(I) * BOLT(I, J)
-    end do
+    END DO
 
     AMG1(J) = H * XNFP(J, 78) * STIM(J) / RHO(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE MG1OP
 
@@ -10454,100 +10335,100 @@ END SUBROUTINE MG1OP
 
 SUBROUTINE AL1OP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NLEV = 10
+  INTEGER, PARAMETER :: NLEV = 10
 
   ! Threshold wavenumbers (cm⁻¹) for each level
-  real*8, parameter :: THR(NLEV) = (/ &
+  REAL(8), PARAMETER :: THR(NLEV) = (/ &
      6958.993D0,  8002.467D0,  9346.231D0, 10588.957D0, 15318.007D0, &
     15842.129D0, 22930.614D0, 48166.309D0, 48278.370D0, 55903.260D0 /)
 
   ! Level energies (cm⁻¹)
-  real*8, parameter :: ELEV(NLEV) = (/ &
+  REAL(8), PARAMETER :: ELEV(NLEV) = (/ &
     41319.377D0, 40275.903D0, 38932.139D0, 37689.413D0, 32960.363D0, &
     32436.241D0, 25347.756D0,   112.061D0,     0.000D0, 29097.110D0 /)
 
   ! Statistical weights
-  real*8, parameter :: GLEV(NLEV) = (/ &
+  REAL(8), PARAMETER :: GLEV(NLEV) = (/ &
     14.0D0,  6.0D0, 10.0D0,  2.0D0,  6.0D0, &
     10.0D0,  2.0D0,  4.0D0,  2.0D0, 12.0D0 /)
 
-  real*8  :: H, S, A, X
-  integer :: J
+  REAL(8)  :: H, S, A, X
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING AL1OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING AL1OP'
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     H = 1.0D-30
     S = 0.0D0
 
-    levels: do
+    levels: DO
       ! Level 1: 4f ²F (X=0, no contribution — retained for fidelity)
-      if (WAVENO < THR(1)) exit levels
+      IF (WAVENO < THR(1)) EXIT levels
       ! X = 0, so A = 0, skip
 
       ! Level 2: 5p ²P
-      if (WAVENO < THR(2)) exit levels
+      IF (WAVENO < THR(2)) EXIT levels
       X = 50.0D-18 * (THR(2) / WAVENO)**3
       A = X * GLEV(2) * EXP(-ELEV(2) * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! Level 3: 4d ²D
-      if (WAVENO < THR(3)) exit levels
+      IF (WAVENO < THR(3)) EXIT levels
       X = 50.0D-18 * (THR(3) / WAVENO)**3
       A = X * GLEV(3) * EXP(-ELEV(3) * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! Level 4: 5s ²S
-      if (WAVENO < THR(4)) exit levels
+      IF (WAVENO < THR(4)) EXIT levels
       X = 56.7D-18 * (THR(4) / WAVENO)**1.9D0
       A = X * GLEV(4) * EXP(-ELEV(4) * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! Level 5: 4p ²P
-      if (WAVENO < THR(5)) exit levels
+      IF (WAVENO < THR(5)) EXIT levels
       X = 14.5D-18 * THR(5) / WAVENO
       A = X * GLEV(5) * EXP(-ELEV(5) * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! Level 6: 3d ²D
-      if (WAVENO < THR(6)) exit levels
+      IF (WAVENO < THR(6)) EXIT levels
       X = 47.0D-18 * (THR(6) / WAVENO)**1.83D0
       A = X * GLEV(6) * EXP(-ELEV(6) * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! Level 7: 4s ²S
-      if (WAVENO < THR(7)) exit levels
+      IF (WAVENO < THR(7)) EXIT levels
       X = 10.0D-18 * (THR(7) / WAVENO)**2
       A = X * GLEV(7) * EXP(-ELEV(7) * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! Level 8: 3p ²P₃/₂ (ground fine-structure)
-      if (WAVENO < THR(8)) exit levels
+      IF (WAVENO < THR(8)) EXIT levels
       X = 65.0D-18 * (THR(8) / WAVENO)**5
       A = X * GLEV(8) * EXP(-ELEV(8) * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! Level 9: 3p ²P₁/₂ (ground state) — same cross-section formula
-      if (WAVENO < THR(9)) exit levels
+      IF (WAVENO < THR(9)) EXIT levels
       A = X * GLEV(9) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
       ! Level 10: P2 ⁴P (inner-shell)
-      if (WAVENO < THR(10)) exit levels
+      IF (WAVENO < THR(10)) EXIT levels
       X = 10.0D-18 * (THR(10) / WAVENO)**2
       A = X * GLEV(10) * EXP(-ELEV(10) * HCKT(J)) * STIM(J)
       H = H + A;  S = S + A * BNU(J)
 
-      exit levels
-    end do levels
+      EXIT levels
+    END DO levels
 
-    if (H > 0.0D0) SAL1(J) = S / H
+    IF (H > 0.0D0) SAL1(J) = S / H
     AAL1(J) = H * XNFP(J, 91) / RHO(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE AL1OP
 
@@ -10584,12 +10465,12 @@ END SUBROUTINE AL1OP
 
 SUBROUTINE SI1OP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NLEV = 33
+  INTEGER, PARAMETER :: NLEV = 33
 
   ! Energy levels (cm⁻¹) and statistical weights for 33 Si I states
-  real*8, parameter :: ELEV(33) = (/ &
+  REAL(8), PARAMETER :: ELEV(33) = (/ &
     59962.284D0, 59100.000D0, 59077.112D0, 58893.40D0, 58801.529D0, &  ! 4d³P, 4f, 4d³D, 4d¹F, 4d¹P
     58777.000D0, 57488.974D0, 56503.346D0, 54225.621D0, 53387.34D0, &  ! 4f, 4d³F, 4d¹D, 3d³D, 3d¹P
     53362.24D0,  51612.012D0, 50533.424D0, 50189.389D0, 49965.894D0, & ! 3d¹F, 4p¹S, 3d³P, 4p¹D, 3d³F
@@ -10598,7 +10479,7 @@ SUBROUTINE SI1OP
     77.115D0,        0.000D0, 94000.000D0, 79664.000D0, 72000.000D0, & ! ³P₁, ³P₀, 3s3p³¹P, ³S, ¹D
     56698.738D0, 45303.310D0, 33326.053D0 /)                           ! ³P, ³D, ⁵S
 
-  real*8, parameter :: GLEV(33) = (/ &
+  REAL(8), PARAMETER :: GLEV(33) = (/ &
     9.D0, 56.D0, 15.D0, 7.D0, 3.D0, 28.D0, 21.D0, 5.D0, 15.D0, &
     3.D0, 7.D0, 1.D0, 9.D0, 5.D0, 21.D0, 3.D0, 9.D0, 15.D0, &
     5.D0, 3.D0, 3.D0, 9.D0, 1.D0, 5.D0, 5.D0, 3.D0, 1.D0, &
@@ -10606,47 +10487,47 @@ SUBROUTINE SI1OP
 
   ! L quantum numbers for XKARZAS calls (levels 1-22)
   ! d-orbital → l=2, f-orbital → l=3, p-orbital → l=1, s-orbital → l=0
-  integer, parameter :: LQNUM(22) = (/ &
+  INTEGER, PARAMETER :: LQNUM(22) = (/ &
     2, 3, 2, 2, 2, 3, 2, 2,  &  ! levels 1-8 (n=4 shell)
     2, 2, 2, 1, 2, 1, 2, 1,  &  ! levels 9-16 (n=3d and n=4p)
     1, 1, 2, 1, 0, 0 /)          ! levels 17-22 (n=4p, 3d, 4s)
 
   ! Principal quantum numbers for XKARZAS calls (levels 1-22)
-  integer, parameter :: NQNUM(22) = (/ &
+  INTEGER, PARAMETER :: NQNUM(22) = (/ &
     4, 4, 4, 4, 4, 4, 4, 4,  &  ! levels 1-8
     3, 3, 3, 4, 3, 4, 3, 4,  &  ! levels 9-16
     4, 4, 3, 4, 4, 4 /)          ! levels 17-22
 
   ! Z_eff² prefactor: n²/RYD for each level (levels 1-22)
   ! n=3 levels use 9/RYD, n=4 levels use 16/RYD
-  real*8, parameter :: RYD = 109732.298D0
+  REAL(8), PARAMETER :: RYD = 109732.298D0
 
-  real*8, save :: BOLT(NLEV, kw)
-  integer, save :: ITEMP1 = 0
+  REAL(8), SAVE :: BOLT(NLEV, kw)
+  INTEGER, SAVE :: ITEMP1 = 0
 
-  real*8  :: X(NLEV), FREQ3, ZEFF2, EPS, RESON1
-  real*8  :: H, GFACTOR, DEGEN, Z, ELIM_BLK
-  integer :: I, J, K
+  REAL(8)  :: X(NLEV), FREQ3, ZEFF2, EPS, RESON1
+  REAL(8)  :: H, GFACTOR, DEGEN, Z, ELIM_BLK
+  INTEGER :: I, J, K
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING SI1OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING SI1OP'
 
   ! Recompute Boltzmann factors when temperature changes
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do K = 1, NRHOX
-      do I = 1, NLEV
+    DO K = 1, NRHOX
+      DO I = 1, NLEV
         BOLT(I, K) = GLEV(I) * exp(-ELEV(I) * HCKT(K))
-      end do
-    end do
-  end if
+      END DO
+    END DO
+  END IF
 
   Z = 1.0D0
   FREQ3 = 2.815D29 / FREQ / FREQ / FREQ * Z**4
   WAVENO = FREQ / CLIGHT
 
-  do I = 1, NLEV
+  DO I = 1, NLEV
     X(I) = 0.0D0
-  end do
+  END DO
 
   ! =====================================================================
   ! Block 1: Excited states → Si II 3s² 3p ²P average (levels 1-22)
@@ -10654,11 +10535,11 @@ SUBROUTINE SI1OP
   ! =====================================================================
   ELIM_BLK = 65939.18D0
 
-  do I = 1, 22
-    if (WAVENO < ELIM_BLK - ELEV(I)) exit
+  DO I = 1, 22
+    IF (WAVENO < ELIM_BLK - ELEV(I)) EXIT
     ZEFF2 = dble(NQNUM(I))**2 / RYD * (ELIM_BLK - ELEV(I))
     X(I) = XKARZAS(FREQ, ZEFF2, NQNUM(I), LQNUM(I))
-  end do
+  END DO
 
   ! =====================================================================
   ! Block 2: Low-lying 3p² states → Si II 3s² 3p ²P₁/₂ (levels 23-27)
@@ -10668,7 +10549,7 @@ SUBROUTINE SI1OP
   ELIM_BLK = 65747.55D0
 
   !  3s² 3p² ¹S (level 23)
-  if (WAVENO >= ELIM_BLK - ELEV(23)) then
+  IF (WAVENO >= ELIM_BLK - ELEV(23)) THEN
     EPS = (WAVENO - 70000.0D0) * 2.0D0 / 6500.0D0
     ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
     RESON1 = (97.D-18 * EPS + 94.D-18) / (EPS**2 + 1.0D0)
@@ -10678,7 +10559,7 @@ SUBROUTINE SI1OP
 !     X(23)=46.E-18*(50353.180/WAVENO)**.5/3.
 
     !  3s² 3p² ¹D (level 24)
-    if (WAVENO >= ELIM_BLK - ELEV(24)) then
+    IF (WAVENO >= ELIM_BLK - ELEV(24)) THEN
       ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
 !     IF(WAVENO.LT.59448.700)GO TO 30
       EPS = (WAVENO - 78600.0D0) * 2.0D0 / 13000.0D0
@@ -10691,7 +10572,7 @@ SUBROUTINE SI1OP
 !     X(24)=35.E-18*(59448.700/WAVENO)**3/3.
 
       !  3s² 3p² ³P₂ (level 25)
-      if (WAVENO >= ELIM_BLK - ELEV(25)) then
+      IF (WAVENO >= ELIM_BLK - ELEV(25)) THEN
         ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
 !     RESON1=0.
 !     RESON2=0.
@@ -10708,16 +10589,16 @@ SUBROUTINE SI1OP
 !     EPS=(WAVENO-103600.)*2./150.
 !     RESON3=20.E-18*EPS/(EPS**2+1.)
 !     ENDIF
-        if (WAVENO <= 74000.0D0) then
+        IF (WAVENO <= 74000.0D0) THEN
           X(25) = 72.D-18 * (65524.393D0 / WAVENO)**1.90D0 / 3.0D0
-        else
+        ELSE
           X(25) = 93.D-18 * (65524.393D0 / WAVENO)**4.00D0 / 3.0D0
-        end if
+        END IF
 !     X(25)=X(25)+(RESON1+RESON2+RESON3)/3.
 !     X(25)=37.E-18*MIN(1.D0,(74000./WAVENO)**5)/3.
 
         !  3s² 3p² ³P₁ (level 26)
-        if (WAVENO >= ELIM_BLK - ELEV(26)) then
+        IF (WAVENO >= ELIM_BLK - ELEV(26)) THEN
           ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
 !     RESON1=0.
 !     RESON2=0.
@@ -10734,16 +10615,16 @@ SUBROUTINE SI1OP
 !     EPS=(WAVENO-103600.)*2./150.
 !     RESON3=20.E-18*EPS/(EPS**2+1.)
 !     ENDIF
-          if (WAVENO <= 74000.0D0) then
+          IF (WAVENO <= 74000.0D0) THEN
             X(26) = 72.D-18 * (65524.393D0 / WAVENO)**1.90D0 * 2.0D0 / 3.0D0
-          else
+          ELSE
             X(26) = 93.D-18 * (65524.393D0 / WAVENO)**4.00D0 * 2.0D0 / 3.0D0
-          end if
+          END IF
 !     X(26)=X(26)+(RESON1+RESON2+RESON3)*2./3.
 !     X(26)=37.E-18*MIN(1.D0,(74000./WAVENO)**5)*2./3.
 
           !  3s² 3p² ³P₀ (level 27)
-          if (WAVENO >= ELIM_BLK - ELEV(27)) then
+          IF (WAVENO >= ELIM_BLK - ELEV(27)) THEN
             ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
 !     RESON1=0.
 !     RESON2=0.
@@ -10760,18 +10641,18 @@ SUBROUTINE SI1OP
 !     EPS=(WAVENO-103600.)*2./150.
 !     RESON3=20.E-18*EPS/(EPS**2+1.)
 !     ENDIF
-            if (WAVENO <= 74000.0D0) then
+            IF (WAVENO <= 74000.0D0) THEN
               X(27) = 72.D-18 * (65524.393D0 / WAVENO)**1.90D0 / 3.0D0
-            else
+            ELSE
               X(27) = 93.D-18 * (65524.393D0 / WAVENO)**4.00D0 / 3.0D0
-            end if
+            END IF
 !     X(27)=X(27)+(RESON1+RESON2+RESON3)/3.
 !     X(27)=37.E-18*MIN(1.D0,(74000./WAVENO)**5)/3.
-          end if  ! level 27
-        end if  ! level 26
-      end if  ! level 25
-    end if  ! level 24
-  end if  ! level 23
+          END IF  ! level 27
+        END IF  ! level 26
+      END IF  ! level 25
+    END IF  ! level 24
+  END IF  ! level 23
 
   ! =====================================================================
   ! Block 3: Same low-lying 3p² states → Si II 3s² 3p ²P₃/₂ (levels 23-27)
@@ -10780,7 +10661,7 @@ SUBROUTINE SI1OP
   ELIM_BLK = 65747.55D0 + 287.45D0
 
   !  3s² 3p² ¹S (level 23)
-  if (WAVENO >= ELIM_BLK - ELEV(23)) then
+  IF (WAVENO >= ELIM_BLK - ELEV(23)) THEN
     EPS = (WAVENO - 70000.0D0) * 2.0D0 / 6500.0D0
     ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
     RESON1 = (97.D-18 * EPS + 94.D-18) / (EPS**2 + 1.0D0)
@@ -10790,7 +10671,7 @@ SUBROUTINE SI1OP
 !     X(23)=X(23)+46.E-18*(50353.180/WAVENO)**.5*2./3.
 
     !  3s² 3p² ¹D (level 24)
-    if (WAVENO >= ELIM_BLK - ELEV(24)) then
+    IF (WAVENO >= ELIM_BLK - ELEV(24)) THEN
       ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
 !      IF(WAVENO.LT.59448.700)GO TO 30
       EPS = (WAVENO - 78600.0D0) * 2.0D0 / 13000.0D0
@@ -10803,7 +10684,7 @@ SUBROUTINE SI1OP
 !     X(24)=X(24)+35.E-18*(59448.700/WAVENO)**3*2./3.
 
       !  3s² 3p² ³P₂ (level 25)
-      if (WAVENO >= ELIM_BLK - ELEV(25)) then
+      IF (WAVENO >= ELIM_BLK - ELEV(25)) THEN
         ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
 !     RESON1=0.
 !     RESON2=0.
@@ -10820,16 +10701,16 @@ SUBROUTINE SI1OP
 !     EPS=(WAVENO-103600.)*2./150.
 !     RESON3=20.E-18*EPS/(EPS**2+1.)
 !     ENDIF
-        if (WAVENO <= 74000.0D0) then
+        IF (WAVENO <= 74000.0D0) THEN
           X(25) = X(25) + 72.D-18 * (65524.393D0 / WAVENO)**1.90D0 * 2.0D0 / 3.0D0
-        else
+        ELSE
           X(25) = X(25) + 93.D-18 * (65524.393D0 / WAVENO)**4.00D0 * 2.0D0 / 3.0D0
-        end if
+        END IF
 !     X(25)=X(25)+(RESON1+RESON2+RESON3)*2./3.
 !     X(25)=X(25)+37.E-18*MIN(1.D0,(74000./WAVENO)**5)*2./3.
 
         !  3s² 3p² ³P₁ (level 26)
-        if (WAVENO >= ELIM_BLK - ELEV(26)) then
+        IF (WAVENO >= ELIM_BLK - ELEV(26)) THEN
           ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
 !     RESON1=0.
 !     RESON2=0.
@@ -10846,16 +10727,16 @@ SUBROUTINE SI1OP
 !     EPS=(WAVENO-103600.)*2./150.
 !     RESON3=20.E-18*EPS/(EPS**2+1.)
 !     ENDIF
-          if (WAVENO <= 74000.0D0) then
+          IF (WAVENO <= 74000.0D0) THEN
             X(26) = X(26) + 72.D-18 * (65524.393D0 / WAVENO)**1.90D0 * 2.0D0 / 3.0D0
-          else
+          ELSE
             X(26) = X(26) + 93.D-18 * (65524.393D0 / WAVENO)**4.00D0 * 2.0D0 / 3.0D0
-          end if
+          END IF
 !     X(26)=X(26)+(RESON1+RESON2+RESON3)*2./3.
 !     X(26)=37.E-18*MIN(1.D0,(74000./WAVENO)**5)*2./3.
 
           !  3s² 3p² ³P₀ (level 27)
-          if (WAVENO >= ELIM_BLK - ELEV(27)) then
+          IF (WAVENO >= ELIM_BLK - ELEV(27)) THEN
             ! fits to Nahar & Pradhan, J.Phys.B 26, 1109-1127, 1993.
 !     RESON1=0.
 !     RESON2=0.
@@ -10872,18 +10753,18 @@ SUBROUTINE SI1OP
 !     EPS=(WAVENO-103600.)*2./150.
 !     RESON3=20.E-18*EPS/(EPS**2+1.)
 !     ENDIF
-            if (WAVENO <= 74000.0D0) then
+            IF (WAVENO <= 74000.0D0) THEN
               X(27) = X(27) + 72.D-18 * (65524.393D0 / WAVENO)**1.90D0 * 2.0D0 / 3.0D0
-            else
+            ELSE
               X(27) = X(27) + 93.D-18 * (65524.393D0 / WAVENO)**4.00D0 * 2.0D0 / 3.0D0
-            end if
+            END IF
 !     X(27)=X(27)+(RESON1+RESON2+RESON3)*2./3.
 !     X(27)=X(27)+37.E-18*MIN(1.D0,(74000./WAVENO)**5)*2./3.
-          end if  ! level 27
-        end if  ! level 26
-      end if  ! level 25
-    end if  ! level 24
-  end if  ! level 23
+          END IF  ! level 27
+        END IF  ! level 26
+      END IF  ! level 25
+    END IF  ! level 24
+  END IF  ! level 23
 
   ! =====================================================================
   ! Block 4: Inner-shell states → Si II 3s 3p² ⁴P₁/₂ (levels 28-33)
@@ -10897,11 +10778,11 @@ SUBROUTINE SI1OP
   ! GLEV for each level. The original behavior is preserved here.
   DEGEN = 3.0D0
 
-  do I = 28, NLEV
-    if (WAVENO < ELIM_BLK - ELEV(I)) exit
+  DO I = 28, NLEV
+    IF (WAVENO < ELIM_BLK - ELEV(I)) EXIT
     ZEFF2 = 9.0D0 / RYD * (ELIM_BLK - ELEV(I))
     X(I) = XKARZAS(FREQ, ZEFF2, 3, 1) * DEGEN
-  end do
+  END DO
 
   ! =====================================================================
   ! Final assembly: sum over all levels with Boltzmann populations
@@ -10909,18 +10790,18 @@ SUBROUTINE SI1OP
   ELIM_BLK = 65747.55D0
   GFACTOR = 6.0D0
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ! High-n hydrogenic contribution (n=5 to infinity)
     H = FREQ3 * GFACTOR * 2.0D0 / 2.0D0 / (RYD * Z**2 * HCKT(J)) &
       * (exp(-max(ELIM_BLK - RYD * Z**2 / 5.0D0**2, ELIM_BLK - WAVENO) * HCKT(J)) &
       - exp(-ELIM_BLK * HCKT(J)))
     ! Sum resolved levels
-    do I = 1, NLEV
+    DO I = 1, NLEV
       H = H + X(I) * BOLT(I, J)
-    end do
+    END DO
     ASI1(J) = H * XNFP(J, 105) * STIM(J) / RHO(J)
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE SI1OP
 
@@ -10943,11 +10824,11 @@ END SUBROUTINE SI1OP
 
 SUBROUTINE FE1OP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NLEV = 48
+  INTEGER, PARAMETER :: NLEV = 48
 
-  real*8, parameter :: G(48) = (/ &
+  REAL(8), PARAMETER :: G(48) = (/ &
     25.D0, 35.D0, 21.D0, 15.D0,  9.D0, 35.D0, 33.D0, 21.D0, &
     27.D0, 49.D0,  9.D0, 21.D0, 27.D0,  9.D0,  9.D0, 25.D0, &
     33.D0, 15.D0, 35.D0,  3.D0,  5.D0, 11.D0, 15.D0, 13.D0, &
@@ -10955,7 +10836,7 @@ SUBROUTINE FE1OP
      5.D0, 45.D0, 27.D0, 21.D0, 15.D0, 21.D0, 15.D0, 25.D0, &
     21.D0, 35.D0,  5.D0, 15.D0, 45.D0, 35.D0, 55.D0, 25.D0 /)
 
-  real*8, parameter :: E(48) = (/ &
+  REAL(8), PARAMETER :: E(48) = (/ &
       500.D0,  7500.D0, 12500.D0, 17500.D0, 19000.D0, 19500.D0, &
     19500.D0, 21000.D0, 22000.D0, 23000.D0, 23000.D0, 24000.D0, &
     24000.D0, 24500.D0, 24500.D0, 26000.D0, 26500.D0, 26500.D0, &
@@ -10965,7 +10846,7 @@ SUBROUTINE FE1OP
     37000.D0, 37000.D0, 38500.D0, 40000.D0, 40000.D0, 41000.D0, &
     41000.D0, 43000.D0, 43000.D0, 43000.D0, 43000.D0, 44000.D0 /)
 
-  real*8, parameter :: WNO(48) = (/ &
+  REAL(8), PARAMETER :: WNO(48) = (/ &
     63500.D0, 58500.D0, 53500.D0, 59500.D0, 45000.D0, 44500.D0, &
     44500.D0, 43000.D0, 58000.D0, 41000.D0, 54000.D0, 40000.D0, &
     40000.D0, 57500.D0, 55500.D0, 38000.D0, 57500.D0, 57500.D0, &
@@ -10975,36 +10856,36 @@ SUBROUTINE FE1OP
     27000.D0, 54000.D0, 27500.D0, 24000.D0, 47000.D0, 23000.D0, &
     44000.D0, 42000.D0, 42000.D0, 21000.D0, 42000.D0, 42000.D0 /)
 
-  real*8  :: XSECT
-  integer :: I, J
+  REAL(8)  :: XSECT
+  INTEGER :: I, J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING FE1OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING FE1OP'
 
   ! Zero output
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AFE1(J) = 0.0D0
-  end do
+  END DO
 
   ! No contribution below 21000 cm⁻¹
-  if (WAVENO < 21000.0D0) return
+  IF (WAVENO < 21000.0D0) RETURN
 
   ! Sum over all 48 levels
-  do I = 1, NLEV
-    if (WNO(I) > WAVENO) cycle
+  DO I = 1, NLEV
+    IF (WNO(I) > WAVENO) CYCLE
     XSECT = 3.0D-18 / (1.0D0 + ((WNO(I) + 3000.0D0 - WAVENO) &
           / WNO(I) / 0.1D0)**4)
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       AFE1(J) = AFE1(J) + XSECT * G(I) * EXP(-E(I) * HCKT(J))
-    end do
-  end do
+    END DO
+  END DO
 
   ! Apply population, stimulated emission, and density factors
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AFE1(J) = AFE1(J) * STIM(J) * XNFP(J, 351) / RHO(J)
     SFE1(J) = BNU(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE FE1OP
 
@@ -11038,24 +10919,22 @@ END SUBROUTINE FE1OP
 
 FUNCTION CHOP(J)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: J
-  real*8  :: CHOP
+  INTEGER, INTENT(IN) :: J
+  REAL(8)  :: CHOP
 
   ! --- Cross-section × partition function table ---
   ! CROSSCH(IT, N): log10(σ·Q) for temperature index IT and energy index N
   !   IT = 1–15:  T = 2000, 2500, ..., 9000 K
   !   N  = 1–105: E = 0.1, 0.2, ..., 10.5 eV  (only N=20–105 used)
   ! Loaded from crossch.dat on first call.
-  real*8,    save :: CROSSCH(15,105)
-  logical,   save :: CROSSCH_LOADED = .false.
-  integer :: II, JJ
-
-  real*8, parameter :: LN10 = 2.30258509299405D0
+  REAL(8),    SAVE :: CROSSCH(15,105)
+  LOGICAL,   SAVE :: CROSSCH_LOADED = .FALSE.
+  INTEGER :: II, JJ
 
   ! CH partition function table: T = 1000 to 9000 K in 200 K steps (41 points)
-  real*8, parameter :: PARTCH(41) = (/ &
+  REAL(8), PARAMETER :: PARTCH(41) = (/ &
     203.741D0,  249.643D0,  299.341D0,  353.477D0,  412.607D0,  477.237D0,  547.817D0, &
     624.786D0,  708.543D0,  799.463D0,  897.912D0, 1004.227D0, 1118.738D0, 1241.761D0, &
    1373.588D0, 1514.481D0, 1664.677D0, 1824.394D0, 1993.801D0, 2173.050D0, 2362.234D0, &
@@ -11064,57 +10943,57 @@ FUNCTION CHOP(J)
    6358.646D0, 6694.379D0, 7037.313D0, 7387.147D0, 7743.579D0, 8106.313D0 /)
 
   ! --- Cached frequency-interpolated cross-sections ---
-  real*8,  save :: CROSSCHT(15)     ! cross-section slice at current energy
-  real*8,  save :: FREQ1 = 0.0D0    ! cached frequency
-  integer, save :: N_CACHED = 0     ! cached energy index
+  REAL(8),  SAVE :: CROSSCHT(15)     ! cross-section slice at current energy
+  REAL(8),  SAVE :: FREQ1 = 0.0D0    ! cached frequency
+  INTEGER, SAVE :: N_CACHED = 0     ! cached energy index
 
   ! --- Local variables ---
-  real*8  :: EVOLT, EN, TJ, PART, TN
-  integer :: N, IT_PART, IT_XSEC
+  REAL(8)  :: EVOLT, EN, TJ, PART, TN
+  INTEGER :: N, IT_PART, IT_XSEC
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING CHOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING CHOP'
 
   ! --- Load cross-section table from file on first call ---
-  if (.not. CROSSCH_LOADED) then
-    open(unit=89, file=trim(DATADIR)//'crossch.dat', status='OLD', action='READ', iostat=IT_XSEC)
-    if (IT_XSEC /= 0) then
-      write(6, '(A)') ' CHOP: ERROR opening ' // trim(DATADIR) // 'crossch.dat'
-      stop 'CHOP: crossch.dat not found'
-    end if
-    read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')  ! skip header
-    read(89, '(A)') ; read(89, '(A)')                     ! skip header
-    do JJ = 1, 105
-      read(89, *) (CROSSCH(II, JJ), II = 1, 15)
-    end do
-    close(89)
-    CROSSCH_LOADED = .true.
-  end if
+  IF (.NOT. CROSSCH_LOADED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'crossch.dat', STATUS='OLD', ACTION='READ', IOSTAT=IT_XSEC)
+    IF (IT_XSEC /= 0) THEN
+      WRITE(6, '(A)') ' CHOP: ERROR opening ' // trim(DATADIR) // 'crossch.dat'
+      STOP 'CHOP: crossch.dat not found'
+    END IF
+    READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')  ! skip header
+    READ(89, '(A)') ; READ(89, '(A)')                     ! skip header
+    DO JJ = 1, 105
+      READ(89, *) (CROSSCH(II, JJ), II = 1, 15)
+    END DO
+    CLOSE(89)
+    CROSSCH_LOADED = .TRUE.
+  END IF
 
   CHOP = 0.0D0
 
   !---------------------------------------------------------------------
   ! Interpolate cross-section table in energy (cached on frequency)
   !---------------------------------------------------------------------
-  if (FREQ /= FREQ1) then
+  IF (FREQ /= FREQ1) THEN
     FREQ1 = FREQ
     EVOLT = WAVENO / 8065.479D0
     N = int(EVOLT * 10.0D0)
     N_CACHED = N
     EN = dble(N) * 0.1D0
-    if (N < 20 .or. N >= 105) return
-    do IT_XSEC = 1, 15
+    IF (N < 20 .OR. N >= 105) RETURN
+    DO IT_XSEC = 1, 15
       CROSSCHT(IT_XSEC) = CROSSCH(IT_XSEC, N) &
         + (CROSSCH(IT_XSEC, N+1) - CROSSCH(IT_XSEC, N)) * (EVOLT - EN) / 0.1D0
-    end do
-  end if
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Temperature-dependent interpolation at depth point J
   !---------------------------------------------------------------------
   TJ = T(J)
   N = N_CACHED
-  if (TJ >= 9000.0D0) return
-  if (N < 20 .or. N >= 105) return
+  IF (TJ >= 9000.0D0) RETURN
+  IF (N < 20 .OR. N >= 105) RETURN
 
   ! Partition function interpolation (200 K grid, T = 1000–9000 K)
   IT_PART = max(int((TJ - 1000.0D0) / 200.0D0) + 1, 1)
@@ -11130,7 +11009,7 @@ FUNCTION CHOP(J)
   CHOP = exp((CROSSCHT(IT_XSEC) &
     + (CROSSCHT(IT_XSEC+1) - CROSSCHT(IT_XSEC)) * (TJ - TN) / 500.0D0) * LN10) * PART
 
-  return
+  RETURN
 
 END FUNCTION CHOP
 
@@ -11165,24 +11044,22 @@ END FUNCTION CHOP
 
 FUNCTION OHOP(J)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: J
-  real*8  :: OHOP
+  INTEGER, INTENT(IN) :: J
+  REAL(8)  :: OHOP
 
   ! --- Cross-section x partition function table ---
   ! CROSSOH(IT, N): log10(sigma*Q) for temperature index IT and energy index N
   !   IT = 1-15:  T = 2000, 2500, ..., 9000 K
   !   N  = 1-130: E = 2.1, 2.2, ..., 15.0 eV
   ! Loaded from crossoh.dat on first call.
-  real*8,    save :: CROSSOH(15,130)
-  logical,   save :: CROSSOH_LOADED = .false.
-  integer :: II, JJ
-
-  real*8, parameter :: LN10 = 2.30258509299405D0
+  REAL(8),    SAVE :: CROSSOH(15,130)
+  LOGICAL,   SAVE :: CROSSOH_LOADED = .FALSE.
+  INTEGER :: II, JJ
 
   ! OH partition function table: T = 1000 to 9000 K in 200 K steps (41 points)
-  real*8, parameter :: PARTOH(41) = (/ &
+  REAL(8), PARAMETER :: PARTOH(41) = (/ &
       145.979D0,    178.033D0,    211.618D0,    247.053D0,    284.584D0,    324.398D0,    366.639D0, &
       411.425D0,    458.854D0,    509.012D0,    561.976D0,    617.823D0,    676.626D0,    738.448D0, &
       803.363D0,    871.437D0,    942.735D0,   1017.330D0,   1095.284D0,   1176.654D0,   1261.510D0, &
@@ -11191,31 +11068,31 @@ FUNCTION OHOP(J)
      2974.627D0,   3118.242D0,   3265.366D0,   3415.912D0,   3569.837D0,   3727.077D0 /)
 
   ! --- Cached frequency-interpolated cross-sections ---
-  real*8,  save :: CROSSOHT(15)     ! cross-section slice at current energy
-  real*8,  save :: FREQ1 = 0.0D0    ! cached frequency
-  integer, save :: N_CACHED = 0     ! cached energy index
+  REAL(8),  SAVE :: CROSSOHT(15)     ! cross-section slice at current energy
+  REAL(8),  SAVE :: FREQ1 = 0.0D0    ! cached frequency
+  INTEGER, SAVE :: N_CACHED = 0     ! cached energy index
 
   ! --- Local variables ---
-  real*8  :: EVOLT, EN, TJ, PART, TN
-  integer :: N, IT_PART, IT_XSEC
+  REAL(8)  :: EVOLT, EN, TJ, PART, TN
+  INTEGER :: N, IT_PART, IT_XSEC
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING OHOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING OHOP'
 
   ! --- Load cross-section table from file on first call ---
-  if (.not. CROSSOH_LOADED) then
-    open(unit=89, file=trim(DATADIR)//'crossoh.dat', status='OLD', action='READ', iostat=IT_XSEC)
-    if (IT_XSEC /= 0) then
-      write(6, '(A)') ' OHOP: ERROR opening ' // trim(DATADIR) // 'crossoh.dat'
-      stop 'OHOP: crossoh.dat not found'
-    end if
-    read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')  ! skip header
-    read(89, '(A)') ; read(89, '(A)')                     ! skip header
-    do JJ = 1, 130
-      read(89, *) (CROSSOH(II, JJ), II = 1, 15)
-    end do
-    close(89)
-    CROSSOH_LOADED = .true.
-  end if
+  IF (.NOT. CROSSOH_LOADED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'crossoh.dat', STATUS='OLD', ACTION='READ', IOSTAT=IT_XSEC)
+    IF (IT_XSEC /= 0) THEN
+      WRITE(6, '(A)') ' OHOP: ERROR opening ' // trim(DATADIR) // 'crossoh.dat'
+      STOP 'OHOP: crossoh.dat not found'
+    END IF
+    READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')  ! skip header
+    READ(89, '(A)') ; READ(89, '(A)')                     ! skip header
+    DO JJ = 1, 130
+      READ(89, *) (CROSSOH(II, JJ), II = 1, 15)
+    END DO
+    CLOSE(89)
+    CROSSOH_LOADED = .TRUE.
+  END IF
 
   OHOP = 0.0D0
 
@@ -11223,26 +11100,26 @@ FUNCTION OHOP(J)
   ! Interpolate cross-section table in energy (cached on frequency)
   ! OHOP energy index is offset: N = EVOLT*10 - 20  (E starts at 2.1 eV)
   !---------------------------------------------------------------------
-  if (FREQ /= FREQ1) then
+  IF (FREQ /= FREQ1) THEN
     FREQ1 = FREQ
     EVOLT = WAVENO / 8065.479D0
     N = int(EVOLT * 10.0D0 - 20.0D0)
     N_CACHED = N
     EN = dble(N) * 0.1D0 + 2.0D0
-    if (N <= 0 .or. N >= 130) return
-    do IT_XSEC = 1, 15
+    IF (N <= 0 .OR. N >= 130) RETURN
+    DO IT_XSEC = 1, 15
       CROSSOHT(IT_XSEC) = CROSSOH(IT_XSEC, N) &
         + (CROSSOH(IT_XSEC, N+1) - CROSSOH(IT_XSEC, N)) * (EVOLT - EN) / 0.1D0
-    end do
-  end if
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Temperature-dependent interpolation at depth point J
   !---------------------------------------------------------------------
   TJ = T(J)
   N = N_CACHED
-  if (TJ >= 9000.0D0) return
-  if (N <= 0 .or. N >= 130) return
+  IF (TJ >= 9000.0D0) RETURN
+  IF (N <= 0 .OR. N >= 130) RETURN
 
   ! Partition function interpolation (200 K grid, T = 1000-9000 K)
   IT_PART = max(int((TJ - 1000.0D0) / 200.0D0) + 1, 1)
@@ -11258,7 +11135,7 @@ FUNCTION OHOP(J)
   OHOP = exp((CROSSOHT(IT_XSEC) &
     + (CROSSOHT(IT_XSEC+1) - CROSSOHT(IT_XSEC)) * (TJ - TN) / 500.0D0) * LN10) * PART
 
-  return
+  RETURN
 
 END FUNCTION OHOP
 
@@ -11292,77 +11169,77 @@ END FUNCTION OHOP
 
 SUBROUTINE H2COLLOP(AH2COLL)
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8, intent(out) :: AH2COLL(kw)
+  REAL(8), INTENT(OUT) :: AH2COLL(kw)
 
   ! --- CIA tables: log10 of absorption coefficient ---
   ! Read from h2collop.dat on first call
   ! Borysow, Jorgensen & Zheng (1997, A&A 324, 185)
-  real*8, save :: H2HE(7,81)
-  real*8, save :: H2H2(7,81)
+  REAL(8), SAVE :: H2HE(7,81)
+  REAL(8), SAVE :: H2H2(7,81)
 
   ! --- Persistent state ---
-  integer, save :: ITEMP1 = 0
-  logical, save :: INITIALIZED = .false.
+  INTEGER, SAVE :: ITEMP1 = 0
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! --- Local variables ---
-  real*8  :: H2HENU(7), H2H2NU(7)
-  real*8  :: DELNU, DELT, XH2H2, XH2HE
-  integer :: J, IT, NU, I
-  character(256) :: LINE
+  REAL(8)  :: H2HENU(7), H2H2NU(7)
+  REAL(8)  :: DELNU, DELT, XH2H2, XH2HE
+  INTEGER :: J, IT, NU, I
+  CHARACTER(256) :: LINE
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING H2COLLOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING H2COLLOP'
 
   !---------------------------------------------------------------------
   ! Read CIA tables from file on first call
   !---------------------------------------------------------------------
-  if (.not. INITIALIZED) then
-    open(unit=89, file=trim(DATADIR)//'h2collop.dat', status='OLD', action='READ')
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'h2collop.dat', STATUS='OLD', ACTION='READ')
     ! Skip comment lines starting with #
-    do
-      read(89, '(A)') LINE
-      if (LINE(1:1) /= '#') then
-        backspace(89)
-        exit
-      end if
-    end do
+    DO
+      READ(89, '(A)') LINE
+      IF (LINE(1:1) /= '#') THEN
+        BACKSPACE(89)
+        EXIT
+      END IF
+    END DO
     ! Read H2HE table (81 lines of 7 values)
-    do I = 1, 81
-      read(89, *) H2HE(:, I)
-    end do
+    DO I = 1, 81
+      READ(89, *) H2HE(:, I)
+    END DO
     ! Read H2H2 table (81 lines of 7 values)
-    do I = 1, 81
-      read(89, *) H2H2(:, I)
-    end do
-    close(89)
-    INITIALIZED = .true.
-  end if
+    DO I = 1, 81
+      READ(89, *) H2H2(:, I)
+    END DO
+    CLOSE(89)
+    INITIALIZED = .TRUE.
+  END IF
 
   !---------------------------------------------------------------------
   ! Recompute H2 equilibrium number densities when T structure changes
   !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       XNH2(J) = 0.0D0
-      if (T(J) <= 20000.0D0) then
+      IF (T(J) <= 20000.0D0) THEN
         XNH2(J) = (XNFP(J,1) * 2.0D0 * BHYD(J,1))**2 * EQUILH2(T(J))
-      end if
-    end do
-  end if
+      END IF
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Return zero for wavenumber > 20000 cm-1 (above table range)
   !---------------------------------------------------------------------
-  if (WAVENO > 20000.0D0) then
-    do J = 1, NRHOX
+  IF (WAVENO > 20000.0D0) THEN
+    DO J = 1, NRHOX
       AH2COLL(J) = 0.0D0
-    end do
-    return
-  end if
+    END DO
+    RETURN
+  END IF
 
   !---------------------------------------------------------------------
   ! Interpolate tables in wavenumber
@@ -11371,15 +11248,15 @@ SUBROUTINE H2COLLOP(AH2COLL)
   NU = min(NU, 80)
   DELNU = (WAVENO - 250.0D0 * dble(NU - 1)) / 250.0D0
 
-  do IT = 1, 7
+  DO IT = 1, 7
     H2H2NU(IT) = H2H2(IT, NU) * (1.0D0 - DELNU) + H2H2(IT, NU+1) * DELNU
     H2HENU(IT) = H2HE(IT, NU) * (1.0D0 - DELNU) + H2HE(IT, NU+1) * DELNU
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! Interpolate in temperature and assemble opacity at each depth
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     IT = int(T(J) / 1000.0D0)
     IT = max(1, min(6, IT))
     DELT = (T(J) - 1000.0D0 * dble(IT)) / 1000.0D0
@@ -11391,9 +11268,9 @@ SUBROUTINE H2COLLOP(AH2COLL)
 
     AH2COLL(J) = (10.0D0**XH2HE * XNF(J,3) + 10.0D0**XH2H2 * XNH2(J)) &
                * XNH2(J) / RHO(J) * STIM(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE H2COLLOP
 
@@ -11402,20 +11279,20 @@ END SUBROUTINE H2COLLOP
 !=======================================================================
 
 SUBROUTINE WARMOP
-  implicit none
-  integer :: J
+  IMPLICIT NONE
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING WARMOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING WARMOP'
   ! Lukewarm metal opacities: N I, O I, Ca II + C II, Mg II, Si II
-  call C2OP
-  call MG2OP
-  call SI2OP
-  do J = 1, NRHOX
+  CALL C2OP
+  CALL MG2OP
+  CALL SI2OP
+  DO J = 1, NRHOX
     ALUKE(J) = (N1OP(J) * XNFP(J, 28) + O1OP(J) * XNFP(J, 36) &
              + CA2OP(J) * XNFP(J, 211)) * STIM(J) / RHO(J) &
              + AC2(J) + AMG2(J) + ASI2(J)
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE WARMOP
 
@@ -11457,12 +11334,12 @@ END SUBROUTINE WARMOP
 
 SUBROUTINE C2OP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NLEV = 34
+  INTEGER, PARAMETER :: NLEV = 34
 
   ! --- Atomic data: energy levels (cm-1) and statistical weights ---
-  real*8, parameter :: ELEV(NLEV) = (/ &
+  REAL(8), PARAMETER :: ELEV(NLEV) = (/ &
     179073.05D0, 178955.94D0, 178495.47D0, 175292.30D0, 173347.84D0, &  ! 5g,5f,5d,5p,5s
     168978.34D0, 168124.17D0, 162522.34D0, 157234.07D0,              &  ! 4f,4d,4p,4s
     145550.10D0, 131731.80D0, 116537.65D0,    42.28D0,               &  ! 3d,3p,3s, 2p(inactive)
@@ -11472,7 +11349,7 @@ SUBROUTINE C2OP
     110651.76D0,  96493.74D0,  74931.11D0,  43035.80D0,              &  ! 2s2p2 (inactive)
     230407.20D0, 150464.60D0, 142027.10D0 /)                            ! 2p3 states
 
-  real*8, parameter :: GLEV(NLEV) = (/ &
+  REAL(8), PARAMETER :: GLEV(NLEV) = (/ &
     18.D0, 14.D0, 10.D0,  6.D0,  2.D0, 14.D0, 10.D0,  6.D0,  1.D0, &  ! NOTE: GLEV(9)=1 for 2S, expected 2
     10.D0,  6.D0,  1.D0,  3.D0,                                      &  ! NOTE: GLEV(12)=1 for 2S, expected 2
      6.D0, 10.D0, 12.D0, 10.D0, 20.D0, 28.D0,  2.D0, 10.D0, 12.D0, &
@@ -11481,18 +11358,18 @@ SUBROUTINE C2OP
      6.D0, 10.D0,  4.D0 /)
 
   ! Quantum numbers (n,l) for XKARZAS calls
-  integer, parameter :: NQ(NLEV) = (/ &
+  INTEGER, PARAMETER :: NQ(NLEV) = (/ &
     5,5,5,5,5,  4,4,4,4,  3,3,3, 0,  &  ! Block 1 (level 13 inactive)
     3,3,3,3,3,3,  3,3,3,3,3,3,  3,3,  &  ! Block 2
     0,0,0,0,  2,2,2 /)                    ! levels 28-31 inactive, Block 4
 
-  integer, parameter :: LQ(NLEV) = (/ &
+  INTEGER, PARAMETER :: LQ(NLEV) = (/ &
     4,3,2,1,0,  3,2,1,0,  2,1,0, 0,  &  ! Block 1
     2,2,2,2,2,2,  1,1,1,1,1,1,  0,0,  &  ! Block 2
     0,0,0,0,  1,1,1 /)                    ! Block 4
 
   ! Effective charge prefactor: n² for each level (Z²eff = NPRE/RYD*(ELIM-E))
-  real*8, parameter :: NPRE(NLEV) = (/ &
+  REAL(8), PARAMETER :: NPRE(NLEV) = (/ &
     25.D0,25.D0,25.D0,25.D0,25.D0,  16.D0,16.D0,16.D0,16.D0, &  ! Block 1
      9.D0, 9.D0, 9.D0,  0.D0,                                 &
      9.D0, 9.D0, 9.D0, 9.D0, 9.D0, 9.D0,                     &  ! Block 2
@@ -11501,45 +11378,45 @@ SUBROUTINE C2OP
      4.D0, 4.D0, 4.D0 /)                                         ! Block 4
 
   ! Degeneracy multiplier for inner-shell levels
-  real*8, parameter :: DEGEN(NLEV) = (/ &
+  REAL(8), PARAMETER :: DEGEN(NLEV) = (/ &
     1.D0,1.D0,1.D0,1.D0,1.D0, 1.D0,1.D0,1.D0,1.D0, 1.D0,1.D0,1.D0, 1.D0, &
     1.D0,1.D0,1.D0,1.D0,1.D0,1.D0, 1.D0,1.D0,1.D0,1.D0,1.D0,1.D0, 1.D0,1.D0, &
     1.D0,1.D0,1.D0,1.D0, &
     3.D0,3.D0,3.D0 /)
 
   ! Ionization limits (cm-1)
-  real*8, parameter :: ELIM1 = 196664.70D0                 ! C III 2s2 1S0
-  real*8, parameter :: ELIM2 = 196664.70D0 + 52367.06D0   ! C III 2s2p 3P0
-  real*8, parameter :: ELIM4 = 196664.70D0 + 137425.70D0  ! C III 2p2 3P0
+  REAL(8), PARAMETER :: ELIM1 = 196664.70D0                 ! C III 2s2 1S0
+  REAL(8), PARAMETER :: ELIM2 = 196664.70D0 + 52367.06D0   ! C III 2s2p 3P0
+  REAL(8), PARAMETER :: ELIM4 = 196664.70D0 + 137425.70D0  ! C III 2p2 3P0
 
-  real*8, parameter :: RYD = 109732.298D0
-  real*8, parameter :: Z4 = 16.0D0    ! Z**4 (Z=2 for C II)
-  real*8, parameter :: Z2 = 4.0D0     ! Z**2
+  REAL(8), PARAMETER :: RYD = 109732.298D0
+  REAL(8), PARAMETER :: Z4 = 16.0D0    ! Z**4 (Z=2 for C II)
+  REAL(8), PARAMETER :: Z2 = 4.0D0     ! Z**2
 
   ! --- Persistent state ---
-  real*8,  save :: BOLT(NLEV, kw)
-  integer, save :: ITEMP1 = 0
+  REAL(8),  SAVE :: BOLT(NLEV, kw)
+  INTEGER, SAVE :: ITEMP1 = 0
 
   ! --- Local variables ---
-  real*8  :: X(NLEV)
-  real*8  :: ELIM, ZEFF2, FREQ3, H
-  integer :: I, J, K
+  REAL(8)  :: X(NLEV)
+  REAL(8)  :: ELIM, ZEFF2, FREQ3, H
+  INTEGER :: I, J, K
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING C2OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING C2OP'
 
   !---------------------------------------------------------------------
   ! Recompute Boltzmann factors when temperature structure changes
   !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do K = 1, NRHOX
-      do I = 1, NLEV
+    DO K = 1, NRHOX
+      DO I = 1, NLEV
         BOLT(I, K) = GLEV(I) * exp(-ELEV(I) * HCKT(K))
-      end do
-    end do
-  end if
+      END DO
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Compute cross-sections at the current frequency
@@ -11548,36 +11425,36 @@ SUBROUTINE C2OP
 
   ! --- Block 1: excited states -> C III 2s2 1S0 ---
   ELIM = ELIM1
-  do I = 1, 12
-    if (WAVENO < ELIM - ELEV(I)) exit
+  DO I = 1, 12
+    IF (WAVENO < ELIM - ELEV(I)) EXIT
     ZEFF2 = NPRE(I) / RYD * (ELIM - ELEV(I))
     X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
-  end do
+  END DO
   ! Level 13 (2s2 2p 2P) handled in HOTOP
 
   ! --- Block 2: inner-shell states -> C III 2s2p 3P0 ---
   ELIM = ELIM2
-  do I = 14, 27
-    if (WAVENO < ELIM - ELEV(I)) exit
+  DO I = 14, 27
+    IF (WAVENO < ELIM - ELEV(I)) EXIT
     ZEFF2 = NPRE(I) / RYD * (ELIM - ELEV(I))
     X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
-  end do
+  END DO
   ! Levels 28-31 (2s2p2 states) handled in HOTOP
 
   ! --- Block 4: 2p3 states -> C III 2p2 3P0 ---
   ELIM = ELIM4
-  do I = 32, 34
-    if (WAVENO < ELIM - ELEV(I)) exit
+  DO I = 32, 34
+    IF (WAVENO < ELIM - ELEV(I)) EXIT
     ZEFF2 = NPRE(I) / RYD * (ELIM - ELEV(I))
     X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I)) * DEGEN(I)
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! Assemble opacity over depth: levels + dissolved high-n contributions
   !---------------------------------------------------------------------
   FREQ3 = 2.815D29 / (FREQ * FREQ * FREQ) * Z4
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ! Dissolved levels, Block 1: n >= 6 to infinity, GFACTOR = 1
     H = FREQ3 * 1.0D0 * 2.0D0 / 2.0D0 / (RYD * Z2 * HCKT(J)) &
       * (exp(-max(ELIM1 - RYD * Z2 / 36.0D0, ELIM1 - WAVENO) * HCKT(J)) &
@@ -11589,14 +11466,14 @@ SUBROUTINE C2OP
        - exp(-ELIM2 * HCKT(J)))
 
     ! Sum bound-free over all active levels
-    do I = 1, NLEV
+    DO I = 1, NLEV
       H = H + X(I) * BOLT(I, J)
-    end do
+    END DO
 
     AC2(J) = H * XNFP(J, 22) * STIM(J) / RHO(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE C2OP
 
@@ -11604,43 +11481,43 @@ END SUBROUTINE C2OP
 ! N1OP: N I bound-free opacity cross section
 !=======================================================================
 
-REAL*8 FUNCTION N1OP(J)
+REAL(8) FUNCTION N1OP(J)
 
-  implicit none
-  integer, intent(in) :: J
+  IMPLICIT NONE
+  INTEGER, INTENT(IN) :: J
 
   ! N I cross-section times partition function
   ! Three Seaton-formula edges: 853A (ground), 1020A, 1130A (excited)
-  real*8, save :: X853 = 0.0D0, X1020 = 0.0D0, X1130 = 0.0D0
-  real*8, save :: C1130(kw), C1020(kw)
-  real*8, save :: FREQ1 = 0.0D0
-  integer, save :: ITEMP1 = 0
-  integer :: K
+  REAL(8), SAVE :: X853 = 0.0D0, X1020 = 0.0D0, X1130 = 0.0D0
+  REAL(8), SAVE :: C1130(kw), C1020(kw)
+  REAL(8), SAVE :: FREQ1 = 0.0D0
+  INTEGER, SAVE :: ITEMP1 = 0
+  INTEGER :: K
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING N1OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING N1OP'
 
   ! Recompute Boltzmann factors when temperature changes
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do K = 1, NRHOX
+    DO K = 1, NRHOX
       C1130(K) = 6.0D0 * exp(-3.575D0 / TKEV(K))
       C1020(K) = 10.0D0 * exp(-2.384D0 / TKEV(K))
-    end do
-  end if
+    END DO
+  END IF
 
   ! Recompute cross-sections when frequency changes
-  if (FREQ /= FREQ1) then
+  IF (FREQ /= FREQ1) THEN
     X1130 = 0.0D0
     X1020 = 0.0D0
     X853 = 0.0D0
-    if (FREQ >= 3.517915D15) X853 = SEATON(3.517915D15, 1.142D-17, 2.0D0, 4.29D0)
-    if (FREQ >= 2.941534D15) X1020 = SEATON(2.941534D15, 4.41D-18, 1.5D0, 3.85D0)
-    if (FREQ >= 2.653317D15) X1130 = SEATON(2.653317D15, 4.2D-18, 1.5D0, 4.34D0)
+    IF (FREQ >= 3.517915D15) X853 = SEATON(3.517915D15, 1.142D-17, 2.0D0, 4.29D0)
+    IF (FREQ >= 2.941534D15) X1020 = SEATON(2.941534D15, 4.41D-18, 1.5D0, 3.85D0)
+    IF (FREQ >= 2.653317D15) X1130 = SEATON(2.653317D15, 4.2D-18, 1.5D0, 4.34D0)
     FREQ1 = FREQ
-  end if
+  END IF
 
   N1OP = X853 * 4.0D0 + X1020 * C1020(J) + X1130 * C1130(J)
-  return
+  RETURN
 
 END FUNCTION N1OP
 
@@ -11650,25 +11527,25 @@ END FUNCTION N1OP
 
 FUNCTION O1OP(J)
 
-  implicit none
-  integer, intent(in) :: J
-  real*8 :: O1OP
+  IMPLICIT NONE
+  INTEGER, INTENT(IN) :: J
+  REAL(8) :: O1OP
 
   ! O I bound-free cross-section times partition function (after Peach)
-  real*8, save :: X911 = 0.0D0
-  real*8, save :: FREQ1 = 0.0D0
+  REAL(8), SAVE :: X911 = 0.0D0
+  REAL(8), SAVE :: FREQ1 = 0.0D0
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING O1OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING O1OP'
 
   ! Recompute cross-section only when frequency changes
-  if (FREQ /= FREQ1) then
+  IF (FREQ /= FREQ1) THEN
     X911 = 0.0D0
-    if (FREQ >= FREQ_RYDH) X911 = SEATON(FREQ_RYDH, 2.94D-18, 1.0D0, 2.66D0)
+    IF (FREQ >= FREQ_RYDH) X911 = SEATON(FREQ_RYDH, 2.94D-18, 1.0D0, 2.66D0)
     FREQ1 = FREQ
-  end if
+  END IF
 
   O1OP = X911 * 9.0D0
-  return
+  RETURN
 
 END FUNCTION O1OP
 
@@ -11703,105 +11580,105 @@ END FUNCTION O1OP
 
 SUBROUTINE MG2OP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NLEV = 14
+  INTEGER, PARAMETER :: NLEV = 14
 
   ! --- Atomic data: energy levels (cm-1) and statistical weights ---
-  real*8, parameter :: ELEV(NLEV) = (/ &
+  REAL(8), PARAMETER :: ELEV(NLEV) = (/ &
     112197.00D0, 108900.00D0, 103705.66D0, 103689.89D0, 103419.82D0, &  ! n=7,6, 5g,5f,5d
      97464.32D0,  92790.51D0,  93799.70D0,  93310.80D0,  80639.85D0, &  ! 5p,5s, 4f,4d, 4p
      69804.95D0,  71490.54D0,  35730.36D0,      0.00D0 /)                ! 4s, 3d, 3p, 3s
 
   ! GLEV(11) corrected from 22 to 2 (4s 2S: g=2J+1=2)
-  real*8, parameter :: GLEV(NLEV) = (/ &
+  REAL(8), PARAMETER :: GLEV(NLEV) = (/ &
     98.D0, 72.D0, 18.D0, 14.D0, 10.D0, 6.D0, 2.D0, &
     14.D0, 10.D0,  6.D0,  2.D0, 10.D0, 6.D0, 2.D0 /)
 
   ! Quantum numbers (n,l) for XKARZAS calls
   ! Levels 1-2: l=n convention for super-levels
   ! Level 10: l=1 (Stift 2009 correction from l=2)
-  integer, parameter :: NQ(NLEV) = (/ 7,6, 5,5,5,5,5, 4,4,4,4, 3,3, 0 /)
-  integer, parameter :: LQ(NLEV) = (/ 7,6, 4,3,2,1,0, 3,2,1,0, 2,1, 0 /)
+  INTEGER, PARAMETER :: NQ(NLEV) = (/ 7,6, 5,5,5,5,5, 4,4,4,4, 3,3, 0 /)
+  INTEGER, PARAMETER :: LQ(NLEV) = (/ 7,6, 4,3,2,1,0, 3,2,1,0, 2,1, 0 /)
 
   ! Effective charge prefactor: n2 for each level
-  real*8, parameter :: NPRE(NLEV) = (/ &
+  REAL(8), PARAMETER :: NPRE(NLEV) = (/ &
     49.D0, 36.D0, 25.D0, 25.D0, 25.D0, 25.D0, 25.D0, &
     16.D0, 16.D0, 16.D0, 16.D0,  9.D0,  9.D0,  0.D0 /)
 
   ! Ionization limit (cm-1): Mg III 2p6 1S0
-  real*8, parameter :: ELIM = 121267.61D0
-  real*8, parameter :: RYD  = 109732.298D0
-  real*8, parameter :: Z2   = 4.0D0     ! Z**2 (Z=2 for Mg II)
-  real*8, parameter :: Z4   = 16.0D0    ! Z**4
+  REAL(8), PARAMETER :: ELIM = 121267.61D0
+  REAL(8), PARAMETER :: RYD  = 109732.298D0
+  REAL(8), PARAMETER :: Z2   = 4.0D0     ! Z**2 (Z=2 for Mg II)
+  REAL(8), PARAMETER :: Z4   = 16.0D0    ! Z**4
 
   ! --- Persistent state ---
-  real*8,  save :: BOLT(NLEV, kw)
-  integer, save :: ITEMP1 = 0
+  REAL(8),  SAVE :: BOLT(NLEV, kw)
+  INTEGER, SAVE :: ITEMP1 = 0
 
   ! --- Local variables ---
-  real*8  :: X(NLEV)
-  real*8  :: ZEFF2, FREQ3, H, RATIO
-  integer :: I, J, K
+  REAL(8)  :: X(NLEV)
+  REAL(8)  :: ZEFF2, FREQ3, H, RATIO
+  INTEGER :: I, J, K
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING MG2OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING MG2OP'
 
   !---------------------------------------------------------------------
   ! Recompute Boltzmann factors when temperature structure changes
   !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do K = 1, NRHOX
-      do I = 1, NLEV
+    DO K = 1, NRHOX
+      DO I = 1, NLEV
         BOLT(I, K) = GLEV(I) * exp(-ELEV(I) * HCKT(K))
-      end do
-    end do
-  end if
+      END DO
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Compute cross-sections at the current frequency
   !---------------------------------------------------------------------
   X(:) = 0.0D0
 
-  levels: do
+  levels: DO
 
     ! Levels 1-13: hydrogenic via XKARZAS
-    do I = 1, 13
-      if (WAVENO < ELIM - ELEV(I)) exit levels
+    DO I = 1, 13
+      IF (WAVENO < ELIM - ELEV(I)) EXIT levels
       ZEFF2 = NPRE(I) / RYD * (ELIM - ELEV(I))
       X(I) = XKARZAS(FREQ, ZEFF2, NQ(I), LQ(I))
-    end do
+    END DO
 
     ! Level 14: 3s 2S ground state — non-hydrogenic power-law fit
-    if (WAVENO < ELIM - ELEV(14)) exit levels
+    IF (WAVENO < ELIM - ELEV(14)) EXIT levels
     RATIO = (ELIM - ELEV(14)) / WAVENO
     X(14) = 0.14D-18 * (6.700D0 * RATIO**4 - 5.700D0 * RATIO**5)
 
-    exit levels
-  end do levels
+    EXIT levels
+  END DO levels
 
   !---------------------------------------------------------------------
   ! Assemble opacity over depth: levels + dissolved high-n contribution
   !---------------------------------------------------------------------
   FREQ3 = 2.815D29 / (FREQ * FREQ * FREQ) * Z4
 
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ! Dissolved levels: n >= 8 to infinity
     ! GFACTOR = 2 (implicit: 2./2. = 1 in prefactor)
     H = FREQ3 * 2.0D0 / 2.0D0 / (RYD * Z2 * HCKT(J)) &
       * (exp(-max(ELIM - RYD * Z2 / 64.0D0, ELIM - WAVENO) * HCKT(J)) &
        - exp(-ELIM * HCKT(J)))
 
-    do I = 1, NLEV
+    DO I = 1, NLEV
       H = H + X(I) * BOLT(I, J)
-    end do
+    END DO
 
     AMG2(J) = H * XNFP(J, 79) * STIM(J) / RHO(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE MG2OP
 
@@ -11837,13 +11714,13 @@ END SUBROUTINE MG2OP
 
 SUBROUTINE SI2OP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NWGRID = 200, NTGRID = 51
-  real*8, parameter :: RYD = 109732.298D0, Z = 2.0D0
+  INTEGER, PARAMETER :: NWGRID = 200, NTGRID = 51
+  REAL(8), PARAMETER :: RYD = 109732.298D0, Z = 2.0D0
 
   ! Ionization limits (cm⁻¹) for each level
-  real*8, parameter :: ELIMLEV(46) = (/ &
+  REAL(8), PARAMETER :: ELIMLEV(46) = (/ &
     131838.4D0, 131838.4D0, 131838.4D0, 131838.4D0, 131838.4D0, &  !  1-5
     131838.4D0, 131838.4D0, 131838.4D0, 131838.4D0, 131838.4D0, &  !  6-10
     131838.4D0, &                                                    !  11
@@ -11859,7 +11736,7 @@ SUBROUTINE SI2OP
     131838.4D0, 184563.09D0 /)                                       !  45-46
 
   ! Energy levels (cm⁻¹)
-  real*8, parameter :: ELEV(46) = (/ &
+  REAL(8), PARAMETER :: ELEV(46) = (/ &
     114177.4D0, 113760.48D0, 112394.92D0, 103877.34D0, 97972.35D0, &  !  1-5:  3s²5g,5f,5d,5p,5s
     103556.36D0, 101024.09D0, 81231.57D0, 79348.67D0, 65500.73D0, &   !  6-10: 3s²4f,4d,4p,3d,4s
     191.55D0, &                                                        !  11:   3s²3p
@@ -11873,7 +11750,7 @@ SUBROUTINE SI2OP
     119645.92D0, 167005.92D0 /)                                        !  45-46: high-n limits
 
   ! Threshold energies TLEV = ELIM - ELEV (cm⁻¹)
-  real*8, parameter :: TLEV(46) = (/ &
+  REAL(8), PARAMETER :: TLEV(46) = (/ &
     17661.0D0, 18077.92D0, 19443.48D0, 27961.06D0, 33866.05D0, &
     28282.04D0, 30814.31D0, 50606.83D0, 52489.73D0, 66337.67D0, &
     131646.85D0, &
@@ -11887,7 +11764,7 @@ SUBROUTINE SI2OP
     12192.48D0, 17557.17D0 /)
 
   ! Statistical weights
-  real*8, parameter :: GLEV(46) = (/ &
+  REAL(8), PARAMETER :: GLEV(46) = (/ &
     18.D0, 14.D0, 10.D0, 6.D0, 2.D0, 14.D0, 10.D0, 6.D0, 10.D0, &
     1.D0, 6.D0, 20.D0, 10.D0, 18.D0, 36.D0, 28.D0, 10.D0, 10.D0, &
     6.D0, 12.D0, 2.D0, 20.D0, 28.D0, 10.D0, 10.D0, 4.D0, 12.D0, &
@@ -11896,91 +11773,91 @@ SUBROUTINE SI2OP
     1.D0, 9.D0 /)
 
   ! Angular momentum quantum numbers
-  integer, parameter :: LLEV(46) = (/ &
+  INTEGER, PARAMETER :: LLEV(46) = (/ &
     4, 3, 2, 1, 0, 3, 2, 1, 2, 0, 1, &
     3, 3, 3, 3, 3, 3, 2, 2, 2, 1, 2, 2, 2, 1, 1, 1, 1, 1, 2, &
     2, 2, 2, 0, 0, 2, 2, 1, 1, 1, 1, &
     1, 1, 1, 0, 0 /)
 
   ! Principal quantum numbers
-  integer, parameter :: NQLEV(46) = (/ &
+  INTEGER, PARAMETER :: NQLEV(46) = (/ &
     5, 5, 5, 5, 5, 4, 4, 4, 3, 4, 3, &
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, &
     3, 3, 3, 4, 4, 3, 3, 3, 3, 3, 3, &
     3, 3, 3, 6, 5 /)
 
   ! Pretabulated opacity grid and supporting arrays
-  real*8,  save :: XTAB(NWGRID, NTGRID) = 0.0D0
-  real*8,  save :: HCKTTAB(NTGRID), BOLT3s2(NTGRID), BOLT3s3p(NTGRID)
-  real*8,  save :: BOLT(44, NTGRID)
-  real*8,  save :: BOLTN(kw)
-  integer, save :: INDEXT(kw)
-  real*8,  save :: TFRAC(kw)
-  integer, save :: ITEMP1 = 0
-  logical, save :: INITIALIZED = .false.
+  REAL(8),  SAVE :: XTAB(NWGRID, NTGRID) = 0.0D0
+  REAL(8),  SAVE :: HCKTTAB(NTGRID), BOLT3s2(NTGRID), BOLT3s3p(NTGRID)
+  REAL(8),  SAVE :: BOLT(44, NTGRID)
+  REAL(8),  SAVE :: BOLTN(kw)
+  INTEGER, SAVE :: INDEXT(kw)
+  REAL(8),  SAVE :: TFRAC(kw)
+  INTEGER, SAVE :: ITEMP1 = 0
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
-  real*8  :: ZEFF2LEV(44)
-  real*8  :: X(46), FREQ3, WNOTAB, FREQTAB, TTAB, H, WFRAC, TLOG10
-  integer :: I, J, K, NU, IT, IW
+  REAL(8)  :: ZEFF2LEV(44)
+  REAL(8)  :: X(46), FREQ3, WNOTAB, FREQTAB, TTAB, H, WFRAC, TLOG10
+  INTEGER :: I, J, K, NU, IT, IW
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING SI2OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING SI2OP'
 
   ! ==================================================================
   ! One-time pretabulation of opacity grid
   ! ==================================================================
-  if (.not. INITIALIZED) then
+  IF (.NOT. INITIALIZED) THEN
     ! Compute effective charges for levels 1-44
-    do I = 1, 44
+    DO I = 1, 44
       ZEFF2LEV(I) = dble(NQLEV(I))**2 / RYD * TLEV(I)
-    end do
+    END DO
 
     ! Build temperature grid
-    do K = 1, NTGRID
+    DO K = 1, NTGRID
       TTAB = 10.0D0**(3.48D0 + K * 0.02D0)
       HCKTTAB(K) = HCK / TTAB
       BOLT3s2(K) = exp(-ELIMLEV(1) * HCKTTAB(K))
       BOLT3s3p(K) = exp(-ELIMLEV(12) * HCKTTAB(K))
-      do I = 1, 44
+      DO I = 1, 44
         BOLT(I, K) = GLEV(I) * exp(-ELEV(I) * HCKTTAB(K))
-      end do
-    end do
+      END DO
+    END DO
 
     ! Build opacity table: loop over wavenumber grid
-    do NU = 1, NWGRID
+    DO NU = 1, NWGRID
       WNOTAB = dble(NU) * 1000.0D0
       FREQTAB = WNOTAB * CLIGHT
       FREQ3 = 2.815D29 / FREQTAB / FREQTAB / FREQTAB * Z**4
 
-      do I = 1, 46
+      DO I = 1, 46
         X(I) = 0.0D0
-      end do
+      END DO
 
       ! Levels 1-11: → Si III 3s²
-      do I = 1, 11
-        if (WNOTAB < TLEV(I)) exit
+      DO I = 1, 11
+        IF (WNOTAB < TLEV(I)) EXIT
         X(I) = XKARZAS(FREQTAB, ZEFF2LEV(I), NQLEV(I), LLEV(I))
-      end do
+      END DO
 
       ! Levels 12-37: → Si III 3s3p ³P₀
-      do I = 12, 37
-        if (WNOTAB < TLEV(I)) exit
+      DO I = 12, 37
+        IF (WNOTAB < TLEV(I)) EXIT
         X(I) = XKARZAS(FREQTAB, ZEFF2LEV(I), NQLEV(I), LLEV(I))
-      end do
+      END DO
 
       ! Levels 38-41: → Si III 3s3p ³P₀ (×2 degeneracy)
-      do I = 38, 41
-        if (WNOTAB < TLEV(I)) exit
+      DO I = 38, 41
+        IF (WNOTAB < TLEV(I)) EXIT
         X(I) = XKARZAS(FREQTAB, ZEFF2LEV(I), NQLEV(I), LLEV(I)) * 2.0D0
-      end do
+      END DO
 
       ! Levels 42-44: → Si III 3p² ³P₀ (×3 degeneracy)
-      do I = 42, 44
-        if (WNOTAB < TLEV(I)) exit
+      DO I = 42, 44
+        IF (WNOTAB < TLEV(I)) EXIT
         X(I) = XKARZAS(FREQTAB, ZEFF2LEV(I), NQLEV(I), LLEV(I)) * 3.0D0
-      end do
+      END DO
 
       ! Assemble opacity for each temperature point
-      do K = 1, NTGRID
+      DO K = 1, NTGRID
         ! High-n series: 3s² n≥6
         H = FREQ3 * GLEV(45) * 2.0D0 / 2.0D0 / (RYD * Z**2 * HCKTTAB(K)) &
           * (exp(-max(ELEV(45), ELIMLEV(45) - WNOTAB) * HCKTTAB(K)) &
@@ -11990,59 +11867,59 @@ SUBROUTINE SI2OP
           * (exp(-max(ELEV(46), ELIMLEV(46) - WNOTAB) * HCKTTAB(K)) &
           - BOLT3s3p(K))
         ! Sum resolved levels
-        do I = 1, 44
+        DO I = 1, 44
           H = H + X(I) * BOLT(I, K)
-        end do
+        END DO
         XTAB(NU, K) = log(H)
-      end do
-    end do
+      END DO
+    END DO
 
-    INITIALIZED = .true.
-  end if
+    INITIALIZED = .TRUE.
+  END IF
 
   ! ==================================================================
   ! Temperature-dependent precomputation (when ITEMP changes)
   ! ==================================================================
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       BOLTN(J) = (GLEV(45) * exp(-ELIMLEV(45) * HCKT(J)) &
                + GLEV(46) * exp(-ELIMLEV(46) * HCKT(J))) &
                / (RYD * Z**2 * HCKT(J))
-      TLOG10 = TLOG(J) / 2.30258509299405D0
+      TLOG10 = TLOG(J) / LN10
       IT = int((TLOG10 - 3.48D0) / 0.02D0)
       IT = max(min(IT, 50), 1)
       INDEXT(J) = IT
       TFRAC(J) = (TLOG10 - 3.48D0 - IT * 0.02D0) / 0.02D0
-    end do
-  end if
+    END DO
+  END IF
 
   ! ==================================================================
   ! Frequency evaluation: bilinear interpolation or low-freq fallback
   ! ==================================================================
-  if (WAVENO >= 12192.48D0) then
+  IF (WAVENO >= 12192.48D0) THEN
     ! Bilinear interpolation in pretabulated grid
     IW = int(WAVENO * 0.001D0)
     IW = max(min(IW, 199), 1)
     WFRAC = (WAVENO - IW * 1000.0D0) / 1000.0D0
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       IT = INDEXT(J)
       H = (XTAB(IW, IT) * (1.0D0 - TFRAC(J)) &
         + XTAB(IW, IT+1) * TFRAC(J)) * (1.0D0 - WFRAC) &
         + (XTAB(IW+1, IT) * (1.0D0 - TFRAC(J)) &
         + XTAB(IW+1, IT+1) * TFRAC(J)) * WFRAC
       ASI2(J) = exp(H) * XNFP(J, 106) * STIM(J) / RHO(J)
-    end do
-  else
+    END DO
+  ELSE
     ! Low frequency: only high-n hydrogenic contribution
     ! Si III 3s² (ELIM=131838.4, n≥6) + Si III 3s3p ³P₀ (ELIM=184563.09, n≥5)
     FREQ3 = 2.815D29 / FREQ / FREQ / FREQ * Z**4
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       H = FREQ3 * (1.0D0 / EHVKT(J) - 1.0D0) * BOLTN(J)
       ASI2(J) = H * XNFP(J, 106) * STIM(J) / RHO(J)
-    end do
-  end if
-  return
+    END DO
+  END IF
+  RETURN
 
 END SUBROUTINE SI2OP
 
@@ -12059,42 +11936,42 @@ END SUBROUTINE SI2OP
 
 FUNCTION CA2OP(J)
 
-  implicit none
-  integer, intent(in) :: J
-  real*8 :: CA2OP
+  IMPLICIT NONE
+  INTEGER, INTENT(IN) :: J
+  REAL(8) :: CA2OP
 
   ! Ca II bound-free cross-section times partition function
   ! Three edges: 1044A (ground), 1218A, 1420A (excited)
-  real*8, save :: C1218(kw), C1420(kw)
-  real*8, save :: X1044 = 0.0D0, X1218 = 0.0D0, X1420 = 0.0D0
-  real*8, save :: FREQ1 = 0.0D0
-  integer, save :: ITEMP1 = 0
-  integer :: K
+  REAL(8), SAVE :: C1218(kw), C1420(kw)
+  REAL(8), SAVE :: X1044 = 0.0D0, X1218 = 0.0D0, X1420 = 0.0D0
+  REAL(8), SAVE :: FREQ1 = 0.0D0
+  INTEGER, SAVE :: ITEMP1 = 0
+  INTEGER :: K
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING CA2OP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING CA2OP'
 
   ! Recompute Boltzmann factors when temperature changes
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do K = 1, NRHOX
+    DO K = 1, NRHOX
       C1218(K) = 10.0D0 * exp(-1.697D0 / TKEV(K))
       C1420(K) = 6.0D0 * exp(-3.142D0 / TKEV(K))
-    end do
-  end if
+    END DO
+  END IF
 
   ! Recompute cross-sections when frequency changes
-  if (FREQ /= FREQ1) then
+  IF (FREQ /= FREQ1) THEN
     X1420 = 0.0D0
     X1218 = 0.0D0
     X1044 = 0.0D0
-    if (FREQ >= 2.870454D15) X1044 = 5.4D-20 * (2.870454D15 / FREQ)**3
-    if (FREQ >= 2.460127D15) X1218 = 1.64D-17 * sqrt(2.460127D15 / FREQ)
-    if (FREQ >= 2.110779D15) X1420 = SEATON(2.110779D15, 4.13D-18, 3.0D0, 0.69D0)
+    IF (FREQ >= 2.870454D15) X1044 = 5.4D-20 * (2.870454D15 / FREQ)**3
+    IF (FREQ >= 2.460127D15) X1218 = 1.64D-17 * sqrt(2.460127D15 / FREQ)
+    IF (FREQ >= 2.110779D15) X1420 = SEATON(2.110779D15, 4.13D-18, 3.0D0, 0.69D0)
     FREQ1 = FREQ
-  end if
+  END IF
 
   CA2OP = X1044 * 2.0D0 + X1218 * C1218(J) + X1420 * C1420(J)
-  return
+  RETURN
 
 END FUNCTION CA2OP
 
@@ -12122,51 +11999,51 @@ END FUNCTION CA2OP
 
 SUBROUTINE HOTOP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NUM = 60    ! number of bound-free edges
-  integer, parameter :: NPAR = 7    ! parameters per edge
+  INTEGER, PARAMETER :: NUM = 60    ! number of bound-free edges
+  INTEGER, PARAMETER :: NPAR = 7    ! parameters per edge
 
   ! COEFF_FF replaced by COEFF_FF from mod_constants
 
   ! --- Edge parameters (read from file on first call) ---
   ! A(1:7,I): freq0, sigma0, s, n_power, g_stat, E_exc, species_id
-  real*8,  save :: A(NPAR, NUM)
-  logical, save :: INITIALIZED = .false.
+  REAL(8),  SAVE :: A(NPAR, NUM)
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! --- Local variables ---
-  real*8  :: AC2OP(kw)
-  real*8  :: FREE, XSECT, XX, FRATIO
-  integer :: I, J, ID
-  character(256) :: LINE
+  REAL(8)  :: AC2OP(kw)
+  REAL(8)  :: FREE, XSECT, XX, FRATIO
+  INTEGER :: I, J, ID
+  CHARACTER(256) :: LINE
 
   ! --- External functions ---
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HOTOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HOTOP'
 
   !---------------------------------------------------------------------
   ! Read edge parameters from file on first call
   !---------------------------------------------------------------------
-  if (.not. INITIALIZED) then
-    open(unit=89, file=trim(DATADIR)//'hotop.dat', status='OLD', action='READ')
-    do
-      read(89, '(A)') LINE
-      if (LINE(1:1) /= '#') then
-        backspace(89)
-        exit
-      end if
-    end do
-    do I = 1, NUM
-      read(89, *) A(:, I)
-    end do
-    close(89)
-    INITIALIZED = .true.
-  end if
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'hotop.dat', STATUS='OLD', ACTION='READ')
+    DO
+      READ(89, '(A)') LINE
+      IF (LINE(1:1) /= '#') THEN
+        BACKSPACE(89)
+        EXIT
+      END IF
+    END DO
+    DO I = 1, NUM
+      READ(89, *) A(:, I)
+    END DO
+    CLOSE(89)
+    INITIALIZED = .TRUE.
+  END IF
 
   !---------------------------------------------------------------------
   ! Free-free opacity: C,N,O,Ne,Mg,Si,S,Fe ions (stages I-V)
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     FREE = COULFF(J,1) * 1.0D0 &
             * (XNF(J,22) + XNF(J,29) + XNF(J,37) + XNF(J,56) &
              + XNF(J,79) + XNF(J,106) + XNF(J,137) + XNF(J,352)) &
@@ -12184,44 +12061,44 @@ SUBROUTINE HOTOP
              + XNF(J,83) + XNF(J,110) + XNF(J,141) + XNF(J,356))
 
     AHOT(J) = FREE * COEFF_FF / (FREQ * FREQ * FREQ) * XNE(J) / sqrt(T(J))
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! C II bound-free — disabled (handled in LUKE per Bischoff 4 Jun 2003)
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AC2OP(J) = 0.0D0
-  end do
+  END DO
   ! CALL C2OP(AC2OP)
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AHOT(J) = AHOT(J) + AC2OP(J)
-  end do
+  END DO
 
   !---------------------------------------------------------------------
   ! Bound-free edges (60 modified-Seaton edges from various species)
   !---------------------------------------------------------------------
-  do I = 1, NUM
-    if (FREQ < A(1, I)) cycle
+  DO I = 1, NUM
+    IF (FREQ < A(1, I)) CYCLE
     FRATIO = A(1, I) / FREQ
     XSECT = A(2, I) * (A(3, I) + FRATIO - A(3, I) * FRATIO) &
           * sqrt(FRATIO ** int(A(4, I)))
     ID = int(A(7, I))
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       XX = XSECT * XNFP(J, ID) * A(5, I)
-      if (XX > AHOT(J) / 100.0D0) then
+      IF (XX > AHOT(J) / 100.0D0) THEN
         AHOT(J) = AHOT(J) + XX / exp(A(6, I) / TKEV(J))
-      end if
-    end do
-  end do
+      END IF
+    END DO
+  END DO
 
   !---------------------------------------------------------------------
   ! Apply stimulated emission and normalize by density
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AHOT(J) = AHOT(J) * STIM(J) / RHO(J)
-  end do
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE HOTOP
 
@@ -12231,15 +12108,15 @@ END SUBROUTINE HOTOP
 
 SUBROUTINE ELECOP
 
-  implicit none
-  integer :: J
+  IMPLICIT NONE
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING ELECOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING ELECOP'
   ! Thomson electron scattering: sigma_T = 0.6653e-24 cm^2
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     SIGEL(J) = SIGMA_THOMSON * XNE(J) / RHO(J)
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE ELECOP
 
@@ -12310,22 +12187,22 @@ END SUBROUTINE ELECOP
 
 SUBROUTINE H2RAOP
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, save :: ITEMP1 = 0
-  real*8  :: W, WW, SIG
-  integer :: J
+  INTEGER, SAVE :: ITEMP1 = 0
+  REAL(8)  :: W, WW, SIG
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING H2RAOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING H2RAOP'
 
   ! Recompute H₂ number density when the temperature structure changes.
   ! XNH2 is a function of T(J) only (through EQUILH2) and the H I ground
   ! state population, so it is cached between calls at the same ITEMP.
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       XNH2(J) = 0.0D0
-      if (T(J) <= 20000.0D0) then
+      IF (T(J) <= 20000.0D0) THEN
         ! Historical F77 inline polynomial fits for ln(K_eq(T)),
         ! superseded by EQUILH2(T) during modernization.  Preserved
         ! here only as a reference to the original expressions.
@@ -12337,9 +12214,9 @@ SUBROUTINE H2RAOP
 !     2(1.06206D-18-3.08720D-23*T(J))*T(J))*T(J))*T(J))*T(J))*T(J)-
 !     3 1.5*TLOG(J))
         XNH2(J) = (XNFP(J,1) * 2 * BHYD(J,1))**2 * EQUILH2(T(J))
-      end if
-    end do
-  end if
+      END IF
+    END DO
+  END IF
 
   ! Evaluate the Dalgarno & Williams (1962) cross-section.  Cap the
   ! frequency at 2.922e15 Hz (λ ≈ 1026 Å) to prevent extrapolation
@@ -12354,10 +12231,10 @@ SUBROUTINE H2RAOP
 
   ! Apply to each depth point.  The /RHO(J) factor converts from
   ! cross-section-times-number-density [cm⁻¹] to mass opacity [cm²/g].
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     SIGH2(J) = SIG * XNH2(J) / RHO(J)
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE H2RAOP
 
@@ -12402,57 +12279,57 @@ END SUBROUTINE H2RAOP
 
 SUBROUTINE HLINOP
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8, parameter :: NU_LYMAN = FREQ_RYDH   ! Lyman limit frequency (Hz)
+  REAL(8), PARAMETER :: NU_LYMAN = FREQ_RYDH   ! Lyman limit frequency (Hz)
 
   ! Maximum level for occupation probability computation.
   ! Beyond this, w_n is effectively 0 for any stellar density.
-  integer, parameter :: NMAX_OCC = 80
+  INTEGER, PARAMETER :: NMAX_OCC = 80
 
   ! --- Persistent state ---
-  real*8,  save :: BOLT(kw, 4)            ! Boltzmann × population for n=1..4
-  real*8,  save :: W_OCC(kw, NMAX_OCC)    ! occupation probabilities per depth
-  integer, save :: ITEMP1 = 0
+  REAL(8),  SAVE :: BOLT(kw, 4)            ! Boltzmann × population for n=1..4
+  REAL(8),  SAVE :: W_OCC(kw, NMAX_OCC)    ! occupation probabilities per depth
+  INTEGER, SAVE :: ITEMP1 = 0
 
   ! --- Local variables ---
-  real*8  :: H, S, A, BHYDJM, w_m
-  integer :: J, N, M, M1, M2, MFREQ
+  REAL(8)  :: H, S, A, BHYDJM, w_m
+  INTEGER :: J, N, M, M1, M2, MFREQ
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HLINOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HLINOP'
 
   !---------------------------------------------------------------------
   ! Recompute Boltzmann factors and occupation probabilities when T changes
   !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
-    do J = 1, NRHOX
+  IF (ITEMP /= ITEMP1) THEN
+    DO J = 1, NRHOX
       ! Occupation probabilities for levels 2..NMAX_OCC
       W_OCC(J, 1) = 1.0D0
-      do N = 2, NMAX_OCC
+      DO N = 2, NMAX_OCC
         W_OCC(J, N) = occupation_prob(N, XNE(J))
-      end do
+      END DO
       ! Boltzmann factors for lower levels 1..4
-      do N = 1, 4
+      DO N = 1, 4
         BOLT(J, N) = exp(-(13.595D0 - 13.595D0 / dble(N)**2) / TKEV(J)) &
                    * 2.0D0 * dble(N)**2 * BHYD(J, N) * XNFP(J, 1) / RHO(J)
-      end do
-    end do
+      END DO
+    END DO
     ITEMP1 = ITEMP
-  end if
+  END IF
 
   !---------------------------------------------------------------------
   ! Determine lower level N from frequency
   !---------------------------------------------------------------------
   N = int(sqrt(NU_LYMAN / FREQ))
-  if (N == 0 .or. N > 4) return
+  IF (N == 0 .OR. N > 4) RETURN
 
   ! Low-frequency cutoffs by series
-  select case (N)
-  case (1)
-    if (FREQ < 2.0D15) return       ! Lyman: lambda > 1500 A
-  case (2)
-    if (FREQ < 4.44D14) return       ! Balmer: lambda > 6756 A
-  end select
+  SELECT CASE (N)
+  CASE (1)
+    IF (FREQ < 2.0D15) RETURN       ! Lyman: lambda > 1500 A
+  CASE (2)
+    IF (FREQ < 4.44D14) RETURN       ! Balmer: lambda > 6756 A
+  END SELECT
 
   !---------------------------------------------------------------------
   ! Upper level nearest to current frequency
@@ -12462,65 +12339,65 @@ SUBROUTINE HLINOP
   !---------------------------------------------------------------------
   ! Sum Stark-broadened line opacity over depth
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     M1 = MFREQ
     M2 = M1 + 1
     M1 = max(M1, N + 1)
     H = 0.0D0
     S = 0.0D0
 
-    if (M1 > 6) then
+    IF (M1 > 6) THEN
       ! High upper levels: check if effectively dissolved
-      if (M1 <= NMAX_OCC) then
-        if (W_OCC(J, M1) < 1.0D-3) then
+      IF (M1 <= NMAX_OCC) THEN
+        IF (W_OCC(J, M1) < 1.0D-3) THEN
           ! Fully dissolved: no line opacity.
           ! The continuum opacity is provided by HOP's pseudo-continuum.
           AHLINE(J) = 0.0D0
           SHLINE(J) = BNU(J)
-          cycle
-        end if
-      else
+          CYCLE
+        END IF
+      ELSE
         ! Beyond tabulated range: fully dissolved
         AHLINE(J) = 0.0D0
         SHLINE(J) = BNU(J)
-        cycle
-      end if
+        CYCLE
+      END IF
       M1 = M1 - 1
       M2 = M2 + 3
       ! Special case: add Paschen-alpha (3->4) if computing Brackett (N=4)
-      if (N >= 4 .and. M1 <= 8) then
+      IF (N >= 4 .AND. M1 <= 8) THEN
         H = STARK_MMM(3, 4, J) * (1.0D0 - EHVKT(J) * BHYD(J, 4) / BHYD(J, 3)) * BOLT(J, 3)
         S = H * BNU(J) * STIM(J) / (BHYD(J, 3) / BHYD(J, 4) - EHVKT(J))
-      end if
-    end if
+      END IF
+    END IF
 
     ! Sum over upper levels in window, weighted by occupation probability.
     ! Only the surviving fraction w_m contributes as line opacity.
     ! The dissolved fraction (1 - w_m) is handled by HOP's pseudo-continuum.
-    do M = M1, M2
+    DO M = M1, M2
       BHYDJM = 1.0D0
-      if (M <= 6) BHYDJM = BHYD(J, M)
+      IF (M <= 6) BHYDJM = BHYD(J, M)
 
       ! Occupation probability weight for upper level
       w_m = 1.0D0
-      if (M >= 2 .and. M <= NMAX_OCC) w_m = W_OCC(J, M)
-      if (M > NMAX_OCC) w_m = 0.0D0
+      IF (M >= 2 .AND. M <= NMAX_OCC) w_m = W_OCC(J, M)
+      IF (M > NMAX_OCC) w_m = 0.0D0
 
       ! Line opacity (surviving fraction only)
       A = w_m * STARK_MMM(N, M, J) * (1.0D0 - EHVKT(J) * BHYDJM / BHYD(J, N)) * BOLT(J, N)
       H = H + A
       S = S + A * BNU(J) * STIM(J) / (BHYD(J, N) / BHYDJM - EHVKT(J))
-    end do
+    END DO
 
     AHLINE(J) = H
-    if (H > 0.0D0) then
+    IF (H > 0.0D0) THEN
       SHLINE(J) = S / H
-    else
+    ELSE
       SHLINE(J) = BNU(J)
-    end if
-  end do
+    END IF
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE HLINOP
 
@@ -12549,20 +12426,20 @@ END SUBROUTINE HLINOP
 
 FUNCTION STARK(N, M, J)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: N, M, J
-  real*8  :: STARK
+  INTEGER, INTENT(IN) :: N, M, J
+  REAL(8)  :: STARK
 
   ! --- Transition matrix element table: KNMTAB(M-N, N) for M-N=1..5, N=1..4 ---
-  real*8, parameter :: KNMTAB(5,4) = reshape((/ &
+  REAL(8), PARAMETER :: KNMTAB(5,4) = reshape((/ &
     .000356D0, .000523D0, .00109D0, .00149D0, .00225D0, &
     .0125D0,   .0177D0,   .028D0,   .0348D0,  .0493D0, &
     .124D0,    .171D0,    .223D0,   .261D0,   .342D0, &
     .683D0,    .866D0,   1.02D0,   1.19D0,   1.46D0 /), shape(KNMTAB))
 
   ! --- Oscillator strength proxy: FSTARK(M-N, N) for M-N=1..10, N=1..4 ---
-  real*8, parameter :: FSTARK(10,4) = reshape((/ &
+  REAL(8), PARAMETER :: FSTARK(10,4) = reshape((/ &
     .1387D0,  .07910D0, .02126D0,  .01394D0,  .006462D0, &
     .004814D0, .002779D0, .002216D0, .001443D0, .001201D0, &
     .3921D0,  .1193D0,  .03766D0,  .02209D0,  .01139D0, &
@@ -12572,32 +12449,32 @@ FUNCTION STARK(N, M, J)
     .8163D0,  .1788D0,  .05985D0,  .03189D0,  .01762D0, &
     .01196D0, .007825D0, .005882D0, .004233D0, .003375D0 /), shape(FSTARK))
 
-  real*8, parameter :: RYD = FREQ_RYDH       ! Rydberg frequency (Hz)
+  REAL(8), PARAMETER :: RYD = FREQ_RYDH       ! Rydberg frequency (Hz)
   ! PI from mod_constants; CLIGHT_ANGS replaces local CLIGHT (Å·Hz)
-  real*8, parameter :: A0 = 0.0265384D0       ! profile normalization constant
+  REAL(8), PARAMETER :: A0 = 0.0265384D0       ! profile normalization constant
 
   ! --- Persistent state ---
-  real*8,  save :: F0(kw)       ! Holtsmark normal field strength
-  integer, save :: ITEMP1 = 0
+  REAL(8),  SAVE :: F0(kw)       ! Holtsmark normal field strength
+  INTEGER, SAVE :: ITEMP1 = 0
 
   ! --- Local variables ---
-  real*8  :: XN, XM, X, XX, NN, MM
-  real*8  :: KNM, FNM, FREQNM, DEL, DBETA, BETA
-  real*8  :: Y1, Y2, QSTAT, IMPACT, EXY2
-  real*8  :: PROF, RATIO, DIOI
-  integer :: K, MMINN
+  REAL(8)  :: XN, XM, X, XX, NN, MM
+  REAL(8)  :: KNM, FNM, FREQNM, DEL, DBETA, BETA
+  REAL(8)  :: Y1, Y2, QSTAT, IMPACT, EXY2
+  REAL(8)  :: PROF, RATIO, DIOI
+  INTEGER :: K, MMINN
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING STARK'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING STARK'
 
   !---------------------------------------------------------------------
   ! Recompute Holtsmark field when temperature structure changes
   !---------------------------------------------------------------------
-  if (ITEMP /= ITEMP1) then
-    do K = 1, NRHOX
-      F0(K) = 1.25D-9 * XNE(K)**0.6666667D0
-    end do
+  IF (ITEMP /= ITEMP1) THEN
+    DO K = 1, NRHOX
+      F0(K) = 1.25D-9 * XNE(K)**(2.0D0/3.0D0)
+    END DO
     ITEMP1 = ITEMP
-  end if
+  END IF
 
   !---------------------------------------------------------------------
   ! Transition properties
@@ -12611,19 +12488,19 @@ FUNCTION STARK(N, M, J)
   MMINN = M - N
 
   ! Transition matrix element KNM
-  if (MMINN <= 5) then
+  IF (MMINN <= 5) THEN
     KNM = KNMTAB(MMINN, N)
-  else
+  ELSE
     KNM = 5.5D-5 * (NN * MM)**2 / (MM - NN)
-  end if
+  END IF
 
   ! Oscillator strength proxy FNM
-  if (MMINN <= 10) then
+  IF (MMINN <= 10) THEN
     FNM = FSTARK(MMINN, N)
-  else
+  ELSE
     FNM = FSTARK(10, N) * ((20.0D0 * XN + 100.0D0) &
          / ((XN + 10.0D0) * XM * (1.0D0 - XX)))**3
-  end if
+  END IF
 
   !---------------------------------------------------------------------
   ! Line center, detuning, and normalized detuning
@@ -12641,42 +12518,42 @@ FUNCTION STARK(N, M, J)
   QSTAT = 1.5D0 + 0.5D0 * (Y1**2 - 1.384D0) / (Y1**2 + 1.384D0)
 
   IMPACT = 0.0D0
-  if (Y1 < 8.0D0 .and. Y1 < Y2) then
+  IF (Y1 < 8.0D0 .AND. Y1 < Y2) THEN
     EXY2 = 0.0D0
-    if (Y2 <= 8.0D0) EXY2 = EXINT(Y2)
+    IF (Y2 <= 8.0D0) EXY2 = EXINT(Y2)
     IMPACT = 1.438D0 * sqrt(Y1 * (1.0D0 - XX)) &
            * (0.4D0 * exp(-Y1) + EXINT(Y1) - 0.5D0 * EXY2)
-  end if
+  END IF
 
   !---------------------------------------------------------------------
   ! Profile and ratio assembly
   !---------------------------------------------------------------------
-  if (BETA <= 20.0D0) then
+  IF (BETA <= 20.0D0) THEN
     ! Core and intermediate wings
     PROF  = 8.0D0 / (80.0D0 + BETA**3)
     RATIO = QSTAT + IMPACT
-  else
+  ELSE
     ! Far wings with debye-shielding correction
     PROF = 1.5D0 / BETA / BETA / sqrt(BETA)
     DIOI = 6.28D0 * 1.48D-25 * (2.0D0 * MM * RYD / DEL) * XNE(J) &
          * (sqrt(2.0D0 * MM * RYD / DEL) * (1.3D0 * QSTAT + 0.30D0 * IMPACT) &
           - 3.9D0 * RYD * HKT(J))
     RATIO = QSTAT * min(1.0D0 + DIOI, 1.25D0) + IMPACT
-  end if
+  END IF
 
   STARK = A0 * FNM * PROF * DBETA * RATIO
-  return
+  RETURN
 
-contains
+CONTAINS
 
   !-----------------------------------------------------------------------
   ! Exponential integral E1(x) approximation (Abramowitz & Stegun 5.1.53)
   !-----------------------------------------------------------------------
-  pure real*8 function EXINT(X)
-    real*8, intent(in) :: X
+  PURE REAL(8) FUNCTION EXINT(X)
+    REAL(8), INTENT(IN) :: X
     EXINT = -log(X) - 0.57516D0 + (0.97996D0 + (-0.21654D0 &
           + (0.033572D0 + (-0.0029222D0 + 1.05439D-4 * X) * X) * X) * X) * X
-  end function EXINT
+  END FUNCTION EXINT
 
 END FUNCTION STARK
 
@@ -12703,34 +12580,34 @@ END FUNCTION STARK
 
 SUBROUTINE INIT_STARK_TABLES
 
-  implicit none
+  IMPLICIT NONE
 
-  character(len=256) :: filepath
-  character(len=*), parameter :: SERIES_FILES(4) = &
+  CHARACTER(len=256) :: filepath
+  CHARACTER(len=*), PARAMETER :: SERIES_FILES(4) = &
     (/ 'stehle_lyman.bin   ', 'stehle_balmer.bin  ', &
        'stehle_paschen.bin ', 'stehle_brackett.bin' /)
-  integer :: iseries, iu, n_lower, n_upper_min, n_upper_max
-  integer :: n_dens, n_temps, n_dalpha, n_trans, ios
+  INTEGER :: iseries, iu, n_lower, n_upper_min, n_upper_max
+  INTEGER :: n_dens, n_temps, n_dalpha, n_trans, ios
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING INIT_STARK_TABLES'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING INIT_STARK_TABLES'
 
-  do iseries = 1, NSTARK_SERIES
+  DO iseries = 1, NSTARK_SERIES
 
     ! Build file path
     filepath = trim(DATADIR) // '/' // trim(SERIES_FILES(iseries))
 
     ! Try to open the file
     iu = 200 + iseries
-    open(iu, file=trim(filepath), status='old', form='unformatted', &
-         access='sequential', iostat=ios)
-    if (ios /= 0) then
-      write(6,'(A,A)') '  INIT_STARK_TABLES: file not found: ', trim(filepath)
-      STEHLE_DATA(iseries)%loaded = .false.
-      cycle
-    end if
+    OPEN(iu, FILE=trim(filepath), STATUS='old', FORM='unformatted', &
+         ACCESS='sequential', IOSTAT=ios)
+    IF (ios /= 0) THEN
+      WRITE(6,'(A,A)') '  INIT_STARK_TABLES: file not found: ', trim(filepath)
+      STEHLE_DATA(iseries)%loaded = .FALSE.
+      CYCLE
+    END IF
 
     ! Record 1: dimensions
-    read(iu) n_lower, n_upper_min, n_upper_max, n_dens, n_temps, n_dalpha
+    READ(iu) n_lower, n_upper_min, n_upper_max, n_dens, n_temps, n_dalpha
     n_trans = n_upper_max - n_upper_min + 1
 
     STEHLE_DATA(iseries)%n_lower     = n_lower
@@ -12740,30 +12617,30 @@ SUBROUTINE INIT_STARK_TABLES
     STEHLE_DATA(iseries)%n_dens      = n_dens
 
     ! Record 2: density grid
-    read(iu) STEHLE_DATA(iseries)%density_grid(1:n_dens)
+    READ(iu) STEHLE_DATA(iseries)%density_grid(1:n_dens)
 
     ! Record 3: temperature grid
-    read(iu) STEHLE_DATA(iseries)%temp_grid(1:n_temps)
+    READ(iu) STEHLE_DATA(iseries)%temp_grid(1:n_temps)
 
     ! Record 4: log Δα grid
-    read(iu) STEHLE_DATA(iseries)%log_dalpha_grid(1:n_dalpha)
+    READ(iu) STEHLE_DATA(iseries)%log_dalpha_grid(1:n_dalpha)
 
     ! Records 5-6: per-transition metadata
-    allocate(STEHLE_DATA(iseries)%max_dens_idx(n_trans))
-    allocate(STEHLE_DATA(iseries)%k_alpha(n_trans))
-    read(iu) STEHLE_DATA(iseries)%max_dens_idx(1:n_trans)
-    read(iu) STEHLE_DATA(iseries)%k_alpha(1:n_trans)
+    ALLOCATE(STEHLE_DATA(iseries)%max_dens_idx(n_trans))
+    ALLOCATE(STEHLE_DATA(iseries)%k_alpha(n_trans))
+    READ(iu) STEHLE_DATA(iseries)%max_dens_idx(1:n_trans)
+    READ(iu) STEHLE_DATA(iseries)%k_alpha(1:n_trans)
 
     ! Record 7: profile array
-    allocate(STEHLE_DATA(iseries)%profiles(n_dalpha, n_temps, n_dens, n_trans))
-    read(iu) STEHLE_DATA(iseries)%profiles
+    ALLOCATE(STEHLE_DATA(iseries)%profiles(n_dalpha, n_temps, n_dens, n_trans))
+    READ(iu) STEHLE_DATA(iseries)%profiles
 
-    close(iu)
-    STEHLE_DATA(iseries)%loaded = .true.
+    CLOSE(iu)
+    STEHLE_DATA(iseries)%loaded = .TRUE.
 
-  end do
+  END DO
 
-  STEHLE_TABLES_LOADED = .true.
+  STEHLE_TABLES_LOADED = .TRUE.
 
 END SUBROUTINE INIT_STARK_TABLES
 
@@ -12781,15 +12658,15 @@ END SUBROUTINE INIT_STARK_TABLES
 
 FUNCTION hydrogen_f_value(N, M)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: N, M
-  real*8 :: hydrogen_f_value
+  INTEGER, INTENT(IN) :: N, M
+  REAL(8) :: hydrogen_f_value
 
   ! Tabulated gf = g_n × f_{N→M} for hydrogen
   ! Source: NIST Atomic Spectra Database (Wiese et al.)
   ! g_n = 2N²
-  real*8, parameter :: GF_LYMAN(29) = (/ &
+  REAL(8), PARAMETER :: GF_LYMAN(29) = (/ &
     0.8324D0, 0.1580D0, 0.05798D0, 0.02787D0, 0.01551D0, &
     0.009466D0, 0.006158D0, 0.004220D0, 0.003014D0, 0.002225D0, &
     0.001688D0, 0.001312D0, 0.001038D0, 0.000835D0, 0.000681D0, &
@@ -12797,7 +12674,7 @@ FUNCTION hydrogen_f_value(N, M)
     0.000249D0, 0.000216D0, 0.000189D0, 0.000166D0, 0.000146D0, &
     0.000129D0, 0.000115D0, 0.000103D0, 0.000092D0 /)
 
-  real*8, parameter :: GF_BALMER(28) = (/ &
+  REAL(8), PARAMETER :: GF_BALMER(28) = (/ &
     5.126D0, 0.9543D0, 0.3571D0, 0.1770D0, 0.1023D0, &
     0.06497D0, 0.04394D0, 0.03104D0, 0.02270D0, 0.01708D0, &
     0.01314D0, 0.01028D0, 0.00818D0, 0.00659D0, 0.00537D0, &
@@ -12805,7 +12682,7 @@ FUNCTION hydrogen_f_value(N, M)
     0.00194D0, 0.00168D0, 0.00146D0, 0.00128D0, 0.00113D0, &
     0.00100D0, 0.000889D0, 0.000793D0 /)
 
-  real*8, parameter :: GF_PASCHEN(27) = (/ &
+  REAL(8), PARAMETER :: GF_PASCHEN(27) = (/ &
     15.16D0, 2.715D0, 1.001D0, 0.4937D0, 0.2850D0, &
     0.1813D0, 0.1232D0, 0.08804D0, 0.06526D0, 0.04975D0, &
     0.03882D0, 0.03089D0, 0.02498D0, 0.02050D0, 0.01703D0, &
@@ -12813,38 +12690,38 @@ FUNCTION hydrogen_f_value(N, M)
     0.00677D0, 0.00595D0, 0.00526D0, 0.00467D0, 0.00416D0, &
     0.00373D0, 0.00335D0 /)
 
-  real*8, parameter :: GF_BRACKETT(3) = (/ &
+  REAL(8), PARAMETER :: GF_BRACKETT(3) = (/ &
     33.22D0, 5.731D0, 2.092D0 /)
 
-  integer :: idx
-  real*8  :: gf, xn, xm
+  INTEGER :: idx
+  REAL(8)  :: gf, xn, xm
 
   xn = dble(N)
   xm = dble(M)
 
-  if (M <= N) then
+  IF (M <= N) THEN
     hydrogen_f_value = 0.0D0
-    return
-  end if
+    RETURN
+  END IF
 
   idx = M - N  ! for Lyman: idx = M-1; for Balmer: idx = M-2; etc.
 
-  if (N == 1 .and. idx <= 29) then
+  IF (N == 1 .AND. idx <= 29) THEN
     gf = GF_LYMAN(idx)
-  else if (N == 2 .and. idx <= 28) then
+  ELSE IF (N == 2 .AND. idx <= 28) THEN
     gf = GF_BALMER(idx)
-  else if (N == 3 .and. idx <= 27) then
+  ELSE IF (N == 3 .AND. idx <= 27) THEN
     gf = GF_PASCHEN(idx)
-  else if (N == 4 .and. idx <= 3) then
+  ELSE IF (N == 4 .AND. idx <= 3) THEN
     gf = GF_BRACKETT(idx)
-  else
+  ELSE
     ! Kramers approximation with empirical correction for higher n
     ! gf ≈ 1.96 × n^2 / (m^3 × (1/n^2 - 1/m^2)^3) × correction
     ! The correction factor accounts for the Gaunt factor
     gf = 1.9603D0 * xn**2 / (xm**3 * (1.0D0/xn**2 - 1.0D0/xm**2)**3)
     ! Apply empirical scale to match exact values at table boundary
     gf = gf * 0.80D0  ! approximate average Gaunt factor
-  end if
+  END IF
 
   hydrogen_f_value = gf / (2.0D0 * xn**2)
 
@@ -12875,62 +12752,97 @@ END FUNCTION hydrogen_f_value
 
 FUNCTION STARK_MMM(N, M, J)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: N, M, J
-  real*8 :: STARK_MMM
+  INTEGER, INTENT(IN) :: N, M, J
+  REAL(8) :: STARK_MMM
 
   ! Physical constants
-  real*8, parameter :: A0 = 0.0265384D0         ! π e² / (m_e c) [cm²/s]
-  real*8, parameter :: CLIGHT_ANGS = 2.9979D18   ! speed of light [Å/s]
-  real*8, parameter :: RYD_ANG = 911.7633455D0  ! Rydberg wavelength [Å]
+  REAL(8), PARAMETER :: A0 = 0.0265384D0         ! π e² / (m_e c) [cm²/s]
 
   ! Local variables
-  real*8  :: xn, xm, lambda0, freq_nm, del_freq
-  real*8  :: F0, dalpha, log_dalpha, log_ne
-  real*8  :: I_dalpha, f_nm
-  real*8  :: frac_d, frac_t, frac_a
-  real*8  :: v000, v001, v010, v011, v100, v101, v110, v111
-  real*8  :: v00, v01, v10, v11, v0, v1
-  integer :: iseries, itrans, id1, id2, it1, it2, ia1, ia2
-  integer :: nd, nt
+  REAL(8)  :: xn, xm, lambda0, freq_nm, del_freq
+  REAL(8)  :: F0, dalpha, log_dalpha, log_ne, ne_eff
+  REAL(8)  :: I_dalpha, f_nm
+  REAL(8)  :: frac_d, frac_t, frac_a
+  REAL(8)  :: v000, v001, v010, v011, v100, v101, v110, v111
+  REAL(8)  :: v00, v01, v10, v11, v0, v1
+  INTEGER :: iseries, itrans, id1, id2, it1, it2, ia1, ia2
+  INTEGER :: nd, nt
 
-  type(stark_series_t), pointer :: S
+  TYPE(stark_series_t), POINTER :: S
 
   ! ---------------------------------------------------------------
   ! Lazy initialization: load tables on first call
   ! ---------------------------------------------------------------
-  if (.not. STEHLE_TABLES_LOADED) then
-    call INIT_STARK_TABLES
-  end if
+  IF (.NOT. STEHLE_TABLES_LOADED) THEN
+    CALL INIT_STARK_TABLES
+  END IF
 
   ! ---------------------------------------------------------------
   ! Determine which series this transition belongs to
   ! ---------------------------------------------------------------
-  if (N < 1 .or. N > 4 .or. M <= N) then
+  IF (N < 1 .OR. N > 4 .OR. M <= N) THEN
     STARK_MMM = STARK(N, M, J)
-    return
-  end if
+    RETURN
+  END IF
   iseries = N
 
   ! Check if tables are loaded for this series
-  if (.not. STEHLE_TABLES_LOADED .or. .not. STEHLE_DATA(iseries)%loaded) then
+  IF (.NOT. STEHLE_TABLES_LOADED .OR. .NOT. STEHLE_DATA(iseries)%loaded) THEN
     STARK_MMM = STARK(N, M, J)
-    return
-  end if
+    RETURN
+  END IF
 
   S => STEHLE_DATA(iseries)
 
   ! Check if this transition is in the table range
-  if (M < S%n_upper_min .or. M > S%n_upper_max) then
+  IF (M < S%n_upper_min .OR. M > S%n_upper_max) THEN
     STARK_MMM = STARK(N, M, J)
-    return
-  end if
+    RETURN
+  END IF
 
   itrans = M - S%n_upper_min + 1
 
   ! ---------------------------------------------------------------
-  ! Compute detuning in Δα units
+  ! Density regime dispatch.
+  !
+  ! Four cases, matching synthe_module's STARK_MMM policy:
+  !
+  !   (a) XNE > density_grid(n_dens)  (above entire series table)
+  !       Fall back to the analytic K-P STARK function.  The upper
+  !       levels for the whole series are dissolving and the Stehle
+  !       table has nothing to say at these densities.
+  !
+  !   (b) XNE > density_grid(max_dens_idx(itrans))  (within the grid
+  !       but above the per-transition Inglis-Teller density)
+  !       Stay in the Stehle path; cap XNE at the per-transition IT
+  !       density for both the F0 calculation and the density
+  !       bracketing below.  This gives the broadest tabulated
+  !       profile for this specific transition and merges smoothly
+  !       into the pseudo-continuum region.  The dissolved-fraction
+  !       opacity is separately accounted for by the Hummer-Mihalas
+  !       occupation-probability formalism in HOP (pseudo-continuum)
+  !       and HLINOP (w_m weighting of the bound-bound sum).
+  !
+  !   (c) density_grid(1) <= XNE <= density_grid(max_dens_idx(itrans))
+  !       Normal interpolation on the Stehle grid with ne_eff = XNE.
+  !
+  !   (d) XNE < density_grid(1)  (below entire grid ~ 1e10 cm^-3)
+  !       Stay in the Stehle path; frac_d clamps to 0 (lowest row)
+  !       below.  F0 uses the true small XNE so the far-wing
+  !       asymptotic expression still degrades gracefully.  Falling
+  !       back to K-P here was found to introduce profile
+  !       discontinuities at shallow layers (see note further down).
+  ! ---------------------------------------------------------------
+  IF (XNE(J) > S%density_grid(S%n_dens)) THEN
+    STARK_MMM = STARK(N, M, J)
+    RETURN
+  END IF
+  ne_eff = MIN(XNE(J), S%density_grid(S%max_dens_idx(itrans)))
+
+  ! ---------------------------------------------------------------
+  ! Compute detuning in Δα units (using capped density)
   ! ---------------------------------------------------------------
   xn = dble(N)
   xm = dble(M)
@@ -12938,11 +12850,11 @@ FUNCTION STARK_MMM(N, M, J)
   freq_nm = CLIGHT_ANGS / lambda0
   del_freq = abs(FREQ - freq_nm)
 
-  F0 = 1.25D-9 * XNE(J)**(2.0D0/3.0D0)
-  if (F0 <= 0.0D0) then
+  F0 = 1.25D-9 * ne_eff**(2.0D0/3.0D0)
+  IF (F0 <= 0.0D0) THEN
     STARK_MMM = STARK(N, M, J)
-    return
-  end if
+    RETURN
+  END IF
 
   ! Δα = Δλ / F0, and Δλ = λ₀²/c × Δν (for small Δλ)
   dalpha = lambda0**2 / CLIGHT_ANGS * del_freq / F0
@@ -12954,45 +12866,34 @@ FUNCTION STARK_MMM(N, M, J)
   nt = NSTARK_TEMPS
 
   ! Density bounds.
-  ! Below the tabulated grid: lines are well-defined but the table doesn't
-  ! reach this density; fall back to the analytic profile.
-  ! Above the tabulated grid: we are past the Inglis-Teller limit for every
-  ! transition in this series, so the upper level has dissolved into the
-  ! continuum and there is no bound-bound opacity to add. The dissolved
-  ! oscillator strength is accounted for on the b-f side via the
-  ! Hummer-Mihalas occupation probability formalism in HOP.
-  log_ne = LOG10(XNE(J))
-  if (XNE(J) < S%density_grid(1)) then
-    STARK_MMM = STARK(N, M, J)
-    return
-  end if
-  if (XNE(J) > S%density_grid(nd)) then
-    STARK_MMM = 0.0D0
-    return
-  end if
-
-  ! Per-transition Inglis-Teller limit: the upper level m has dissolved
-  ! at this density for this specific transition. Return zero opacity;
-  ! the f-strength has moved to the pseudo-continuum (handled in HOP).
-  if (XNE(J) > S%density_grid(S%max_dens_idx(itrans))) then
-    STARK_MMM = 0.0D0
-    return
-  end if
+  ! Below the tabulated grid (ne < density_grid(1) ~ 1e10 cm^-3):
+  ! stay in the Stehle path rather than falling back to K-P.  The
+  ! frac_d clamp below pins the interpolation to the lowest density
+  ! row, and at these densities Stark broadening is weak anyway so
+  ! the profile is dominated by the Doppler convolution baked into
+  ! the Stehle tables.  Falling back to K-P here was found (by the
+  ! synthe_module work) to introduce a discontinuity in the emergent
+  ! profile at the K-P nwid/hfwid boundary (~0.12 A from line centre
+  ! for H18) for the shallowest solar layers.  The effect is also
+  ! very relevant for M-dwarf atmospheres where most layers have
+  ! Ne < 1e10 cm^-3.  Matches synthe_module policy.
+  ! (Above-grid already handled further up by the K-P fallback.)
+  log_ne = LOG10(ne_eff)
 
   ! Temperature bounds
-  if (T(J) < S%temp_grid(1) * 0.5D0 .or. &
-      T(J) > S%temp_grid(nt) * 2.0D0) then
+  IF (T(J) < S%temp_grid(1) * 0.5D0 .OR. &
+      T(J) > S%temp_grid(nt) * 2.0D0) THEN
     STARK_MMM = STARK(N, M, J)
-    return
-  end if
+    RETURN
+  END IF
 
   ! ---------------------------------------------------------------
-  ! Find density bracket
+  ! Find density bracket (using capped ne_eff, not raw XNE)
   ! ---------------------------------------------------------------
   id1 = 1
-  do id1 = 1, nd - 1
-    if (XNE(J) <= S%density_grid(id1 + 1)) exit
-  end do
+  DO id1 = 1, nd - 1
+    IF (ne_eff <= S%density_grid(id1 + 1)) EXIT
+  END DO
   id1 = max(1, min(nd - 1, id1))
   id2 = id1 + 1
   frac_d = (log_ne - LOG10(S%density_grid(id1))) / &
@@ -13003,9 +12904,9 @@ FUNCTION STARK_MMM(N, M, J)
   ! Find temperature bracket
   ! ---------------------------------------------------------------
   it1 = 1
-  do it1 = 1, nt - 1
-    if (T(J) <= S%temp_grid(it1 + 1)) exit
-  end do
+  DO it1 = 1, nt - 1
+    IF (T(J) <= S%temp_grid(it1 + 1)) EXIT
+  END DO
   it1 = max(1, min(nt - 1, it1))
   it2 = it1 + 1
   frac_t = (T(J) - S%temp_grid(it1)) / &
@@ -13015,36 +12916,36 @@ FUNCTION STARK_MMM(N, M, J)
   ! ---------------------------------------------------------------
   ! Find Δα bracket (in log space)
   ! ---------------------------------------------------------------
-  if (dalpha <= 0.0D0) then
+  IF (dalpha <= 0.0D0) THEN
     ! At line centre: use first grid point value
     log_dalpha = S%log_dalpha_grid(1)
     ia1 = 1
     ia2 = 1
     frac_a = 0.0D0
-  else
+  ELSE
     log_dalpha = LOG10(dalpha)
-    if (log_dalpha <= S%log_dalpha_grid(1)) then
+    IF (log_dalpha <= S%log_dalpha_grid(1)) THEN
       ia1 = 1
       ia2 = 1
       frac_a = 0.0D0
-    else if (log_dalpha >= S%log_dalpha_grid(NSTARK_DALPHA)) then
+    ELSE IF (log_dalpha >= S%log_dalpha_grid(NSTARK_DALPHA)) THEN
       ! Beyond table: use asymptotic wing K_alpha / Δα^2.5
       f_nm = hydrogen_f_value(N, M)
       I_dalpha = S%k_alpha(itrans) / dalpha**2.5D0
       STARK_MMM = A0 * f_nm * I_dalpha * lambda0**2 / (CLIGHT_ANGS * F0)
-      return
-    else
+      RETURN
+    ELSE
       ia1 = 1
-      do ia1 = 1, NSTARK_DALPHA - 1
-        if (log_dalpha <= S%log_dalpha_grid(ia1 + 1)) exit
-      end do
+      DO ia1 = 1, NSTARK_DALPHA - 1
+        IF (log_dalpha <= S%log_dalpha_grid(ia1 + 1)) EXIT
+      END DO
       ia1 = max(1, min(NSTARK_DALPHA - 1, ia1))
       ia2 = ia1 + 1
       frac_a = (log_dalpha - S%log_dalpha_grid(ia1)) / &
                (S%log_dalpha_grid(ia2) - S%log_dalpha_grid(ia1))
       frac_a = max(0.0D0, min(1.0D0, frac_a))
-    end if
-  end if
+    END IF
+  END IF
 
   ! ---------------------------------------------------------------
   ! Trilinear interpolation in (density, temperature, Δα)
@@ -13060,10 +12961,10 @@ FUNCTION STARK_MMM(N, M, J)
   v111 = S%profiles(ia2, it2, id2, itrans)
 
   ! Guard against zero/negative values before taking log
-  if (v000 <= 0.0D0 .or. v001 <= 0.0D0 .or. &
-      v010 <= 0.0D0 .or. v011 <= 0.0D0 .or. &
-      v100 <= 0.0D0 .or. v101 <= 0.0D0 .or. &
-      v110 <= 0.0D0 .or. v111 <= 0.0D0) then
+  IF (v000 <= 0.0D0 .OR. v001 <= 0.0D0 .OR. &
+      v010 <= 0.0D0 .OR. v011 <= 0.0D0 .OR. &
+      v100 <= 0.0D0 .OR. v101 <= 0.0D0 .OR. &
+      v110 <= 0.0D0 .OR. v111 <= 0.0D0) THEN
     ! Linear interpolation fallback if any vertex is zero
     v00 = v000 + frac_a * (v001 - v000)
     v01 = v010 + frac_a * (v011 - v010)
@@ -13072,7 +12973,7 @@ FUNCTION STARK_MMM(N, M, J)
     v0 = v00 + frac_t * (v01 - v00)
     v1 = v10 + frac_t * (v11 - v10)
     I_dalpha = v0 + frac_d * (v1 - v0)
-  else
+  ELSE
     ! Log-space interpolation for better wing accuracy
     v000 = LOG(v000); v001 = LOG(v001)
     v010 = LOG(v010); v011 = LOG(v011)
@@ -13086,7 +12987,7 @@ FUNCTION STARK_MMM(N, M, J)
     v0 = v00 + frac_t * (v01 - v00)
     v1 = v10 + frac_t * (v11 - v10)
     I_dalpha = EXP(v0 + frac_d * (v1 - v0))
-  end if
+  END IF
 
   I_dalpha = max(I_dalpha, 0.0D0)
 
@@ -13125,41 +13026,41 @@ END FUNCTION STARK_MMM
 
 SUBROUTINE LINOP1
 
-  implicit none
+  IMPLICIT NONE
 
   ! Named constants (derived from mod_constants)
-  real*8, parameter :: CEN_PREFAC4 = 0.026538D0 / SQRTPI / CLIGHT_NMS
-  real*8, parameter :: FOURPI_C_INV = 1.0D0 / (FOURPI * CLIGHT_NMS)
-  real*8, parameter :: LORENTZ_PREFAC = INVSQRTPI
-  real*8, parameter :: ADAMP_THRESH = 0.20D0
-  integer, parameter :: MAX_WING = 100
+  REAL(8), PARAMETER :: CEN_PREFAC4 = 0.026538D0 / SQRTPI / CLIGHT_NMS
+  REAL(8), PARAMETER :: FOURPI_C_INV = 1.0D0 / (FOURPI * CLIGHT_NMS)
+  REAL(8), PARAMETER :: LORENTZ_PREFAC = INVSQRTPI
+  REAL(8), PARAMETER :: ADAMP_THRESH = 0.20D0
+  INTEGER, PARAMETER :: MAX_WING = 100
 
   ! Local variables
-  real*8  :: ELO, CGF, GAMMAR, GAMMAS, GAMMAW
-  real*8  :: ADAMP, CENTER, CV, DOPWAVE, VVOIGT, WLVAC4
-  real*8  :: TXNXN(kw)
-  real*8  :: RATIOLG, START, STOP
-  integer*4 :: LINEREC(4)
-  integer*4 :: IFJ(kw+1)
-  integer :: LINE, J, K, NU, IW, I, IV, NUCONT, IWLOLD, IFLINE, LINEUSED
+  REAL(8)  :: ELO, CGF, GAMMAR, GAMMAS, GAMMAW
+  REAL(8)  :: ADAMP, CENTER, CV, DOPWAVE, VVOIGT, WLVAC4
+  REAL(8)  :: TXNXN(kw)
+  REAL(8)  :: RATIOLG, START, STOP
+  INTEGER(4) :: LINEREC(4)
+  INTEGER(4) :: IFJ(kw+1)
+  INTEGER :: LINE, J, K, NU, IW, I, IV, NUCONT, IWLOLD, IFLINE, LINEUSED
 
-  if (IDEBUG == 1) write(6, '(A)') ' RUNNING LINOP1'
+  IF (IDEBUG == 1) WRITE(6, '(A)') ' RUNNING LINOP1'
 
   IFJ(1) = 0
   RATIOLG = log(1.0D0 + 1.0D0 / 2000000.0D0)
 
   ! Initialize line opacity array
-  do NU = 1, NUMNU
-    do J = 1, NRHOX
+  DO NU = 1, NUMNU
+    DO J = 1, NRHOX
       XLINES(J, NU) = 0.0
-    end do
-  end do
+    END DO
+  END DO
 
   ! Precompute van der Waals broadening proxy
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TXNXN(J) = (XNF(J,1) + 0.42D0*XNF(J,3) + 0.85D0*XNF(J,841)) &
                * (T(J) / 10000.D0)**0.3D0
-  end do
+  END DO
 
   NUCONT = 1
   NU = 1
@@ -13171,59 +13072,59 @@ SUBROUTINE LINOP1
   !---------------------------------------------------------------------
   ! Main line loop (reads from in-memory LINEDATA array)
   !---------------------------------------------------------------------
-  do LINE = 1, NLINES_STORED
+  DO LINE = 1, NLINES_STORED
     LINEREC = LINEDATA(:, LINE)
-    call UNPACK_LINEDATA(LINEREC)
-    if (mod(LINE, 100000) == 1 .and. ITER == 1 .and. IDEBUG == 1) &
-      write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+    CALL UNPACK_LINEDATA(LINEREC)
+    IF (mod(LINE, 100000) == 1 .AND. ITER == 1 .AND. IDEBUG == 1) &
+      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
 
     ! Check wavelength ordering
     ! This will occur e.g., when multiple line lists (lowlines+diatomics)
     ! are concatenated together.  This is not bad, it just slows down the 
     ! subsequent search.  If it happens a lot, it can be a performance hit
-    if (IWL < IWLOLD) then
+    IF (IWL < IWLOLD) THEN
        !write(6, *) IWL, IWLOLD
        !write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
        NUCONT = 1
        NU = 1
-    end if
+    END IF
 
     ! Advance continuous opacity bin
-    do while (IWL >= IWAVETAB(NUCONT))
+    DO WHILE (IWL >= IWAVETAB(NUCONT))
       NUCONT = NUCONT + 1
-      if (NUCONT > 344) then
-        write(6, '(A)') ' WARNING: NUCONT > 344, clamping'
+      IF (NUCONT > 344) THEN
+        WRITE(6, '(A)') ' WARNING: NUCONT > 344, clamping'
         NUCONT = 344
-        exit
-      end if
-    end do
+        EXIT
+      END IF
+    END DO
 
     ! Bounds check on species index
     NELION = abs(IELION / 10)
-    if (NELION < 1 .or. NELION > mion) then
-      if (IDEBUG == 1) write(6, '(A,I6,A,I10)') &
+    IF (NELION < 1 .OR. NELION > mion) THEN
+      IF (IDEBUG == 1) WRITE(6, '(A,I6,A,I10)') &
         '  LINOP1: NELION=', NELION, ' OOB, LINE=', LINE
       IWLOLD = IWL
-      cycle
-    end if
+      CYCLE
+    END IF
 
     ! Convert wavelength
     WLVAC = exp(IWL * RATIOLG)
     WLVAC4 = WLVAC
-    if (WLVAC < START .or. WLVAC > STOP) then
+    IF (WLVAC < START .OR. WLVAC > STOP) THEN
       IWLOLD = IWL
-      cycle
-    end if
+      CYCLE
+    END IF
 
     ! Advance frequency grid to match line position
-    do while (WLVAC >= WAVESET(NU))
+    DO WHILE (WLVAC >= WAVESET(NU))
       NU = NU + 1
-      if (NU >= NUMNU) then
+      IF (NU >= NUMNU) THEN
         ! Last point may miss blue line wings
         IWLOLD = IWL
-        cycle
-      end if
-    end do
+        CYCLE
+      END IF
+    END DO
 
     ! Convert line parameters
     CGF = CEN_PREFAC4 * WLVAC4 * TABLOG(IGFLOG)
@@ -13234,140 +13135,140 @@ SUBROUTINE LINOP1
     !-------------------------------------------------------------------
     ! Phase 1: Coarse depth grid (every 8th depth)
     !-------------------------------------------------------------------
-    do J = 8, NRHOX, 8
+    DO J = 8, NRHOX, 8
       IFJ(J+1) = 0
       CENTER = CGF * XNFDOP(J, NELION)
-      if (CENTER < TABCONT(J, NUCONT)) cycle
+      IF (CENTER < TABCONT(J, NUCONT)) CYCLE
       CENTER = CENTER * exp(-ELO * HCKT(J))
-      if (CENTER < TABCONT(J, NUCONT)) cycle
+      IF (CENTER < TABCONT(J, NUCONT)) CYCLE
       IFJ(J+1) = 1
       IFLINE = 1
 
       ! Compute damping (once per line)
-      if (ADAMP == 0.0D0) then
+      IF (ADAMP == 0.0D0) THEN
         GAMMAR = TABLOG(IGR) * WLVAC4 * FOURPI_C_INV
         GAMMAS = TABLOG(IGS) * WLVAC4 * FOURPI_C_INV
         GAMMAW = TABLOG(IGW) * WLVAC4 * FOURPI_C_INV
-      end if
+      END IF
 
       ADAMP = (GAMMAR + GAMMAS*XNE(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
       DOPWAVE = DOPPLE(J, NELION) * WLVAC4
 
-      if (ADAMP > ADAMP_THRESH) then
+      IF (ADAMP > ADAMP_THRESH) THEN
         ! --- Full Voigt regime ---
         ! Red wing
-        do IW = NU, min(NU + MAX_WING, NUMNU)
+        DO IW = NU, min(NU + MAX_WING, NUMNU)
           CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / DOPWAVE, ADAMP)
           XLINES(J, IW) = XLINES(J, IW) + CV
-          if (CV < TABCONT(J, NUCONT)) exit
-        end do
+          IF (CV < TABCONT(J, NUCONT)) EXIT
+        END DO
         ! Blue wing
-        do I = 1, MAX_WING
+        DO I = 1, MAX_WING
           IW = NU - I
-          if (IW <= 0) exit
+          IF (IW <= 0) EXIT
           CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / DOPWAVE, ADAMP)
           XLINES(J, IW) = XLINES(J, IW) + CV
-          if (CV < TABCONT(J, NUCONT)) exit
-        end do
-      else
+          IF (CV < TABCONT(J, NUCONT)) EXIT
+        END DO
+      ELSE
         ! --- Pretabulated Voigt regime ---
         ! Red wing
-        do IW = NU, min(NU + MAX_WING, NUMNU)
+        DO IW = NU, min(NU + MAX_WING, NUMNU)
           VVOIGT = (WAVESET(IW) - WLVAC) / DOPWAVE
-          if (VVOIGT > 10.0D0) then
+          IF (VVOIGT > 10.0D0) THEN
             CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
-          else
+          ELSE
             IV = int(VVOIGT * 200.0D0 + 1.5D0)
             CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
-          end if
+          END IF
           XLINES(J, IW) = XLINES(J, IW) + CV
-          if (CV < TABCONT(J, NUCONT)) exit
-        end do
+          IF (CV < TABCONT(J, NUCONT)) EXIT
+        END DO
         ! Blue wing
-        do I = 1, MAX_WING
+        DO I = 1, MAX_WING
           IW = NU - I
-          if (IW <= 0) exit
+          IF (IW <= 0) EXIT
           VVOIGT = (WLVAC - WAVESET(IW)) / DOPWAVE
-          if (VVOIGT > 10.0D0) then
+          IF (VVOIGT > 10.0D0) THEN
             CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
-          else
+          ELSE
             IV = int(VVOIGT * 200.0D0 + 1.5D0)
             CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
-          end if
+          END IF
           XLINES(J, IW) = XLINES(J, IW) + CV
-          if (CV < TABCONT(J, NUCONT)) exit
-        end do
-      end if
-    end do  ! coarse depth J
+          IF (CV < TABCONT(J, NUCONT)) EXIT
+        END DO
+      END IF
+    END DO  ! coarse depth J
 
     !-------------------------------------------------------------------
     ! Phase 2: Fine depth grid (intermediate points between coarse)
     !-------------------------------------------------------------------
-    do K = 8, NRHOX, 8
-      if (IFJ(K-7) + IFJ(K+1) == 0) cycle
-      do J = K-7, K-1
+    DO K = 8, NRHOX, 8
+      IF (IFJ(K-7) + IFJ(K+1) == 0) CYCLE
+      DO J = K-7, K-1
         CENTER = CGF * XNFDOP(J, NELION)
-        if (CENTER < TABCONT(J, NUCONT)) cycle
+        IF (CENTER < TABCONT(J, NUCONT)) CYCLE
         CENTER = CENTER * exp(-ELO * HCKT(J))
-        if (CENTER < TABCONT(J, NUCONT)) cycle
+        IF (CENTER < TABCONT(J, NUCONT)) CYCLE
 
         ADAMP = (GAMMAR + GAMMAS*XNE(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
         DOPWAVE = DOPPLE(J, NELION) * WLVAC4
 
-        if (ADAMP > ADAMP_THRESH) then
+        IF (ADAMP > ADAMP_THRESH) THEN
           ! --- Full Voigt regime ---
           ! Red wing
-          do IW = NU, min(NU + MAX_WING, NUMNU)
+          DO IW = NU, min(NU + MAX_WING, NUMNU)
             CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / DOPWAVE, ADAMP)
             XLINES(J, IW) = XLINES(J, IW) + CV
-            if (CV < TABCONT(J, NUCONT)) exit
-          end do
+            IF (CV < TABCONT(J, NUCONT)) EXIT
+          END DO
           ! Blue wing
-          do I = 1, MAX_WING
+          DO I = 1, MAX_WING
             IW = NU - I
-            if (IW <= 0) exit
+            IF (IW <= 0) EXIT
             CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / DOPWAVE, ADAMP)
             XLINES(J, IW) = XLINES(J, IW) + CV
-            if (CV < TABCONT(J, NUCONT)) exit
-          end do
-        else
+            IF (CV < TABCONT(J, NUCONT)) EXIT
+          END DO
+        ELSE
           ! --- Pretabulated Voigt regime ---
           ! Red wing
-          do IW = NU, min(NU + MAX_WING, NUMNU)
+          DO IW = NU, min(NU + MAX_WING, NUMNU)
             VVOIGT = (WAVESET(IW) - WLVAC) / DOPWAVE
-            if (VVOIGT > 10.0D0) then
+            IF (VVOIGT > 10.0D0) THEN
               CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
-            else
+            ELSE
               IV = int(VVOIGT * 200.0D0 + 1.5D0)
               CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
-            end if
+            END IF
             XLINES(J, IW) = XLINES(J, IW) + CV
-            if (CV < TABCONT(J, NUCONT)) exit
-          end do
+            IF (CV < TABCONT(J, NUCONT)) EXIT
+          END DO
           ! Blue wing
-          do I = 1, MAX_WING
+          DO I = 1, MAX_WING
             IW = NU - I
-            if (IW <= 0) exit
+            IF (IW <= 0) EXIT
             VVOIGT = (WLVAC - WAVESET(IW)) / DOPWAVE
-            if (VVOIGT > 10.0D0) then
+            IF (VVOIGT > 10.0D0) THEN
               CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
-            else
+            ELSE
               IV = int(VVOIGT * 200.0D0 + 1.5D0)
               CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
-            end if
+            END IF
             XLINES(J, IW) = XLINES(J, IW) + CV
-            if (CV < TABCONT(J, NUCONT)) exit
-          end do
-        end if
-      end do  ! fine depth J
-    end do  ! coarse block K
+            IF (CV < TABCONT(J, NUCONT)) EXIT
+          END DO
+        END IF
+      END DO  ! fine depth J
+    END DO  ! coarse block K
 
-    if (IFLINE == 1) LINEUSED = LINEUSED + 1
+    IF (IFLINE == 1) LINEUSED = LINEUSED + 1
 
     IWLOLD = IWL
-  end do  ! LINE
+  END DO  ! LINE
 
-  return
+  RETURN
 
 END SUBROUTINE LINOP1
 
@@ -13378,17 +13279,17 @@ END SUBROUTINE LINOP1
 
 SUBROUTINE XCONOP
 
-  implicit none
-  integer :: J
+  IMPLICIT NONE
+  INTEGER :: J
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING XCONOP'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING XCONOP'
   ! Extra user-defined continuum opacity from tabulated Rosseland mean
   ! Source function = (sigma/pi) * T^4 (Stefan-Boltzmann)
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     AXCONT(J) = ROSSTAB(T(J), P(J), VTURB(J))
     SXCONT(J) = SIGMA_SB / FOURPI * T(J)**4 * 4.0D0
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE XCONOP
 
@@ -13415,16 +13316,16 @@ END SUBROUTINE XCONOP
 
 SUBROUTINE JOSH(IFSCAT, IFSURF)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: IFSCAT, IFSURF
+  INTEGER, INTENT(IN) :: IFSCAT, IFSURF
 
   ! Fixed quadrature grid parameters
-  integer, parameter :: NXTAU = 51
-  integer, parameter :: MAX_ITER = 50  ! convergence ceiling (both iterations)
+  INTEGER, PARAMETER :: NXTAU = 51
+  INTEGER, PARAMETER :: MAX_ITER = 50  ! convergence ceiling (both iterations)
 
   ! H (flux) quadrature weights on the 51-point grid
-  real*8, parameter :: CH_J(NXTAU) = (/ &
+  REAL(8), PARAMETER :: CH_J(NXTAU) = (/ &
     7.15528131D-07, 1.49142693D-06, 1.52106577D-06, 2.98150826D-06, &
     5.33941056D-06, 9.13329677D-06, 1.61715943D-05, 2.97035986D-05, &
     5.33166603D-05, 9.11154202D-05, 1.61084638D-04, 2.95118050D-04, &
@@ -13440,7 +13341,7 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
     4.33638281D-09, 8.87765583D-10, 3.90236420D-11 /)
 
   ! K-integral quadrature weights on the 51-point grid
-  real*8, parameter :: CK_J(NXTAU) = (/ &
+  REAL(8), PARAMETER :: CK_J(NXTAU) = (/ &
     3.57771910D-07, 7.45730404D-07, 7.60575176D-07, 1.49091113D-06, &
     2.67016185D-06, 4.56793896D-06, 8.08956065D-06, 1.48632944D-05, &
     2.66928291D-05, 4.56529851D-05, 8.08134864D-05, 1.48363324D-04, &
@@ -13456,7 +13357,7 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
     4.12596224D-09, 8.47334369D-10, 3.81791959D-11 /)
 
   ! Fixed optical depth grid (51 points, 0 to 20)
-  real*8, parameter :: XTAU8(NXTAU) = (/ &
+  REAL(8), PARAMETER :: XTAU8(NXTAU) = (/ &
     0.0D0, 0.0000032D0, 0.0000056D0, 0.00001D0, 0.000018D0, &
     0.000032D0, 0.000056D0, 0.0001D0, 0.00018D0, 0.00032D0, &
     0.00056D0, 0.001D0, 0.0018D0, 0.0032D0, 0.0056D0, &
@@ -13469,32 +13370,32 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
     11.5D0, 13.0D0, 14.5D0, 16.0D0, 18.0D0, 20.0D0 /)
 
   ! Cached exp(-tau/mu) for surface intensity (persists between calls)
-  real*8, save :: EXTAU(NXTAU, 20) = 0.0D0
+  REAL(8), SAVE :: EXTAU(NXTAU, 20) = 0.0D0
 
   ! Local variables
-  real*8 :: XS(NXTAU), XSBAR(NXTAU), XALPHA(NXTAU), DIAG(NXTAU)
-  real*8 :: XH(NXTAU), XJS(NXTAU)
-  real*8 :: XSBAR8(NXTAU), XALPHA8(NXTAU), XS8(NXTAU)
-  real*8 :: XH8(NXTAU), XJS8(NXTAU)
-  real*8 :: A(kw), B(kw), C(kw), SNUBAR(kw), CTWO(kw), B2CT(kw), B2CT1(kw)
-  real*8 :: DELXS, ERRORX, XK, ERROR, SNEW, EXNEW
-  real*8 :: TANGLE, D, DDDDD, OLD, SUM_VAL
-  integer :: J, JJ, K, KK, L, M, MAXJ, MAXJ1, MU, N1, NM1, NMJ, MDUMMY
-  integer :: IFERR, IFNEG
-  integer :: output_mode
+  REAL(8) :: XS(NXTAU), XSBAR(NXTAU), XALPHA(NXTAU), DIAG(NXTAU)
+  REAL(8) :: XH(NXTAU), XJS(NXTAU)
+  REAL(8) :: XSBAR8(NXTAU), XALPHA8(NXTAU), XS8(NXTAU)
+  REAL(8) :: XH8(NXTAU), XJS8(NXTAU)
+  REAL(8) :: A(kw), B(kw), C(kw), SNUBAR(kw), CTWO(kw), B2CT(kw), B2CT1(kw)
+  REAL(8) :: DELXS, ERRORX, XK, ERROR, SNEW, EXNEW
+  REAL(8) :: TANGLE, D, DDDDD, OLD, SUM_VAL
+  INTEGER :: J, JJ, K, KK, L, M, MAXJ, MAXJ1, MU, N1, NM1, NMJ, MDUMMY
+  INTEGER :: IFERR, IFNEG
+  INTEGER :: output_mode
 
-  if (IDEBUG == 1) write(6, '(A)') ' RUNNING JOSH'
+  IF (IDEBUG == 1) WRITE(6, '(A)') ' RUNNING JOSH'
 
   !---------------------------------------------------------------------
   ! Compute total opacity, scattering fraction, and thermal source
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     ABTOT(J) = ACONT(J) + ALINE(J) + SIGMAC(J) + SIGMAL(J)
     ALPHA(J) = (SIGMAC(J) + SIGMAL(J)) / ABTOT(J)
     SNUBAR(J) = (ACONT(J)*SCONT(J) + ALINE(J)*SLINE(J)) &
                / (ACONT(J) + ALINE(J))
-  end do
-  call INTEG(RHOX, ABTOT, TAUNU, NRHOX, ABTOT(1)*RHOX(1))
+  END DO
+  CALL INTEG(RHOX, ABTOT, TAUNU, NRHOX, ABTOT(1)*RHOX(1))
   MAXJ = 0
 
   !---------------------------------------------------------------------
@@ -13506,306 +13407,306 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
   !---------------------------------------------------------------------
   output_mode = 0
 
-  solver: do   ! single-pass block for structured exit
+  solver: DO   ! single-pass block for structured exit
 
     !-------------------------------------------------------------------
     ! No-scattering path: S_nu = S_bar
     !-------------------------------------------------------------------
-    if (IFSCAT == 0) then
-      do J = 1, NRHOX
+    IF (IFSCAT == 0) THEN
+      DO J = 1, NRHOX
         SNU(J) = SNUBAR(J)
-      end do
-      if (IFSURF == 2) then
+      END DO
+      IF (IFSURF == 2) THEN
         output_mode = 70
-        exit solver
-      end if
+        EXIT solver
+      END IF
       MAXJ = MAP1(TAUNU, SNU, NRHOX, XTAU8, XS8, NXTAU)
-      do L = 1, NXTAU
+      DO L = 1, NXTAU
         XS(L) = XS8(L)
-      end do
-      if (IFSURF == 1) then
+      END DO
+      IF (IFSURF == 1) THEN
         output_mode = 60
-        exit solver
-      end if
-      do J = 1, NRHOX
+        EXIT solver
+      END IF
+      DO J = 1, NRHOX
         ALPHA(J) = 0.0D0
-      end do
-    end if
+      END DO
+    END IF
 
     !-------------------------------------------------------------------
     ! Scattering solution on 51-point grid (Lambda iteration)
     !-------------------------------------------------------------------
-    if (TAUNU(1) > XTAU8(NXTAU)) MAXJ = 1
+    IF (TAUNU(1) > XTAU8(NXTAU)) MAXJ = 1
 
-    if (MAXJ /= 1) then
+    IF (MAXJ /= 1) THEN
       MAXJ = MAP1(TAUNU, SNUBAR, NRHOX, XTAU8, XSBAR8, NXTAU)
       MAXJ = MAP1(TAUNU, ALPHA, NRHOX, XTAU8, XALPHA8, NXTAU)
 
-      do L = 1, NXTAU
+      DO L = 1, NXTAU
         ! Clamp in case of bad interpolation
         XALPHA8(L) = max(XALPHA8(L), 0.0D0)
         XSBAR8(L)  = max(XSBAR8(L), 1.0D-38)
         XALPHA(L) = XALPHA8(L)
         XSBAR(L)  = XSBAR8(L)
         ! Extrapolate if tau grid starts above model surface
-        if (XTAU8(L) < TAUNU(1)) then
+        IF (XTAU8(L) < TAUNU(1)) THEN
           XSBAR8(L) = max(SNUBAR(1), 1.0D-38)
           XALPHA8(L) = max(ALPHA(1), 0.0D0)
           XSBAR(L) = XSBAR8(L)
           XALPHA(L) = XALPHA8(L)
-        end if
+        END IF
         XS(L) = XSBAR(L)
         DIAG(L) = 1.0D0 - XALPHA(L) * COEFJ(L, L)
-        if (abs(DIAG(L)) < 1.0D-30) DIAG(L) = sign(1.0D-30, DIAG(L))
+        IF (abs(DIAG(L)) < 1.0D-30) DIAG(L) = sign(1.0D-30, DIAG(L))
         XSBAR(L) = (1.0D0 - XALPHA(L)) * XSBAR(L)
-      end do
+      END DO
 
       ! Lambda iteration: Gauss-Seidel sweeps (max MAX_ITER iterations)
       BLOCK
-        real*8  :: WORST_ERR
-        integer :: WORST_K
-        do L = 1, MAX_ITER
+        REAL(8)  :: WORST_ERR
+        INTEGER :: WORST_K
+        DO L = 1, MAX_ITER
           IFERR = 0
           WORST_ERR = 0.0D0
           WORST_K   = 0
           K = NXTAU + 1
-          do KK = 1, NXTAU
+          DO KK = 1, NXTAU
             K = K - 1
             DELXS = 0.0D0
-            do M = 1, NXTAU
+            DO M = 1, NXTAU
               DELXS = DELXS + COEFJ(K, M) * XS(M)
-            end do
+            END DO
             DELXS = (DELXS * XALPHA(K) + XSBAR(K) - XS(K)) / DIAG(K)
             ERRORX = abs(DELXS / XS(K))
-            if (ERRORX > 0.00001D0) IFERR = 1
-            if (ERRORX > WORST_ERR) then
+            IF (ERRORX > 0.00001D0) IFERR = 1
+            IF (ERRORX > WORST_ERR) THEN
               WORST_ERR = ERRORX
               WORST_K   = K
-            end if
+            END IF
             XS(K) = max(XS(K) + DELXS, 1.0D-37)
-          end do
-          if (IFERR == 0) exit
-        end do
-        if (IFERR /= 0) &
-          write(6, '(A,I4,A,1PE12.4,A,I3,A,E9.2)') &
+          END DO
+          IF (IFERR == 0) EXIT
+        END DO
+        IF (IFERR /= 0) &
+          WRITE(6, '(A,I4,A,1PE12.4,A,I3,A,E9.2)') &
             ' JOSH WARNING: Lambda iter not converged in ', MAX_ITER, &
             ' sweeps  wave=', CLIGHT_NMS/FREQ, '  tau_pt=', WORST_K, '  err=', WORST_ERR
       END BLOCK
 
       ! Post-iteration dispatch
-      if (IFSURF == 1) then
+      IF (IFSURF == 1) THEN
         output_mode = 60
-        exit solver
-      end if
-      do M = 1, NXTAU
+        EXIT solver
+      END IF
+      DO M = 1, NXTAU
         XS8(M) = XS(M)
-      end do
-      if (IFSURF == 2) then
+      END DO
+      IF (IFSURF == 2) THEN
         output_mode = 670
-        exit solver
-      end if
+        EXIT solver
+      END IF
       MDUMMY = MAP1(XTAU8, XS8, NXTAU, TAUNU, SNU, MAXJ)
-    end if  ! MAXJ /= 1
+    END IF  ! MAXJ /= 1
 
     !-------------------------------------------------------------------
     ! Deep atmosphere: variable Eddington factor on physical grid
     !-------------------------------------------------------------------
-    if (MAXJ /= NRHOX) then
+    IF (MAXJ /= NRHOX) THEN
       MAXJ1 = MAXJ + 1
-      if (MAXJ == 1) MAXJ1 = 1
-      do J = MAXJ1, NRHOX
+      IF (MAXJ == 1) MAXJ1 = 1
+      DO J = MAXJ1, NRHOX
         SNU(J) = SNUBAR(J)
-      end do
+      END DO
       M = max(MAXJ - 1, 1)
       NM1 = NRHOX - M + 1
       NMJ = NRHOX - MAXJ + 1
 
       ! Variable Eddington iteration (max MAX_ITER iterations)
-      do L = 1, MAX_ITER
+      DO L = 1, MAX_ITER
         ERROR = 0.0D0
         IFNEG = 0
 
         ! Safety check: negative SNU → reset to Planck function
-        do J = M, NRHOX
-          if (SNU(J) <= 0.0D0) then
+        DO J = M, NRHOX
+          IF (SNU(J) <= 0.0D0) THEN
             IFNEG = 1
-            do JJ = M, NRHOX
+            DO JJ = M, NRHOX
               SNUBAR(JJ) = BNU(JJ)
               SNU(JJ) = BNU(JJ)
-            end do
-            exit
-          end if
-        end do
+            END DO
+            EXIT
+          END IF
+        END DO
 
-        call DERIV(TAUNU(M), SNU(M), HNU(M), NM1)
+        CALL DERIV(TAUNU(M), SNU(M), HNU(M), NM1)
 
         ! Safety check: negative HNU → reset to Planck function
-        do J = M, NRHOX
-          if (HNU(J) <= 0.0D0) then
+        DO J = M, NRHOX
+          IF (HNU(J) <= 0.0D0) THEN
             IFNEG = 1
-            do JJ = M, NRHOX
+            DO JJ = M, NRHOX
               SNUBAR(JJ) = BNU(JJ)
               SNU(JJ) = BNU(JJ)
-            end do
-            call DERIV(TAUNU(M), SNU(M), HNU(M), NM1)
-            exit
-          end if
-        end do
+            END DO
+            CALL DERIV(TAUNU(M), SNU(M), HNU(M), NM1)
+            EXIT
+          END IF
+        END DO
 
-        do J = M, NRHOX
+        DO J = M, NRHOX
           HNU(J) = HNU(J) / 3.0D0
-        end do
-        call DERIV(TAUNU(MAXJ), HNU(MAXJ), JMINS(MAXJ), NMJ)
-        do J = MAXJ1, NRHOX
-          if (IFNEG == 1) JMINS(J) = 0.0D0
+        END DO
+        CALL DERIV(TAUNU(MAXJ), HNU(MAXJ), JMINS(MAXJ), NMJ)
+        DO J = MAXJ1, NRHOX
+          IF (IFNEG == 1) JMINS(J) = 0.0D0
           JNU(J) = JMINS(J) + SNU(J)
           SNEW = (1.0D0 - ALPHA(J)) * SNUBAR(J) + ALPHA(J) * JNU(J)
           ERROR = abs(SNEW - SNU(J)) / SNEW + ERROR
           SNU(J) = SNEW
-        end do
-        if (ERROR < 0.00001D0) exit
-      end do
-      if (ERROR >= 0.00001D0) &
-        write(6, '(A,I4,A,1PE10.3,A,0PF10.3)') ' JOSH WARNING: Eddington iteration did not converge in ', &
+        END DO
+        IF (ERROR < 0.00001D0) EXIT
+      END DO
+      IF (ERROR >= 0.00001D0) &
+        WRITE(6, '(A,I4,A,1PE10.3,A,0PF10.3)') ' JOSH WARNING: Eddington iteration did not converge in ', &
           MAX_ITER, ' sweeps, err=', ERROR, '  wave=', CLIGHT_NMS/FREQ
-    end if  ! MAXJ /= NRHOX
+    END IF  ! MAXJ /= NRHOX
 
     !-------------------------------------------------------------------
     ! Post-solution dispatch
     !-------------------------------------------------------------------
-    if (IFSURF == 2) then
+    IF (IFSURF == 2) THEN
       output_mode = 70
-      exit solver
-    end if
-    if (MAXJ == 1) then
+      EXIT solver
+    END IF
+    IF (MAXJ == 1) THEN
       KNU(1) = JNU(1) / 3.0D0
-      return
-    end if
+      RETURN
+    END IF
 
     ! Compute J, H, K from 51-point operator matrices
-    do L = 1, NXTAU
+    DO L = 1, NXTAU
       XJS(L) = -XS(L)
-      do M = 1, NXTAU
+      DO M = 1, NXTAU
         XJS(L) = XJS(L) + COEFJ(L, M) * XS(M)
-      end do
+      END DO
       XJS8(L) = XJS(L)
       XH(L) = 0.0D0
-      do M = 1, NXTAU
+      DO M = 1, NXTAU
         XH(L) = XH(L) + COEFH(L, M) * XS(M)
-      end do
+      END DO
       XH8(L) = XH(L)
-    end do
+    END DO
     MDUMMY = MAP1(XTAU8, XJS8, NXTAU, TAUNU, JMINS, MAXJ)
     MDUMMY = MAP1(XTAU8, XH8, NXTAU, TAUNU, HNU, MAXJ)
     XK = 0.0D0
-    do M = 1, NXTAU
+    DO M = 1, NXTAU
       XK = XK + CK_J(M) * XS(M)
-    end do
+    END DO
     KNU(1) = XK
-    do J = 1, MAXJ
+    DO J = 1, MAXJ
       SNU(J)  = max(SNU(J), 1.0D-38)
       JNU(J) = max(JMINS(J) + SNU(J), 1.0D-38)
-    end do
-    return
+    END DO
+    RETURN
 
-  end do solver
+  END DO solver
 
   !---------------------------------------------------------------------
   ! Output mode dispatch (reached via EXIT solver)
   !---------------------------------------------------------------------
-  select case (output_mode)
+  SELECT CASE (output_mode)
 
-  case (60)
+  CASE (60)
     ! Surface flux: H(1) = sum of CH_J weights times source function
     XH(1) = 0.0D0
-    do M = 1, NXTAU
+    DO M = 1, NXTAU
       XH(1) = XH(1) + CH_J(M) * XS(M)
-    end do
+    END DO
     HNU(1) = XH(1)
 
-  case (670)
+  CASE (670)
     ! Surface intensity from 51-point grid (piecewise parabolic)
-    call PARCOE(XS8, XTAU8, A, B, C, NXTAU)
+    CALL PARCOE(XS8, XTAU8, A, B, C, NXTAU)
     N1 = NXTAU - 1
-    do J = 1, NXTAU
+    DO J = 1, NXTAU
       CTWO(J) = C(J) * 2.0D0
       B2CT(J) = B(J) + CTWO(J) * XTAU8(J)
-    end do
-    do J = 1, N1
+    END DO
+    DO J = 1, N1
       B2CT1(J) = B(J) + CTWO(J) * XTAU8(J+1)
-    end do
+    END DO
     ! Compute and cache exp(-tau/mu) if not yet done
-    if (EXTAU(1,1) == 0.0D0) then
-      do MU = 1, NMU
-        do J = 1, NXTAU
+    IF (EXTAU(1,1) == 0.0D0) THEN
+      DO MU = 1, NMU
+        DO J = 1, NXTAU
           TANGLE = XTAU8(J) / ANGLE(MU)
-          if (TANGLE < 300.0D0) EXTAU(J, MU) = exp(-TANGLE)
-        end do
-      end do
-    end if
-    do MU = 1, NMU
+          IF (TANGLE < 300.0D0) EXTAU(J, MU) = exp(-TANGLE)
+        END DO
+      END DO
+    END IF
+    DO MU = 1, NMU
       SURFI(MU) = 0.0D0
-      do J = 1, N1
-        if (EXTAU(J, MU) == 0.0D0) exit
+      DO J = 1, N1
+        IF (EXTAU(J, MU) == 0.0D0) EXIT
         SURFI(MU) = SURFI(MU) &
           + EXTAU(J, MU) * (XS8(J) + (B2CT(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU)) &
           - EXTAU(J+1, MU) * (XS8(J+1) + (B2CT1(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU))
-      end do
+      END DO
       SURFI(MU) = SURFI(MU) &
         + EXTAU(NXTAU, MU) * (XS8(NXTAU) + (B2CT(NXTAU) + CTWO(NXTAU)*ANGLE(MU)) * ANGLE(MU))
-    end do
+    END DO
 
-  case (70)
+  CASE (70)
     ! Surface intensity from physical grid (piecewise parabolic)
-    call PARCOE(SNU, TAUNU, A, B, C, NRHOX)
+    CALL PARCOE(SNU, TAUNU, A, B, C, NRHOX)
     N1 = NRHOX - 1
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       CTWO(J) = C(J) * 2.0D0
       B2CT(J) = B(J) + CTWO(J) * TAUNU(J)
-    end do
-    do J = 1, N1
+    END DO
+    DO J = 1, N1
       B2CT1(J) = B(J) + CTWO(J) * TAUNU(J+1)
-    end do
-    do MU = 1, NMU
+    END DO
+    DO MU = 1, NMU
       OLD = 1.0D0
       SUM_VAL = 0.0D0
       BLOCK
-        logical :: tangle_done
-        tangle_done = .false.
-        do J = 1, N1
+        LOGICAL :: tangle_done
+        tangle_done = .FALSE.
+        DO J = 1, N1
           TANGLE = TAUNU(J+1) / ANGLE(MU)
           EXNEW = exp(-TANGLE)
           D = TANGLE - TAUNU(J) / ANGLE(MU)
-          if (D > 0.03D0) then
+          IF (D > 0.03D0) THEN
             SUM_VAL = SUM_VAL &
               + OLD * (SNU(J) + (B2CT(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU)) &
               - EXNEW * (SNU(J+1) + (B2CT1(J) + CTWO(J)*ANGLE(MU)) * ANGLE(MU))
-            if (TANGLE >= 300.0D0) then
+            IF (TANGLE >= 300.0D0) THEN
               SURFI(MU) = SUM_VAL
-              tangle_done = .true.
-              exit
-            end if
-          else
+              tangle_done = .TRUE.
+              EXIT
+            END IF
+          ELSE
             ! Small optical depth increment: Taylor expansion for stability
             DDDDD = 1.0D0
-            if (D > 0.001D0) &
+            IF (D > 0.001D0) &
               DDDDD = ((((D/9.0D0 + 1.0D0)*D/8.0D0 + 1.0D0)*D/7.0D0 + 1.0D0) &
                         *D/6.0D0 + 1.0D0)*D/5.0D0 + 1.0D0
             SUM_VAL = SUM_VAL + EXNEW * (SNU(J) + (SNU(J) + B2CT(J)*ANGLE(MU) &
               + (SNU(J) + (B2CT(J) + CTWO(J)*ANGLE(MU))*ANGLE(MU)) &
               * (DDDDD*D/4.0D0 + 1.0D0)*D/3.0D0)*D/2.0D0) * D
-          end if
+          END IF
           OLD = EXNEW
-        end do
-        if (.not. tangle_done) then
+        END DO
+        IF (.NOT. tangle_done) THEN
           SURFI(MU) = SUM_VAL &
             + OLD * (SNU(NRHOX) + (B2CT(NRHOX) + CTWO(NRHOX)*ANGLE(MU)) * ANGLE(MU))
-        end if
+        END IF
       END BLOCK
-    end do
+    END DO
 
-  end select
-  return
+  END SELECT
+  RETURN
 
 END SUBROUTINE JOSH
 
@@ -13825,29 +13726,29 @@ END SUBROUTINE JOSH
 
 SUBROUTINE BLOCKJ
 
-  implicit none
+  IMPLICIT NONE
 
-  real*4  :: CJ(2601)
-  integer :: I, IOS
-  logical, save :: INITIALIZED = .false.
+  REAL(4)  :: CJ(2601)
+  INTEGER :: I, IOS
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING BLOCKJ'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING BLOCKJ'
 
-  if (.not. INITIALIZED) then
-    open(unit=89, file=trim(DATADIR)//'blockj.dat', status='OLD', &
-         action='READ', iostat=IOS)
-    if (IOS /= 0) then
-      write(6,*) 'BLOCKJ: ERROR opening ', trim(DATADIR)//'blockj.dat'
-      stop 'BLOCKJ: cannot read J-coefficient data'
-    end if
-    read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')
-    read(89, *) (CJ(I), I=1, 2601)
-    close(89)
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'blockj.dat', STATUS='OLD', &
+         ACTION='READ', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      WRITE(6,*) 'BLOCKJ: ERROR opening ', trim(DATADIR)//'blockj.dat'
+      STOP 'BLOCKJ: cannot read J-coefficient data'
+    END IF
+    READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
+    READ(89, *) (CJ(I), I=1, 2601)
+    CLOSE(89)
     COEFJ = reshape(dble(CJ), (/ 51, 51 /))
-    INITIALIZED = .true.
-  end if
+    INITIALIZED = .TRUE.
+  END IF
 
-  return
+  RETURN
 
 END SUBROUTINE BLOCKJ
 
@@ -13867,29 +13768,29 @@ END SUBROUTINE BLOCKJ
 
 SUBROUTINE BLOCKH
 
-  implicit none
+  IMPLICIT NONE
 
-  real*4  :: CH(2601)
-  integer :: I, IOS
-  logical, save :: INITIALIZED = .false.
+  REAL(4)  :: CH(2601)
+  INTEGER :: I, IOS
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING BLOCKH'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING BLOCKH'
 
-  if (.not. INITIALIZED) then
-    open(unit=89, file=trim(DATADIR)//'blockh.dat', status='OLD', &
-         action='READ', iostat=IOS)
-    if (IOS /= 0) then
-      write(6,*) 'BLOCKH: ERROR opening ', trim(DATADIR)//'blockh.dat'
-      stop 'BLOCKH: cannot read H-coefficient data'
-    end if
-    read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')
-    read(89, *) (CH(I), I=1, 2601)
-    close(89)
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'blockh.dat', STATUS='OLD', &
+         ACTION='READ', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      WRITE(6,*) 'BLOCKH: ERROR opening ', trim(DATADIR)//'blockh.dat'
+      STOP 'BLOCKH: cannot read H-coefficient data'
+    END IF
+    READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
+    READ(89, *) (CH(I), I=1, 2601)
+    CLOSE(89)
     COEFH = reshape(dble(CH), (/ 51, 51 /))
-    INITIALIZED = .true.
-  end if
+    INITIALIZED = .TRUE.
+  END IF
 
-  return
+  RETURN
 
 END SUBROUTINE BLOCKH
 
@@ -13919,51 +13820,51 @@ END SUBROUTINE BLOCKH
 
 SUBROUTINE IONPOTS
 
-  implicit none
+  IMPLICIT NONE
 
-  integer :: IZ, ION, IOST
-  logical, save :: INITIALIZED = .false.
+  INTEGER :: IZ, ION, IOST
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING IONPOTS'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING IONPOTS'
 
   ! Read ionization potentials on first call
-  if (.not. INITIALIZED) then
-    open(unit=89, file=trim(DATADIR)//'ionpots.dat', status='OLD', &
-         action='READ', iostat=IOST)
-    if (IOST /= 0) then
-      write(6,*) 'IONPOTS: ERROR opening ', trim(DATADIR)//'ionpots.dat'
-      stop 'IONPOTS: cannot read ionization potential data'
-    end if
-    read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')
-    read(89, *) (POTION(IZ), IZ=1, 999)
-    close(89)
-    INITIALIZED = .true.
-  end if
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'ionpots.dat', STATUS='OLD', &
+         ACTION='READ', IOSTAT=IOST)
+    IF (IOST /= 0) THEN
+      WRITE(6,*) 'IONPOTS: ERROR opening ', trim(DATADIR)//'ionpots.dat'
+      STOP 'IONPOTS: cannot read ionization potential data'
+    END IF
+    READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
+    READ(89, *) (POTION(IZ), IZ=1, 999)
+    CLOSE(89)
+    INITIALIZED = .TRUE.
+  END IF
 
   ! Compute cumulative ionization potential sums
   NELION = 0
 
   ! Light elements (Z=1-30): all ionization stages
-  do IZ = 1, 30
+  DO IZ = 1, 30
     NELION = NELION + 1
     POTIONSUM(NELION) = 0.0D0       ! neutral atom
-    do ION = 2, IZ + 1
+    DO ION = 2, IZ + 1
       NELION = NELION + 1
       POTIONSUM(NELION) = POTION(NELION - 1) + POTIONSUM(NELION - 1)
-    end do
-  end do
+    END DO
+  END DO
 
   ! Heavy elements (Z=31-99): 5 stages only (neutral + 4 ions)
-  do IZ = 31, 99
+  DO IZ = 31, 99
     NELION = NELION + 1
     POTIONSUM(NELION) = 0.0D0       ! neutral atom
-    do ION = 1, 4
+    DO ION = 1, 4
       NELION = NELION + 1
       POTIONSUM(NELION) = POTION(NELION - 1) + POTIONSUM(NELION - 1)
-    end do
-  end do
+    END DO
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE IONPOTS
 
@@ -13994,64 +13895,64 @@ END SUBROUTINE IONPOTS
 
 SUBROUTINE ISOTOPES
 
-  implicit none
+  IMPLICIT NONE
 
-  real*4,  save :: ISOION(20, 265)
-  logical, save :: INITIALIZED = .false.
+  REAL(4),  SAVE :: ISOION(20, 265)
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
-  integer :: IZ, ION, N, I, IOST
+  INTEGER :: IZ, ION, N, I, IOST
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING ISOTOPES'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING ISOTOPES'
 
   ! Read isotope data on first call
-  if (.not. INITIALIZED) then
-    open(unit=89, file=trim(DATADIR)//'isotopes.dat', status='OLD', &
-         action='READ', iostat=IOST)
-    if (IOST /= 0) then
-      write(6,*) 'ISOTOPES: ERROR opening ', trim(DATADIR)//'isotopes.dat'
-      stop 'ISOTOPES: cannot read isotope data'
-    end if
-    read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')
-    read(89, *) ((ISOION(I, IZ), I=1,20), IZ=1,265)
-    close(89)
-    INITIALIZED = .true.
-  end if
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'isotopes.dat', STATUS='OLD', &
+         ACTION='READ', IOSTAT=IOST)
+    IF (IOST /= 0) THEN
+      WRITE(6,*) 'ISOTOPES: ERROR opening ', trim(DATADIR)//'isotopes.dat'
+      STOP 'ISOTOPES: cannot read isotope data'
+    END IF
+    READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
+    READ(89, *) ((ISOION(I, IZ), I=1,20), IZ=1,265)
+    CLOSE(89)
+    INITIALIZED = .TRUE.
+  END IF
 
   ! Copy isotope data to all ionization stages
   N = 0
 
   ! Light elements (Z=1-30): IZ+1 ionization stages
-  do IZ = 1, 30
-    do ION = 1, IZ + 1
+  DO IZ = 1, 30
+    DO ION = 1, IZ + 1
       N = N + 1
-      do I = 1, 10
+      DO I = 1, 10
         ISOTOPE(I, 1, N) = ISOION(I, IZ)
         ISOTOPE(I, 2, N) = ISOION(I + 10, IZ)
-      end do
-    end do
-  end do
+      END DO
+    END DO
+  END DO
 
   ! Heavy elements (Z=31-99): 5 ionization stages
-  do IZ = 31, 99
-    do ION = 1, 5
+  DO IZ = 31, 99
+    DO ION = 1, 5
       N = N + 1
-      do I = 1, 10
+      DO I = 1, 10
         ISOTOPE(I, 1, N) = ISOION(I, IZ)
         ISOTOPE(I, 2, N) = ISOION(I + 10, IZ)
-      end do
-    end do
-  end do
+      END DO
+    END DO
+  END DO
 
   ! Molecular species (IZ=100-265): 1 state each
-  do IZ = 100, 265
+  DO IZ = 100, 265
     N = N + 1
-    do I = 1, 10
+    DO I = 1, 10
       ISOTOPE(I, 1, N) = ISOION(I, IZ)
       ISOTOPE(I, 2, N) = ISOION(I + 10, IZ)
-    end do
-  end do
+    END DO
+  END DO
 
-  return
+  RETURN
 
 END SUBROUTINE ISOTOPES
 
@@ -14075,12 +13976,12 @@ END SUBROUTINE ISOTOPES
 
 SUBROUTINE KAPCONT
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NWAVE = 343
+  INTEGER, PARAMETER :: NWAVE = 343
 
   ! --- Wavelength grid (nm): 343 points from 9.09 to 400000 nm ---
-  real*8, parameter :: WBIG(NWAVE) = (/ &
+  REAL(8), PARAMETER :: WBIG(NWAVE) = (/ &
     9.09D0, 9.35D0, 9.61D0, 9.77D0, 9.96D0, 10.2D0, 10.38D0, 10.56D0, &
     10.77D0, 11.04D0, 11.4D0, 11.78D0, 12.13D0, 12.48D0, 12.71D0, 12.84D0, &
     13.05D0, 13.24D0, 13.39D0, 13.66D0, 13.98D0, 14.33D0, 14.72D0, 15.1D0, &
@@ -14126,10 +14027,10 @@ SUBROUTINE KAPCONT
     160000.0D0, 200000.0D0, 240000.0D0, 280000.0D0, 320000.0D0, 360000.0D0, 400000.0D0 /)
 
   ! --- Local variables ---
-  real*8  :: RATIOLG, FREQ15
-  integer :: NU, NU9, J, N
+  REAL(8)  :: RATIOLG, FREQ15
+  INTEGER :: NU, NU9, J, N
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING KAPCONT'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING KAPCONT'
 
   !---------------------------------------------------------------------
   ! Copy wavelength grid to module array
@@ -14145,7 +14046,7 @@ SUBROUTINE KAPCONT
   !---------------------------------------------------------------------
   ! Compute continuous opacity at each wavelength point
   !---------------------------------------------------------------------
-  do NU = 1, NWAVE
+  DO NU = 1, NWAVE
     WAVE = WAVETAB(NU)
     IWAVETAB(NU) = int(log(WAVE) / RATIOLG + 0.5D0)
     FREQ = CLIGHT_NMS / WAVETAB(NU)
@@ -14154,45 +14055,45 @@ SUBROUTINE KAPCONT
 
     ! Set up thermodynamic quantities at each depth
     FREQ15 = FREQ / 1.0D15
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       ACONT(J) = 1.0D10
       SCONT(J) = 0.0D0
       EHVKT(J) = exp(-FREQ * HKT(J))
       STIM(J) = 1.0D0 - EHVKT(J)
       BNU(J) = BNU_PREFAC * FREQ15**3 * EHVKT(J) / STIM(J)
-    end do
+    END DO
 
     ! Compute continuous opacity
     N = 0
-    if (WAVE > WAVESET(NULO)) call KAPP
+    IF (WAVE > WAVESET(NULO)) CALL KAPP
 
     ! Store tabulated opacity
-    do J = 1, NRHOX
+    DO J = 1, NRHOX
       TABCONT(J, NU) = (ACONT(J) + SIGMAC(J)) * 0.001D0 / STIM(J)
-    end do
-  end do
+    END DO
+  END DO
 
   ! Pad last entry
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TABCONT(J, NWAVE + 1) = TABCONT(J, NWAVE)
-  end do
+  END DO
   WAVETAB(NWAVE + 1) = WAVETAB(NWAVE)
 
   !---------------------------------------------------------------------
   ! Diagnostic printout
   !---------------------------------------------------------------------
 
-  if (IDEBUG == 1) then
-     do NU = 1, NWAVE, 10
+  IF (IDEBUG == 1) THEN
+     DO NU = 1, NWAVE, 10
         NU9 = min(NU + 9, NWAVE)
-        write(6, '(5X, 10F12.2)') (WAVETAB(N), N = NU, NU9)
-        do J = 1, NRHOX
-           write(6, '(I5, 1P10E12.3)') J, (TABCONT(J, N), N = NU, NU9)
-        end do
-     end do
-  endif
+        WRITE(6, '(5X, 10F12.2)') (WAVETAB(N), N = NU, NU9)
+        DO J = 1, NRHOX
+           WRITE(6, '(I5, 1P10E12.3)') J, (TABCONT(J, N), N = NU, NU9)
+        END DO
+     END DO
+  ENDIF
 
-  return
+  RETURN
 
 END SUBROUTINE KAPCONT
 
@@ -14229,16 +14130,16 @@ END SUBROUTINE KAPCONT
 
 SUBROUTINE SELECTLINES
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, parameter :: NMOL = 46
-  integer, parameter :: MAX_LINES = 500000000  ! max lines per database
+  INTEGER, PARAMETER :: NMOL = 46
+  INTEGER, PARAMETER :: MAX_LINES = 500000000  ! max lines per database
 
   ! Line-center opacity prefactor: pi*e^2/(m_e*c*sqrt(pi)) in CGS
-  real*8, parameter :: CEN_PREFAC = 0.026538D0 / SQRTPI
+  REAL(8), PARAMETER :: CEN_PREFAC = 0.026538D0 / SQRTPI
 
   ! Molecular species codes (for DIATOMICS database lookup)
-  integer, parameter :: MOLCODES(NMOL) = (/ &
+  INTEGER, PARAMETER :: MOLCODES(NMOL) = (/ &
     8410, 8411, 8460, 8461, 8470, 8471, 8480, 8481, 8482, 8510, &
     8511, 8512, 8530, 8531, 8532, 8580, 8581, 8582, 8583, 8584, &
     8620, 8621, 8622, 8623, 8640, 8641, 8642, 8643, 8680, 8681, &
@@ -14247,7 +14148,7 @@ SUBROUTINE SELECTLINES
 
   ! Isotope gf corrections for diatomic molecules
   ! ISOX(IMOL): additive correction to IGFLOG for each isotopologue
-  integer, parameter :: ISOX(NMOL) = (/ &
+  INTEGER, PARAMETER :: ISOX(NMOL) = (/ &
     0, -4469, -5, -1955, -2, -2444, -1, -3398, -2690, &            ! H2,HDD,CH,13CH,NH,15NH,OH,17OH,18OH
     -105, -996, -947, -35, -1331, -1516, &                          ! MgH isotopes, SiH isotopes
     -13, -2189, -2870, -1681, -4398, &                              ! CaH isotopes
@@ -14260,45 +14161,45 @@ SUBROUTINE SELECTLINES
     -2 /)                                                           ! VO
 
   ! TiO isotope gf corrections: 46Ti..50Ti (ISO = |IELION| - 8949)
-  integer, parameter :: TIO_ISOCORR(5) = (/ -1101, -1138, -131, -1259, -1272 /)
+  INTEGER, PARAMETER :: TIO_ISOCORR(5) = (/ -1101, -1138, -131, -1259, -1272 /)
 
   ! H2O isotope gf corrections (ISO determined from signs of IELO/IGFLOG)
-  integer, parameter :: H2O_ISOCORR(4) = (/ -1, -3398, -2690, -5000 /)
+  INTEGER, PARAMETER :: H2O_ISOCORR(4) = (/ -1, -3398, -2690, -5000 /)
 
   ! --- Local variables ---
-  real*8  :: XNFDOPMAX(mion, 344)
-  real*8  :: CENRATIO, RATIOLG, GR, tablog8
-  integer*4 :: LINEREC(4)
-  integer :: NU, J, K, LINE
-  integer :: N12, N122, N22, N32, N42, N52, N62, N18
-  integer :: MOLCODE, MOLCODEOLD, KGFLOG, ISO, IMOL
-  integer :: LINEDATA_CAP, IOS
+  REAL(8)  :: XNFDOPMAX(mion, 344)
+  REAL(8)  :: CENRATIO, RATIOLG, GR, tablog8
+  INTEGER(4) :: LINEREC(4)
+  INTEGER :: NU, J, K, LINE
+  INTEGER :: N12, N122, N22, N32, N42, N52, N62, N18
+  INTEGER :: MOLCODE, MOLCODEOLD, KGFLOG, ISO, IMOL
+  INTEGER :: LINEDATA_CAP, IOS
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING SELECTLINES'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING SELECTLINES'
 
   ! Allocate in-memory line storage (replaces fort.12)
   LINEDATA_CAP = 150000000   ! 150M lines initial (~2.4 GB)
-  if (allocated(LINEDATA)) deallocate(LINEDATA)
-  allocate(LINEDATA(4, LINEDATA_CAP), stat=IOS)
-  if (IOS /= 0) then
-    write(6, '(A,F6.2,A)') ' SELECTLINES: cannot allocate ', &
+  IF (allocated(LINEDATA)) DEALLOCATE(LINEDATA)
+  ALLOCATE(LINEDATA(4, LINEDATA_CAP), STAT=IOS)
+  IF (IOS /= 0) THEN
+    WRITE(6, '(A,F6.2,A)') ' SELECTLINES: cannot allocate ', &
       LINEDATA_CAP * 16.0D0 / 1.0D9, ' GB for LINEDATA'
-    stop 'SELECTLINES: insufficient memory'
-  end if
+    STOP 'SELECTLINES: insufficient memory'
+  END IF
   NLINES_STORED = 0
 
   !---------------------------------------------------------------------
   ! Compute maximum XNFDOP/TABCONT ratio over depth for each (ion, nu)
   !---------------------------------------------------------------------
   XNFDOPMAX = 0.0D0
-  do NU = 1, 344
-    do NELION = 1, MION
-      do J = 1, NRHOX
+  DO NU = 1, 344
+    DO NELION = 1, MION
+      DO J = 1, NRHOX
         XNFDOPMAX(NELION, NU) = max(XNFDOPMAX(NELION, NU), &
           XNFDOP(J, NELION) / TABCONT(J, NU))
-      end do
-    end do
-  end do
+      END DO
+    END DO
+  END DO
 
   RATIOLG = log(1.0D0 + 1.0D0 / 2000000.0D0)
   N12 = 0; N122 = 0; N22 = 0; N32 = 0; N42 = 0; N52 = 0; N62 = 0
@@ -14307,264 +14208,264 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   ! (1) LOWLINES predicted (unit 11)
   !=====================================================================
-  open(unit=11, file=trim(DATADIR)//'lowlines_pl.bin', &
-       status='OLD', form='UNFORMATTED', action='READ', &
-       access='STREAM', err=669)
+  OPEN(UNIT=11, FILE=trim(DATADIR)//'lowlines_pl.bin', &
+       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+       ACCESS='STREAM', ERR=669)
 
-  do LINE = 1, MAX_LINES
-    read(11, end=581) LINEREC
-    call UNPACK_LINEDATA(LINEREC)
-    if (mod(LINE, 100000) == 1 .and. IDEBUG == 1) &
-      write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+  DO LINE = 1, MAX_LINES
+    READ(11, END=581) LINEREC
+    CALL UNPACK_LINEDATA(LINEREC)
+    IF (mod(LINE, 100000) == 1 .AND. IDEBUG == 1) &
+      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
 
     ! Advance wavelength bin to match line position
-    do while (IWL >= IWAVETAB(NU))
+    DO WHILE (IWL >= IWAVETAB(NU))
       FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
-    end do
+    END DO
 
     ! Apply selection filters
     NELION = abs(IELION / 10)
-    if (NELION < 1 .or. NELION > mion) then
-      if (IDEBUG == 1) write(6, '(A,I6,A,I10)') &
+    IF (NELION < 1 .OR. NELION > mion) THEN
+      IF (IDEBUG == 1) WRITE(6, '(A,I6,A,I10)') &
         '  SELECTLINES: NELION=', NELION, ' OOB, LINE=', LINE
-      cycle
-    end if
-    if (XNFDOPMAX(NELION, NU) <= 1.0D-37) cycle
+      CYCLE
+    END IF
+    IF (XNFDOPMAX(NELION, NU) <= 1.0D-37) CYCLE
     CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    if (CENRATIO < 1.0D0) cycle
+    IF (CENRATIO < 1.0D0) CYCLE
     tablog8 = TABLOG(IELO)
-    if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
+    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) CYCLE
 
     NLINES_STORED = NLINES_STORED + 1
-    if (NLINES_STORED > LINEDATA_CAP) then
-      write(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      stop 'SELECTLINES: increase LINEDATA_CAP'
-    end if
+    IF (NLINES_STORED > LINEDATA_CAP) THEN
+      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      STOP 'SELECTLINES: increase LINEDATA_CAP'
+    END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
-    if (mod(LINE, 100000) == 1 .and. IDEBUG == 1) &
-      write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+    IF (mod(LINE, 100000) == 1 .AND. IDEBUG == 1) &
+      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
     N12 = N12 + 1
-  end do
-  write(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES predicted'
-  stop 'SELECTLINES: increase MAX_LINES'
+  END DO
+  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES predicted'
+  STOP 'SELECTLINES: increase MAX_LINES'
 
-  581 write(6, '(I12,A)') N12, ' LINES FROM LOWLINES'
-  close(unit=11)
+  581 WRITE(6, '(I12,A)') N12, ' LINES FROM LOWLINES'
+  CLOSE(UNIT=11)
 
   !=====================================================================
   ! (2) LOWLINES observed (unit 111)
   !=====================================================================
-  open(unit=111, file=trim(DATADIR)//'lowlines_obs.bin', &
-       status='OLD', form='UNFORMATTED', action='READ', &
-       access='STREAM', err=669)
+  OPEN(UNIT=111, FILE=trim(DATADIR)//'lowlines_obs.bin', &
+       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+       ACCESS='STREAM', ERR=669)
 
-  do LINE = 1, MAX_LINES
-    read(111, end=5819) LINEREC
-    call UNPACK_LINEDATA(LINEREC)
+  DO LINE = 1, MAX_LINES
+    READ(111, END=5819) LINEREC
+    CALL UNPACK_LINEDATA(LINEREC)
 
-    do while (IWL >= IWAVETAB(NU))
+    DO WHILE (IWL >= IWAVETAB(NU))
       FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
-    end do
+    END DO
 
     NELION = abs(IELION / 10)
-    if (XNFDOPMAX(NELION, NU) <= 1.0D-37) cycle
+    IF (XNFDOPMAX(NELION, NU) <= 1.0D-37) CYCLE
     CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    if (CENRATIO < 1.0D0) cycle
+    IF (CENRATIO < 1.0D0) CYCLE
     tablog8 = TABLOG(IELO)
-    if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
+    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) CYCLE
 
     NLINES_STORED = NLINES_STORED + 1
-    if (NLINES_STORED > LINEDATA_CAP) then
-      write(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      stop 'SELECTLINES: increase LINEDATA_CAP'
-    end if
+    IF (NLINES_STORED > LINEDATA_CAP) THEN
+      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      STOP 'SELECTLINES: increase LINEDATA_CAP'
+    END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
-    if (mod(LINE, 100000) == 1 .and. IDEBUG == 1) &
-      write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+    IF (mod(LINE, 100000) == 1 .AND. IDEBUG == 1) &
+      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
     WLVAC = exp(IWL * RATIOLG)
     N122 = N122 + 1
-  end do
-  write(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES observed'
-  stop 'SELECTLINES: increase MAX_LINES'
+  END DO
+  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES observed'
+  STOP 'SELECTLINES: increase MAX_LINES'
 
-  5819 write(6, '(I12,A)') N122, ' LINES FROM LOWLINES observed'
-  close(unit=111)
+  5819 WRITE(6, '(I12,A)') N122, ' LINES FROM LOWLINES observed'
+  CLOSE(UNIT=111)
 
   !=====================================================================
   ! (3) HILINES (unit 21)
   !=====================================================================
-  669 open(unit=21, file=trim(DATADIR)//'hilines.bin', &
-       status='OLD', form='UNFORMATTED', action='READ', &
-           access='STREAM', err=769)
+  669 OPEN(UNIT=21, FILE=trim(DATADIR)//'hilines.bin', &
+       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+           ACCESS='STREAM', ERR=769)
   NU = 1
 
-  do LINE = 1, MAX_LINES
-    read(21, end=681) LINEREC
-    call UNPACK_LINEDATA(LINEREC)
+  DO LINE = 1, MAX_LINES
+    READ(21, END=681) LINEREC
+    CALL UNPACK_LINEDATA(LINEREC)
 
-    do while (IWL >= IWAVETAB(NU))
+    DO WHILE (IWL >= IWAVETAB(NU))
       FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
-    end do
+    END DO
 
     NELION = abs(IELION / 10)
-    if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
+    IF (XNFDOPMAX(NELION, NU) == 0.0D0) CYCLE
     CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    if (CENRATIO < 1.0D0) cycle
+    IF (CENRATIO < 1.0D0) CYCLE
     tablog8 = TABLOG(IELO)
-    if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
+    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) CYCLE
 
     NLINES_STORED = NLINES_STORED + 1
-    if (NLINES_STORED > LINEDATA_CAP) then
-      write(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      stop 'SELECTLINES: increase LINEDATA_CAP'
-    end if
+    IF (NLINES_STORED > LINEDATA_CAP) THEN
+      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      STOP 'SELECTLINES: increase LINEDATA_CAP'
+    END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
-    if (mod(LINE, 100000) == 1 .and. IDEBUG == 1) &
-      write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+    IF (mod(LINE, 100000) == 1 .AND. IDEBUG == 1) &
+      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
     N22 = N22 + 1
-  end do
-  write(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading HILINES'
-  stop 'SELECTLINES: increase MAX_LINES'
+  END DO
+  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading HILINES'
+  STOP 'SELECTLINES: increase MAX_LINES'
 
-  681 write(6, '(I12,A)') N22, ' LINES FROM HILINES'
-  close(unit=21)
+  681 WRITE(6, '(I12,A)') N22, ' LINES FROM HILINES'
+  CLOSE(UNIT=21)
 
   !=====================================================================
   ! (4) DIATOMICS (unit 31)
   !=====================================================================
-  769 open(unit=31, file=trim(DATADIR)//'diatomicspacksrt.bin', &
-       status='OLD', form='UNFORMATTED', action='READ', err=869)
+  769 OPEN(UNIT=31, FILE=trim(DATADIR)//'diatomicspacksrt.bin', &
+       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', ERR=869)
   NU = 1
   MOLCODEOLD = 0
   IMOL = 0
 
-  do LINE = 1, MAX_LINES
-    read(31, end=781) LINEREC
-    call UNPACK_LINEDATA(LINEREC)
+  DO LINE = 1, MAX_LINES
+    READ(31, END=781) LINEREC
+    CALL UNPACK_LINEDATA(LINEREC)
 
-    do while (IWL >= IWAVETAB(NU))
+    DO WHILE (IWL >= IWAVETAB(NU))
       FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
-    end do
+    END DO
 
     MOLCODE = abs(IELION)
     KGFLOG = IGFLOG
     IGS = 1
 
     ! Look up molecular species code (cache last match)
-    if (MOLCODE /= MOLCODEOLD) then
+    IF (MOLCODE /= MOLCODEOLD) THEN
       MOLCODEOLD = MOLCODE
       IMOL = 0
-      do K = 1, NMOL
-        if (MOLCODE == MOLCODES(K)) then
+      DO K = 1, NMOL
+        IF (MOLCODE == MOLCODES(K)) THEN
           IMOL = K
-          exit
-        end if
-      end do
-      if (IMOL == 0) then
-        write(6, '(9I12)') LINE, LINEREC
-        stop 1
-      end if
-    end if
+          EXIT
+        END IF
+      END DO
+      IF (IMOL == 0) THEN
+        WRITE(6, '(9I12)') LINE, LINEREC
+        STOP 1
+      END IF
+    END IF
 
     ! Apply isotope gf correction
     IGFLOG = max(KGFLOG + ISOX(IMOL), 1)
 
     NELION = abs(IELION / 10)
-    if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
+    IF (XNFDOPMAX(NELION, NU) == 0.0D0) CYCLE
     CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    if (CENRATIO < 1.0D0) cycle
+    IF (CENRATIO < 1.0D0) CYCLE
     tablog8 = TABLOG(IELO)
-    if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
+    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) CYCLE
 
-    call PACK_LINEDATA(LINEREC)
+    CALL PACK_LINEDATA(LINEREC)
     NLINES_STORED = NLINES_STORED + 1
-    if (NLINES_STORED > LINEDATA_CAP) then
-      write(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      stop 'SELECTLINES: increase LINEDATA_CAP'
-    end if
+    IF (NLINES_STORED > LINEDATA_CAP) THEN
+      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      STOP 'SELECTLINES: increase LINEDATA_CAP'
+    END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
-    if (mod(LINE, 100000) == 1 .and. IDEBUG == 1) &
-      write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+    IF (mod(LINE, 100000) == 1 .AND. IDEBUG == 1) &
+      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
     N32 = N32 + 1
-  end do
-  write(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading DIATOMICS'
-  stop 'SELECTLINES: increase MAX_LINES'
+  END DO
+  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading DIATOMICS'
+  STOP 'SELECTLINES: increase MAX_LINES'
 
-  781 write(6, '(I12,A)') N32, ' LINES FROM DIATOMICS'
-  close(unit=31)
+  781 WRITE(6, '(I12,A)') N32, ' LINES FROM DIATOMICS'
+  CLOSE(UNIT=31)
 
   !=====================================================================
   ! (5) TiO (unit 41)
   !=====================================================================
-  869 open(unit=41, file=trim(DATADIR)//'schwenke.bin', &
-       status='OLD', form='UNFORMATTED', action='READ', &
-           access='STREAM', err=1869)
+  869 OPEN(UNIT=41, FILE=trim(DATADIR)//'schwenke.bin', &
+       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+           ACCESS='STREAM', ERR=1869)
   NU = 1
 
-  do LINE = 1, MAX_LINES
-    read(41, end=881) LINEREC
-    call UNPACK_LINEDATA(LINEREC)
+  DO LINE = 1, MAX_LINES
+    READ(41, END=881) LINEREC
+    CALL UNPACK_LINEDATA(LINEREC)
 
-    do while (IWL >= IWAVETAB(NU))
+    DO WHILE (IWL >= IWAVETAB(NU))
       FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
-    end do
+    END DO
 
     KGFLOG = IGFLOG
     ISO = abs(IELION) - 8949
 
     ! Isotope gf correction for 46Ti-50Ti
-    if (ISO >= 1 .and. ISO <= 5) then
+    IF (ISO >= 1 .AND. ISO <= 5) THEN
       IGFLOG = max(KGFLOG + TIO_ISOCORR(ISO), 1)
-    end if
+    END IF
 
     NELION = 895
-    if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
+    IF (XNFDOPMAX(NELION, NU) == 0.0D0) CYCLE
     CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    if (CENRATIO < 1.0D0) cycle
+    IF (CENRATIO < 1.0D0) CYCLE
     tablog8 = TABLOG(IELO)
-    if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
+    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) CYCLE
 
     IGS = 1
     IGW = 9384
-    call PACK_LINEDATA(LINEREC)
+    CALL PACK_LINEDATA(LINEREC)
     NLINES_STORED = NLINES_STORED + 1
-    if (NLINES_STORED > LINEDATA_CAP) then
-      write(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      stop 'SELECTLINES: increase LINEDATA_CAP'
-    end if
+    IF (NLINES_STORED > LINEDATA_CAP) THEN
+      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      STOP 'SELECTLINES: increase LINEDATA_CAP'
+    END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
-    if (mod(LINE, 100000) == 1 .and. IDEBUG == 1) &
-      write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+    IF (mod(LINE, 100000) == 1 .AND. IDEBUG == 1) &
+      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
     N42 = N42 + 1
-  end do
-  write(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading TIOLINES'
-  stop 'SELECTLINES: increase MAX_LINES'
+  END DO
+  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading TIOLINES'
+  STOP 'SELECTLINES: increase MAX_LINES'
 
-  881 write(6, '(I12,A)') N42, ' LINES FROM TIOLINES'
-  close(unit=41)
+  881 WRITE(6, '(I12,A)') N42, ' LINES FROM TIOLINES'
+  CLOSE(UNIT=41)
 
   !=====================================================================
   ! (6) H2O (unit 51) — special 3-integer record format
   !=====================================================================
-  1869 open(unit=51, file=trim(DATADIR)//'h2ofastfix.bin', &
-       status='OLD', form='UNFORMATTED', action='READ', &
-            access='STREAM', err=2869)
+  1869 OPEN(UNIT=51, FILE=trim(DATADIR)//'h2ofastfix.bin', &
+       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+            ACCESS='STREAM', ERR=2869)
   NU = 1
 
-  do LINE = 1, MAX_LINES
-    read(51, end=1881) IWL, IELO, IGFLOG
+  DO LINE = 1, MAX_LINES
+    READ(51, END=1881) IWL, IELO, IGFLOG
 
-    do while (IWL >= IWAVETAB(NU))
+    DO WHILE (IWL >= IWAVETAB(NU))
       FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       ! Radiation damping from frequency
@@ -14572,18 +14473,18 @@ SUBROUTINE SELECTLINES
       GR = log10(dble(GAMMAR))
       IGR = int(GR * 1000.0D0 + 16384.5D0)
       NU = NU + 1
-    end do
+    END DO
 
     ! Determine isotope from signs of IELO and IGFLOG
-    if (IELO > 0 .and. IGFLOG > 0) then
+    IF (IELO > 0 .AND. IGFLOG > 0) THEN
       ISO = 1      ! 1H1H16O
-    else if (IELO > 0) then
+    ELSE IF (IELO > 0) THEN
       ISO = 2      ! 1H1H17O
-    else if (IGFLOG > 0) then
+    ELSE IF (IGFLOG > 0) THEN
       ISO = 3      ! 1H1H18O
-    else
+    ELSE
       ISO = 4      ! 1H2H16O
-    end if
+    END IF
 
     IELION = -(9399 + ISO)
     ELO = dble(abs(IELO))
@@ -14591,86 +14492,86 @@ SUBROUTINE SELECTLINES
     IGFLOG = max(KGFLOG + H2O_ISOCORR(ISO), 1)
 
     NELION = 940
-    if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
+    IF (XNFDOPMAX(NELION, NU) == 0.0D0) CYCLE
     CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    if (CENRATIO < 1.0D0) cycle
-    if (CENRATIO * exp(-ELO * HCKT(NRHOX)) < 1.0D0) cycle
+    IF (CENRATIO < 1.0D0) CYCLE
+    IF (CENRATIO * exp(-ELO * HCKT(NRHOX)) < 1.0D0) CYCLE
 
     IELO = int(log10(ELO) * 1000.0D0 + 16384.5D0)
     IGS = 1
     IGW = 9384
-    call PACK_LINEDATA(LINEREC)
+    CALL PACK_LINEDATA(LINEREC)
     NLINES_STORED = NLINES_STORED + 1
-    if (NLINES_STORED > LINEDATA_CAP) then
-      write(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      stop 'SELECTLINES: increase LINEDATA_CAP'
-    end if
+    IF (NLINES_STORED > LINEDATA_CAP) THEN
+      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      STOP 'SELECTLINES: increase LINEDATA_CAP'
+    END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
-    if (mod(LINE, 100000) == 1 .and. IDEBUG == 1) &
-      write(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+    IF (mod(LINE, 100000) == 1 .AND. IDEBUG == 1) &
+      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
     N52 = N52 + 1
-  end do
-  write(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H2OFAST'
-  stop 'SELECTLINES: increase MAX_LINES'
+  END DO
+  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H2OFAST'
+  STOP 'SELECTLINES: increase MAX_LINES'
 
-  1881 write(6, '(I12,A)') N52, ' LINES FROM H2OFAST'
-  close(unit=51)
+  1881 WRITE(6, '(I12,A)') N52, ' LINES FROM H2OFAST'
+  CLOSE(UNIT=51)
 
   !=====================================================================
   ! (7) H3+ (unit 61)
   !=====================================================================
-  2869 open(unit=61, file=trim(DATADIR)//'h3plus.dat', &
-       status='OLD', form='UNFORMATTED', action='READ', &
-            access='STREAM', err=1882)
+  2869 OPEN(UNIT=61, FILE=trim(DATADIR)//'h3plus.dat', &
+       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+            ACCESS='STREAM', ERR=1882)
   NU = 1
 
-  do LINE = 1, MAX_LINES
-    read(61, end=2881) LINEREC
-    call UNPACK_LINEDATA(LINEREC)
+  DO LINE = 1, MAX_LINES
+    READ(61, END=2881) LINEREC
+    CALL UNPACK_LINEDATA(LINEREC)
 
-    do while (IWL >= IWAVETAB(NU))
+    DO WHILE (IWL >= IWAVETAB(NU))
       FREQ = CLIGHT_NMS / WAVETAB(NU)
       ! (FREQ removed — using FREQ directly)
       NU = NU + 1
-    end do
+    END DO
 
     KGFLOG = IGFLOG
     IGFLOG = max(KGFLOG - 1272, 1)
 
     NELION = 895
-    if (XNFDOPMAX(NELION, NU) == 0.0D0) cycle
+    IF (XNFDOPMAX(NELION, NU) == 0.0D0) CYCLE
     CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    if (CENRATIO < 1.0D0) cycle
+    IF (CENRATIO < 1.0D0) CYCLE
     tablog8 = TABLOG(IELO)
-    if (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) cycle
+    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) < 1.0D0) CYCLE
 
     IGS = 1
     IGW = 9384
-    call PACK_LINEDATA(LINEREC)
+    CALL PACK_LINEDATA(LINEREC)
     NLINES_STORED = NLINES_STORED + 1
-    if (NLINES_STORED > LINEDATA_CAP) then
-      write(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      stop 'SELECTLINES: increase LINEDATA_CAP'
-    end if
+    IF (NLINES_STORED > LINEDATA_CAP) THEN
+      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      STOP 'SELECTLINES: increase LINEDATA_CAP'
+    END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
     N62 = N62 + 1
-  end do
-  write(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H3PLUS'
-  stop 'SELECTLINES: increase MAX_LINES'
+  END DO
+  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H3PLUS'
+  STOP 'SELECTLINES: increase MAX_LINES'
 
-  2881 write(6, '(I10,A)') N62, ' LINES FROM H3PLUS'
-  close(unit=61)
+  2881 WRITE(6, '(I10,A)') N62, ' LINES FROM H3PLUS'
+  CLOSE(UNIT=61)
 
   !=====================================================================
   ! Summary
   !=====================================================================
   1882 N18 = N12 + N122 + N22 + N32 + N42 + N52 + N62
-  write(6, '(I12,A)') N18, ' LINES TOTAL'
-  write(6, '(I12,A,F6.2,A)') NLINES_STORED, ' LINES STORED IN MEMORY (', &
+  WRITE(6, '(I12,A)') N18, ' LINES TOTAL'
+  WRITE(6, '(I12,A,F6.2,A)') NLINES_STORED, ' LINES STORED IN MEMORY (', &
        NLINES_STORED * 16.0D0 / 1.0D9, ' GB)'
-  if (NLINES_STORED == 0) then
-    stop 'SELECTLINES ERROR: no lines found'
-  end if
+  IF (NLINES_STORED == 0) THEN
+    STOP 'SELECTLINES ERROR: no lines found'
+  END IF
 
   FLUSH(6)
   
@@ -14704,20 +14605,20 @@ END SUBROUTINE SELECTLINES
 
 FUNCTION MAP4(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in)  :: NOLD, NNEW
-  real*8,  intent(in)  :: XOLD(NOLD), FOLD(NOLD)
-  real*8,  intent(in)  :: XNEW(NNEW)
-  real*8,  intent(out) :: FNEW(NNEW)
-  integer :: MAP4
+  INTEGER, INTENT(IN)  :: NOLD, NNEW
+  REAL(8),  INTENT(IN)  :: XOLD(NOLD), FOLD(NOLD)
+  REAL(8),  INTENT(IN)  :: XNEW(NNEW)
+  REAL(8),  INTENT(OUT) :: FNEW(NNEW)
+  INTEGER :: MAP4
 
   ! --- Local variables ---
-  real*8  :: A, B, C, D
-  real*8  :: ABAC, BBAC, CBAC
-  real*8  :: AFOR, BFOR, CFOR
-  real*8  :: WT
-  integer :: K, L, LL, L1, L2
+  REAL(8)  :: A, B, C, D
+  REAL(8)  :: ABAC, BBAC, CBAC
+  REAL(8)  :: AFOR, BFOR, CFOR
+  REAL(8)  :: WT
+  INTEGER :: K, L, LL, L1, L2
 
   L  = 2
   LL = 0
@@ -14727,34 +14628,34 @@ FUNCTION MAP4(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
   CBAC = 0.0D0; BBAC = 0.0D0; ABAC = 0.0D0
   CFOR = 0.0D0; BFOR = 0.0D0; AFOR = 0.0D0
 
-  do K = 1, NNEW
+  DO K = 1, NNEW
 
     !-------------------------------------------------------------------
     ! Bracket: find L such that XOLD(L-1) <= XNEW(K) < XOLD(L)
     !-------------------------------------------------------------------
-    do while (L <= NOLD)
-      if (XNEW(K) < XOLD(L)) exit
+    DO WHILE (L <= NOLD)
+      IF (XNEW(K) < XOLD(L)) EXIT
       L = L + 1
-    end do
+    END DO
 
     ! If same interval as last point, reuse coefficients
-    if (L == LL) then
+    IF (L == LL) THEN
       FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-      cycle
-    end if
+      CYCLE
+    END IF
 
     !-------------------------------------------------------------------
     ! Past end or at start: linear interpolation/extrapolation
     !-------------------------------------------------------------------
-    if (L > NOLD .or. L == 2) then
+    IF (L > NOLD .OR. L == 2) THEN
       L = min(NOLD, L)
       C = 0.0D0
       B = (FOLD(L) - FOLD(L-1)) / (XOLD(L) - XOLD(L-1))
       A = FOLD(L) - XOLD(L) * B
       LL = L
       FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-      cycle
-    end if
+      CYCLE
+    END IF
 
     !-------------------------------------------------------------------
     ! Interior point: construct backward and forward quadratics
@@ -14762,12 +14663,12 @@ FUNCTION MAP4(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
     L1 = L - 1
 
     ! Backward quadratic through (L-2, L-1, L)
-    if (L <= LL + 1 .and. L /= 3) then
+    IF (L <= LL + 1 .AND. L /= 3) THEN
       ! Adjacent interval: shift (backward = previous forward)
       CBAC = CFOR
       BBAC = BFOR
       ABAC = AFOR
-    else
+    ELSE
       ! Compute from scratch
       L2 = L - 2
       D = (FOLD(L1) - FOLD(L2)) / (XOLD(L1) - XOLD(L2))
@@ -14776,17 +14677,17 @@ FUNCTION MAP4(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
             - FOLD(L1) / (XOLD(L) - XOLD(L1))) / (XOLD(L1) - XOLD(L2))
       BBAC = D - (XOLD(L1) + XOLD(L2)) * CBAC
       ABAC = FOLD(L2) - XOLD(L2) * D + XOLD(L1) * XOLD(L2) * CBAC
-    end if
+    END IF
 
     ! At last point: use backward quadratic only
-    if (L >= NOLD) then
+    IF (L >= NOLD) THEN
       C = CBAC
       B = BBAC
       A = ABAC
       LL = L
       FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-      cycle
-    end if
+      CYCLE
+    END IF
 
     ! Forward quadratic through (L-1, L, L+1)
     D = (FOLD(L) - FOLD(L1)) / (XOLD(L) - XOLD(L1))
@@ -14798,17 +14699,17 @@ FUNCTION MAP4(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
 
     ! Curvature-weighted blending
     WT = 0.0D0
-    if (abs(CFOR) /= 0.0D0) WT = abs(CFOR) / (abs(CFOR) + abs(CBAC))
+    IF (abs(CFOR) /= 0.0D0) WT = abs(CFOR) / (abs(CFOR) + abs(CBAC))
     A = AFOR + WT * (ABAC - AFOR)
     B = BFOR + WT * (BBAC - BFOR)
     C = CFOR + WT * (CBAC - CFOR)
     LL = L
 
     FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-  end do
+  END DO
 
   MAP4 = LL - 1
-  return
+  RETURN
 
 END FUNCTION MAP4
 
@@ -14827,14 +14728,14 @@ END FUNCTION MAP4
 
 SUBROUTINE TABVOIGT(VSTEPS, N)
 
-  implicit none
-  real*8,  intent(in) :: VSTEPS
-  integer, intent(in) :: N
+  IMPLICIT NONE
+  REAL(8),  INTENT(IN) :: VSTEPS
+  INTEGER, INTENT(IN) :: N
 
   ! Pretabulate Voigt function components for fast line profile evaluation
   ! 100 steps per Doppler width gives ~2% accuracy
-  integer, parameter :: NTAB = 81
-  real*8, parameter :: TABVI(81) = (/ &
+  INTEGER, PARAMETER :: NTAB = 81
+  REAL(8), PARAMETER :: TABVI(81) = (/ &
     0.0D0, 0.1D0, 0.2D0, 0.3D0, 0.4D0, 0.5D0, 0.6D0, 0.7D0, &
     0.8D0, 0.9D0, 1.0D0, 1.1D0, 1.2D0, 1.3D0, 1.4D0, 1.5D0, &
     1.6D0, 1.7D0, 1.8D0, 1.9D0, 2.0D0, 2.1D0, 2.2D0, 2.3D0, &
@@ -14846,7 +14747,7 @@ SUBROUTINE TABVOIGT(VSTEPS, N)
     8.8D0, 9.0D0, 9.2D0, 9.4D0, 9.6D0, 9.8D0, 10.0D0, 10.2D0, &
     10.4D0, 10.6D0, 10.8D0, 11.0D0, 11.2D0, 11.4D0, 11.6D0, &
     11.8D0, 12.0D0 /)
-  real*8, parameter :: TABH1(81) = (/ &
+  REAL(8), PARAMETER :: TABH1(81) = (/ &
     -1.12838D0, -1.10596D0, -1.04048D0, -0.93703D0, -0.80346D0, &
     -0.64945D0, -0.48552D0, -0.32192D0, -0.16772D0, -0.03012D0, &
     0.08594D0, 0.17789D0, 0.24537D0, 0.28981D0, 0.31394D0, &
@@ -14866,21 +14767,21 @@ SUBROUTINE TABVOIGT(VSTEPS, N)
     0.0047217D0, 0.0045526D0, 0.0043924D0, 0.0042405D0, &
     0.0040964D0, 0.0039595D0 /)
 
-  integer :: I, IDUM
-  real*8  :: VV
+  INTEGER :: I, IDUM
+  REAL(8)  :: VV
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING TABVOIGT'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING TABVOIGT'
 
-  do I = 1, N
+  DO I = 1, N
     H0TAB(I) = dble(I - 1) / VSTEPS
-  end do
+  END DO
   IDUM = MAP4(TABVI, TABH1, NTAB, H0TAB, H1TAB, N)
-  do I = 1, N
+  DO I = 1, N
     VV = (dble(I - 1) / VSTEPS)**2
     H0TAB(I) = exp(-VV)
     H2TAB(I) = H0TAB(I) - (VV + VV) * H0TAB(I)
-  end do
-  return
+  END DO
+  RETURN
 
 END SUBROUTINE TABVOIGT
 
@@ -14906,19 +14807,19 @@ END SUBROUTINE TABVOIGT
 
 SUBROUTINE XLINOP
 
-  implicit none
+  IMPLICIT NONE
 
   ! Named constants
-  real*8, parameter :: LORENTZ_PREFAC = 0.5642D0  ! 1/sqrt(pi)
-  real*8, parameter :: ADAMP_THRESH = 0.20D0
-  integer, parameter :: MAX_WING = 2000
+  REAL(8), PARAMETER :: LORENTZ_PREFAC = 0.5642D0  ! 1/sqrt(pi)
+  REAL(8), PARAMETER :: ADAMP_THRESH = 0.20D0
+  INTEGER, PARAMETER :: MAX_WING = 2000
 
   ! Ionization edges (cm^-1): CONTX(edge_index, species)
   ! 25 edges × 16 species. Column 1 = H, 4 = He I, 6 = C I, etc.
-  real*8, parameter :: CONTX(25,16) = reshape( (/ &
-    109678.764D0, 27419.659D0, 12186.462D0, 6854.871D0, 4387.113D0, 3046.604D0, 2238.32D0, 1713.711D0, &
-    1354.044D0, 1096.776D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, &
-    0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, &
+  ! Column 1 (H I) edges come from H_SERIES_LIMITS; 15 trailing zeros pad the column.
+  REAL(8), PARAMETER :: CONTX_COL1_ZEROS(15) = 0.0D0     ! pads the H column
+  REAL(8), PARAMETER :: CONTX(25,16) = reshape( (/ &
+    H_SERIES_LIMITS(1:10), CONTX_COL1_ZEROS,                                              &
     0.0D0, 198310.76D0, 38454.691D0, 32033.214D0, 29223.753D0, 27175.76D0, 15073.868D0, 0.0D0, &
     0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, &
     0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, &
@@ -14968,38 +14869,38 @@ SUBROUTINE XLINOP
     0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0, 0.0D0 /), (/ 25, 16 /) )
 
   ! Local variables
-  real*8  :: ELO, CGF, GAMMAR, GAMMAS, GAMMAW
-  real*8  :: ADAMP, CENTER, CV, DOPWAVE, VVOIGT, WLVAC4, GF, G
-  real*8  :: XSECTG, CON, FRELIN, EPSIL, ASHORE, BSHORE
-  real*8  :: TXNXN(kw)
-  real*8  :: BOLTH(kw, 100), EH(100)
-  real*8  :: WCON, WMERGE, WSHIFT, EMERGE(kw), Z, WMAX
-  real*8  :: NSTARK, NMERGE, RATIOLG
+  REAL(8)  :: ELO, CGF, GAMMAR, GAMMAS, GAMMAW
+  REAL(8)  :: ADAMP, CENTER, CV, DOPWAVE, VVOIGT, WLVAC4, GF, G
+  REAL(8)  :: XSECTG, CON, FRELIN, EPSIL, ASHORE, BSHORE
+  REAL(8)  :: TXNXN(kw)
+  REAL(8)  :: BOLTH(kw, 100), EH(100)
+  REAL(8)  :: WCON, WMERGE, WSHIFT, EMERGE(kw), Z, WMAX
+  REAL(8)  :: NSTARK, NMERGE, RATIOLG
   ! Temporaries matching the binary record layout of nltelines_obs.bin
-  real*4  :: ELO4, GF4, GAMMAR4, GAMMAS4, GAMMAW4
-  integer*4 :: IFJ(kw+1)
-  integer :: TYPE, NLAST
-  integer :: LINE, J, K, N, NU, IW, I, IV, NUCONT, IOS_RD
-  integer :: NBLO, NBUP, NCON, NELIONX, LIM
+  REAL(4)  :: ELO4, GF4, GAMMAR4, GAMMAS4, GAMMAW4
+  INTEGER(4) :: IFJ(kw+1)
+  INTEGER :: TYPE, NLAST
+  INTEGER :: LINE, J, K, N, NU, IW, I, IV, NUCONT, IOS_RD
+  INTEGER :: NBLO, NBUP, NCON, NELIONX, LIM
 
-  if (IDEBUG == 1) write(6, '(A)') ' RUNNING XLINOP'
+  IF (IDEBUG == 1) WRITE(6, '(A)') ' RUNNING XLINOP'
   RATIOLG = log(1.0D0 + 1.0D0 / 2000000.0D0)
 
   !---------------------------------------------------------------------
   ! Zero XLINES if LINOP1 was not called
   !---------------------------------------------------------------------
-  if (IFOP(15) == 0) then
-    do NU = 1, NUMNU
-      do J = 1, NRHOX
+  IF (IFOP(15) == 0) THEN
+    DO NU = 1, NUMNU
+      DO J = 1, NRHOX
         XLINES(J, NU) = 0.0
-      end do
-    end do
-  end if
+      END DO
+    END DO
+  END IF
 
   !---------------------------------------------------------------------
   ! Precompute depth-dependent quantities
   !---------------------------------------------------------------------
-  do J = 1, NRHOX
+  DO J = 1, NRHOX
     TXNXN(J) = (XNF(J,1) + 0.42D0*XNF(J,3) + 0.85D0*XNF(J,841)) &
                * (T(J) / 10000.D0)**0.3D0
 
@@ -15018,31 +14919,31 @@ SUBROUTINE XLINOP
     EH(8) = 107965.051D0
     EH(9) = 108324.720D0
     EH(10) = 108581.988D0
-    do N = 11, 100
+    DO N = 11, 100
       EH(N) = ELIM_HI - RYDBERG_H / dble(N)**2
-    end do
+    END DO
 
     ! Hydrogen Boltzmann factors × number density
-    do NBLO = 1, 100
+    DO NBLO = 1, 100
       BOLTH(J, NBLO) = exp(-EH(NBLO) * HCKT(J)) * XNFDOP(J, 1)
-    end do
+    END DO
 
     ! Merge energy: dissolved levels above this are continuum
-    EMERGE(J) = 109737.312D0 / NMERGE**2
-  end do
+    EMERGE(J) = RYDBERG_INF / NMERGE**2
+  END DO
 
   !---------------------------------------------------------------------
   ! Main line loop (unit 19)
   !---------------------------------------------------------------------
-  rewind 19
+  REWIND 19
   NUCONT = 1
   NU = 1
   IFJ(1) = 0    ! NOTE: was uninitialized in original code
 
-  do LINE = 1, 500000
-    read(19, iostat=IOS_RD) WLVAC, ELO4, GF4, NBLO, NBUP, NELION, TYPE, &
+  DO LINE = 1, 500000
+    READ(19, IOSTAT=IOS_RD) WLVAC, ELO4, GF4, NBLO, NBUP, NELION, TYPE, &
                       NCON, NELIONX, GAMMAR4, GAMMAS4, GAMMAW4, IWL, LIM
-    if (IOS_RD /= 0) return   ! end-of-file or read error
+    IF (IOS_RD /= 0) RETURN   ! end-of-file or read error
     ELO = dble(ELO4)
     GF  = dble(GF4)
     GAMMAR = dble(GAMMAR4)
@@ -15054,47 +14955,47 @@ SUBROUTINE XLINOP
     ASHORE = GAMMAS
     BSHORE = GAMMAW
 
-    if (WLVAC > WAVESET(NUHI)) return
+    IF (WLVAC > WAVESET(NUHI)) RETURN
     WLVAC4 = WLVAC
 
     ! Advance continuous opacity bin
-    do while (IWL >= IWAVETAB(NUCONT))
+    DO WHILE (IWL >= IWAVETAB(NUCONT))
       NUCONT = NUCONT + 1
-      if (NUCONT > 344) then
-        write(6, '(A)') ' WARNING: NUCONT > 344, clamping'
+      IF (NUCONT > 344) THEN
+        WRITE(6, '(A)') ' WARNING: NUCONT > 344, clamping'
         NUCONT = 344
-        exit
-      end if
-    end do
+        EXIT
+      END IF
+    END DO
 
     ! Advance frequency grid
-    do while (WLVAC >= WAVESET(NU))
+    DO WHILE (WLVAC >= WAVESET(NU))
       NU = NU + 1
-      if (NU >= NUMNU) return
-    end do
+      IF (NU >= NUMNU) RETURN
+    END DO
 
     !-----------------------------------------------------------------
     ! Dispatch on line type
     !-----------------------------------------------------------------
-    select case (TYPE)
+    SELECT CASE (TYPE)
 
-    case (2)
+    CASE (2)
       ! CORONAL LINE — skip
-      cycle
+      CYCLE
 
-    case (0, 3)
+    CASE (0, 3)
       ! NORMAL LINE (and PRD treated as normal)
-       if (mod(LINE, 1000) == 1.AND.IDEBUG == 1) &
-            write(6, '(2I10,2F12.6,1P5E12.3,I10)') &
+       IF (mod(LINE, 1000) == 1.AND.IDEBUG == 1) &
+            WRITE(6, '(2I10,2F12.6,1P5E12.3,I10)') &
             LINE, NU, WLVAC, WAVESET(NU), CGF, ELO, GAMMAR, GAMMAS, GAMMAW, NELION
 
       ! --- Coarse depth grid (every 8th depth) ---
-      do J = 8, NRHOX, 8
+      DO J = 8, NRHOX, 8
         IFJ(J+1) = 0
         CENTER = CGF * XNFDOP(J, NELION)
-        if (CENTER < TABCONT(J, NUCONT)) cycle
+        IF (CENTER < TABCONT(J, NUCONT)) CYCLE
         CENTER = CENTER * exp(-ELO * HCKT(J))
-        if (CENTER < TABCONT(J, NUCONT)) cycle
+        IF (CENTER < TABCONT(J, NUCONT)) CYCLE
         IFJ(J+1) = 1
 
         ADAMP = (GAMMAR + GAMMAS*XNE(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
@@ -15102,195 +15003,195 @@ SUBROUTINE XLINOP
 
         ! Blue-wing cutoff at continuum edge
         WCON = 0.0D0
-        if (NCON > 10) NCON = 0
-        if (NCON > 0) WCON = 1.0D7 / (CONTX(NCON, NELIONX) - EMERGE(J))
-        if (WLVAC < WCON) cycle
+        IF (NCON > 10) NCON = 0
+        IF (NCON > 0) WCON = 1.0D7 / (CONTX(NCON, NELIONX) - EMERGE(J))
+        IF (WLVAC < WCON) CYCLE
 
-        if (ADAMP > ADAMP_THRESH) then
+        IF (ADAMP > ADAMP_THRESH) THEN
           ! Red wing — full Voigt
-          do IW = NU, min(NU + MAX_WING, NUMNU)
+          DO IW = NU, min(NU + MAX_WING, NUMNU)
             CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / DOPWAVE, ADAMP)
             XLINES(J, IW) = XLINES(J, IW) + CV
-            if (CV < TABCONT(J, NUCONT)) exit
-          end do
+            IF (CV < TABCONT(J, NUCONT)) EXIT
+          END DO
           ! Blue wing — full Voigt
-          do I = 1, MAX_WING
+          DO I = 1, MAX_WING
             IW = NU - I
-            if (IW <= 0) exit
-            if (WAVESET(IW) < WCON) exit
+            IF (IW <= 0) EXIT
+            IF (WAVESET(IW) < WCON) EXIT
             CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / DOPWAVE, ADAMP)
             XLINES(J, IW) = XLINES(J, IW) + CV
-            if (CV < TABCONT(J, NUCONT)) exit
-          end do
-        else
+            IF (CV < TABCONT(J, NUCONT)) EXIT
+          END DO
+        ELSE
           ! Red wing — pretabulated
-          do IW = NU, min(NU + MAX_WING, NUMNU)
+          DO IW = NU, min(NU + MAX_WING, NUMNU)
             VVOIGT = (WAVESET(IW) - WLVAC) / DOPWAVE
-            if (VVOIGT > 10.0D0) then
+            IF (VVOIGT > 10.0D0) THEN
               CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
-            else
+            ELSE
               IV = int(VVOIGT * 200.0D0 + 1.5D0)
               CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
-            end if
+            END IF
             XLINES(J, IW) = XLINES(J, IW) + CV
-            if (CV < TABCONT(J, NUCONT)) exit
-          end do
+            IF (CV < TABCONT(J, NUCONT)) EXIT
+          END DO
           ! Blue wing — pretabulated
-          do I = 1, MAX_WING
+          DO I = 1, MAX_WING
             IW = NU - I
-            if (IW <= 0) exit
-            if (WAVESET(IW) < WCON) exit
+            IF (IW <= 0) EXIT
+            IF (WAVESET(IW) < WCON) EXIT
             VVOIGT = (WLVAC - WAVESET(IW)) / DOPWAVE
-            if (VVOIGT > 10.0D0) then
+            IF (VVOIGT > 10.0D0) THEN
               CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
-            else
+            ELSE
               IV = int(VVOIGT * 200.0D0 + 1.5D0)
               CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
-            end if
+            END IF
             XLINES(J, IW) = XLINES(J, IW) + CV
-            if (CV < TABCONT(J, NUCONT)) exit
-          end do
-        end if
-      end do  ! coarse depth J
+            IF (CV < TABCONT(J, NUCONT)) EXIT
+          END DO
+        END IF
+      END DO  ! coarse depth J
 
       ! --- Fine depth grid (intermediate points) ---
-      do K = 8, NRHOX, 8
-        if (IFJ(K-7) + IFJ(K+1) == 0) cycle
-        do J = K-7, K-1
+      DO K = 8, NRHOX, 8
+        IF (IFJ(K-7) + IFJ(K+1) == 0) CYCLE
+        DO J = K-7, K-1
           CENTER = CGF * XNFDOP(J, NELION)
-          if (CENTER < TABCONT(J, NUCONT)) cycle
+          IF (CENTER < TABCONT(J, NUCONT)) CYCLE
           CENTER = CENTER * exp(-ELO * HCKT(J))
-          if (CENTER < TABCONT(J, NUCONT)) cycle
+          IF (CENTER < TABCONT(J, NUCONT)) CYCLE
 
           ADAMP = (GAMMAR + GAMMAS*XNE(J) + GAMMAW*TXNXN(J)) / DOPPLE(J, NELION)
           DOPWAVE = DOPPLE(J, NELION) * WLVAC4
 
           WCON = 0.0D0
-          if (NCON > 10) NCON = 0
-          if (NCON > 0) WCON = 1.0D7 / (CONTX(NCON, NELIONX) - EMERGE(J))
-          if (WLVAC < WCON) cycle
+          IF (NCON > 10) NCON = 0
+          IF (NCON > 0) WCON = 1.0D7 / (CONTX(NCON, NELIONX) - EMERGE(J))
+          IF (WLVAC < WCON) CYCLE
 
-          if (ADAMP > ADAMP_THRESH) then
+          IF (ADAMP > ADAMP_THRESH) THEN
             ! Red wing — full Voigt
-            do IW = NU, min(NU + MAX_WING, NUMNU)
+            DO IW = NU, min(NU + MAX_WING, NUMNU)
               CV = CENTER * VOIGT((WAVESET(IW) - WLVAC) / DOPWAVE, ADAMP)
               XLINES(J, IW) = XLINES(J, IW) + CV
-              if (CV < TABCONT(J, NUCONT)) exit
-            end do
+              IF (CV < TABCONT(J, NUCONT)) EXIT
+            END DO
             ! Blue wing — full Voigt
-            do I = 1, MAX_WING
+            DO I = 1, MAX_WING
               IW = NU - I
-              if (IW <= 0) exit
-              if (WAVESET(IW) < WCON) exit
+              IF (IW <= 0) EXIT
+              IF (WAVESET(IW) < WCON) EXIT
               CV = CENTER * VOIGT((WLVAC - WAVESET(IW)) / DOPWAVE, ADAMP)
               XLINES(J, IW) = XLINES(J, IW) + CV
-              if (CV < TABCONT(J, NUCONT)) exit
-            end do
-          else
+              IF (CV < TABCONT(J, NUCONT)) EXIT
+            END DO
+          ELSE
             ! Red wing — pretabulated
-            do IW = NU, min(NU + MAX_WING, NUMNU)
+            DO IW = NU, min(NU + MAX_WING, NUMNU)
               VVOIGT = (WAVESET(IW) - WLVAC) / DOPWAVE
-              if (VVOIGT > 10.0D0) then
+              IF (VVOIGT > 10.0D0) THEN
                 CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
-              else
+              ELSE
                 IV = int(VVOIGT * 200.0D0 + 1.5D0)
                 CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
-              end if
+              END IF
               XLINES(J, IW) = XLINES(J, IW) + CV
-              if (CV < TABCONT(J, NUCONT)) exit
-            end do
+              IF (CV < TABCONT(J, NUCONT)) EXIT
+            END DO
             ! Blue wing — pretabulated
-            do I = 1, MAX_WING
+            DO I = 1, MAX_WING
               IW = NU - I
-              if (IW <= 0) exit
-              if (WAVESET(IW) < WCON) exit
+              IF (IW <= 0) EXIT
+              IF (WAVESET(IW) < WCON) EXIT
               VVOIGT = (WLVAC - WAVESET(IW)) / DOPWAVE
-              if (VVOIGT > 10.0D0) then
+              IF (VVOIGT > 10.0D0) THEN
                 CV = CENTER * LORENTZ_PREFAC * ADAMP / VVOIGT**2
-              else
+              ELSE
                 IV = int(VVOIGT * 200.0D0 + 1.5D0)
                 CV = CENTER * ((H2TAB(IV)*ADAMP + H1TAB(IV))*ADAMP + H0TAB(IV))
-              end if
+              END IF
               XLINES(J, IW) = XLINES(J, IW) + CV
-              if (CV < TABCONT(J, NUCONT)) exit
-            end do
-          end if
-        end do  ! fine depth J
-      end do  ! coarse block K
+              IF (CV < TABCONT(J, NUCONT)) EXIT
+            END DO
+          END IF
+        END DO  ! fine depth J
+      END DO  ! coarse block K
 
-    case (-1)
+    CASE (-1)
       ! HYDROGEN LINE — Stark-broadened profile, all depths
-      do J = 1, NRHOX
+      DO J = 1, NRHOX
         CENTER = CGF * BOLTH(J, NBLO)
-        if (CENTER < TABCONT(J, NUCONT)) cycle
+        IF (CENTER < TABCONT(J, NUCONT)) CYCLE
         WCON = 1.0D7 / (CONTX(NCON, 1) - EMERGE(J))
         ! Red wing
-        do IW = NU, min(NU + MAX_WING, NUMNU)
-          if (WAVESET(IW) < WCON) cycle
+        DO IW = NU, min(NU + MAX_WING, NUMNU)
+          IF (WAVESET(IW) < WCON) CYCLE
           CV = CENTER * HPROF4(NBLO, NBUP, J, WAVESET(IW) - WLVAC)
           XLINES(J, IW) = XLINES(J, IW) + CV
-          if (CV < TABCONT(J, NUCONT)) exit
-        end do
+          IF (CV < TABCONT(J, NUCONT)) EXIT
+        END DO
         ! Blue wing
-        do I = 1, MAX_WING
+        DO I = 1, MAX_WING
           IW = NU - I
-          if (IW <= 0) exit
-          if (WAVESET(IW) < WCON) exit
+          IF (IW <= 0) EXIT
+          IF (WAVESET(IW) < WCON) EXIT
           CV = CENTER * HPROF4(NBLO, NBUP, J, WAVESET(IW) - WLVAC)
           XLINES(J, IW) = XLINES(J, IW) + CV
-          if (CV < TABCONT(J, NUCONT)) exit
-        end do
-      end do
+          IF (CV < TABCONT(J, NUCONT)) EXIT
+        END DO
+      END DO
 
-    case (1)
+    CASE (1)
       ! AUTOIONIZING LINE — Fano profile, all depths
       FRELIN = CLIGHT_NMS / WLVAC
-      do J = 1, NRHOX
+      DO J = 1, NRHOX
         CENTER = BSHORE * G * XNFP(J, NELION) / RHO(J)
-        if (CENTER < TABCONT(J, NUCONT)) cycle
+        IF (CENTER < TABCONT(J, NUCONT)) CYCLE
         CENTER = CENTER * exp(-ELO * HCKT(J))
-        if (CENTER < TABCONT(J, NUCONT)) cycle
+        IF (CENTER < TABCONT(J, NUCONT)) CYCLE
         ! Red wing
-        do IW = NU, min(NU + MAX_WING, NUMNU)
+        DO IW = NU, min(NU + MAX_WING, NUMNU)
           EPSIL = 2.0D0 * (CLIGHT_NMS / WAVESET(IW) - FRELIN) / GAMMAR
           CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0D0) / BSHORE
           XLINES(J, IW) = XLINES(J, IW) + CV
-          if (CV < TABCONT(J, NUCONT)) exit
-        end do
+          IF (CV < TABCONT(J, NUCONT)) EXIT
+        END DO
         ! Blue wing
-        do I = 1, MAX_WING
+        DO I = 1, MAX_WING
           IW = NU - I
-          if (IW <= 0) exit
+          IF (IW <= 0) EXIT
           EPSIL = 2.0D0 * (CLIGHT_NMS / WAVESET(IW) - FRELIN) / GAMMAR
           CV = CENTER * (ASHORE * EPSIL + BSHORE) / (EPSIL**2 + 1.0D0) / BSHORE
           XLINES(J, IW) = XLINES(J, IW) + CV
-          if (CV < TABCONT(J, NUCONT)) exit
-        end do
-      end do
+          IF (CV < TABCONT(J, NUCONT)) EXIT
+        END DO
+      END DO
 
-    case default
+    CASE DEFAULT
       ! MERGED CONTINUUM — flat opacity from line to dissolution limit
       Z = 1.0D0
-      if (NELION == 4) Z = 2.0D0
-      WSHIFT = 1.0D7 / (1.0D7 / WLVAC - 109737.312D0 * Z**2 / dble(NLAST)**2)
+      IF (NELION == 4) Z = 2.0D0
+      WSHIFT = 1.0D7 / (1.0D7 / WLVAC - RYDBERG_INF * Z**2 / dble(NLAST)**2)
       XSECTG = GF
       IF (IDEBUG == 1) &
-           write(6, '(2I10,2F12.6,1P5E12.3,I10)') &
+           WRITE(6, '(2I10,2F12.6,1P5E12.3,I10)') &
            LINE, NU, WLVAC, WAVESET(NU), CGF, ELO, GAMMAR, GAMMAS, GAMMAW, NELION
-      do J = 1, NRHOX
+      DO J = 1, NRHOX
         WMERGE = 1.0D7 / (1.0D7 / WLVAC - EMERGE(J) * Z**2)
         WMAX = max(WMERGE, WSHIFT)
         CON = XSECTG * XNFP(J, NELION) * exp(-ELO * HCKT(J)) / RHO(J)
-        do IW = NU, NU + 1000
-          if (WMAX < WAVESET(IW)) exit
+        DO IW = NU, NU + 1000
+          IF (WMAX < WAVESET(IW)) EXIT
           XLINES(J, IW) = XLINES(J, IW) + CON
-        end do
-      end do
+        END DO
+      END DO
 
-    end select
-  end do  ! LINE
+    END SELECT
+  END DO  ! LINE
 
-  return
+  RETURN
 
 END SUBROUTINE XLINOP
 
@@ -15307,23 +15208,23 @@ END SUBROUTINE XLINOP
 
 FUNCTION HFNM(N, M)
 
-  implicit none
-  integer, intent(in) :: N, M
-  real*8 :: HFNM
+  IMPLICIT NONE
+  INTEGER, INTENT(IN) :: N, M
+  REAL(8) :: HFNM
 
   ! Hydrogen oscillator strength f(n,m) for transition n → m
   ! Uses approximate formula with caching for repeated N and M values
-  real*8,  save :: GINF, GCA, FKN, WTC, FNM
-  integer, save :: NSTR = 0, MSTR = 0
-  real*8  :: XN, XM, XMN, XMN12, FK, WT
+  REAL(8),  SAVE :: GINF, GCA, FKN, WTC, FNM
+  INTEGER, SAVE :: NSTR = 0, MSTR = 0
+  REAL(8)  :: XN, XM, XMN, XMN12, FK, WT
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HFNM'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HFNM'
 
   HFNM = 0.0D0
-  if (M <= N) return
+  IF (M <= N) RETURN
 
   ! Recompute N-dependent quantities if N changed
-  if (N /= NSTR) then
+  IF (N /= NSTR) THEN
     XN = dble(N)
     GINF = 0.2027D0 / XN**0.71D0
     GCA = 0.124D0 / XN
@@ -15331,10 +15232,10 @@ FUNCTION HFNM(N, M)
     WTC = 0.45D0 - 2.4D0 / XN**3 * (XN - 1.0D0)
     NSTR = N
     MSTR = 0   ! force M recomputation
-  end if
+  END IF
 
   ! Recompute M-dependent quantities if M changed
-  if (M /= MSTR) then
+  IF (M /= MSTR) THEN
     XM = dble(M)
     XMN = dble(M - N)
     FK = FKN * (XM / (XMN * (XM + dble(N))))**3
@@ -15342,10 +15243,10 @@ FUNCTION HFNM(N, M)
     WT = (XMN12 - 1.0D0) / (XMN12 + WTC)
     FNM = FK * (1.0D0 - WT * GINF - (0.222D0 + GCA / XM) * (1.0D0 - WT))
     MSTR = M
-  end if
+  END IF
 
   HFNM = FNM
-  return
+  RETURN
 
 END FUNCTION HFNM
 
@@ -15362,32 +15263,32 @@ END FUNCTION HFNM
 !=======================================================================
 FUNCTION VCSE1F(X)
 
-  implicit none
-  real*8, intent(in) :: X
-  real*8 :: VCSE1F
+  IMPLICIT NONE
+  REAL(8), INTENT(IN) :: X
+  REAL(8) :: VCSE1F
 
   ! E_1(x) exponential integral approximation (Abramowitz & Stegun style)
   ! Three regimes: small x (series), medium x (polynomial), large x (asymptotic)
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING VCSE1F'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING VCSE1F'
 
-  if (X <= 0.0D0) then
+  IF (X <= 0.0D0) THEN
     VCSE1F = 0.0D0
-  else if (X <= 0.01D0) then
+  ELSE IF (X <= 0.01D0) THEN
     ! Small x: leading terms of series expansion
     VCSE1F = -log(X) - 0.577215D0 + X
-  else if (X <= 1.0D0) then
+  ELSE IF (X <= 1.0D0) THEN
     ! Medium x: polynomial approximation (Abramowitz & Stegun 5.1.53)
     VCSE1F = -log(X) - 0.57721566D0 + X * (0.99999193D0 &
            + X * (-0.24991055D0 + X * (0.05519968D0 &
            + X * (-0.00976004D0 + X * 0.00107857D0))))
-  else if (X <= 30.0D0) then
+  ELSE IF (X <= 30.0D0) THEN
     ! Large x: rational approximation (Abramowitz & Stegun 5.1.56)
     VCSE1F = (X * (X + 2.334733D0) + 0.25062D0) &
            / (X * (X + 3.330657D0) + 1.681534D0) / X * exp(-X)
-  else
+  ELSE
     VCSE1F = 0.0D0
-  end if
-  return
+  END IF
+  RETURN
 
 END FUNCTION VCSE1F
 
@@ -15420,82 +15321,82 @@ END FUNCTION VCSE1F
 
 FUNCTION STARK_PROFILE(B, P, N, M)
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8,  intent(in) :: B, P
-  integer, intent(in) :: N, M
-  real*8  :: STARK_PROFILE
+  REAL(8),  INTENT(IN) :: B, P
+  INTEGER, INTENT(IN) :: N, M
+  REAL(8)  :: STARK_PROFILE
 
   ! --- Grid points ---
-  real*8, parameter :: PP(5) = (/ 0.0D0, 0.2D0, 0.4D0, 0.6D0, 0.8D0 /)
-  real*8, parameter :: BETAGRID(15) = (/ &
+  REAL(8), PARAMETER :: PP(5) = (/ 0.0D0, 0.2D0, 0.4D0, 0.6D0, 0.8D0 /)
+  REAL(8), PARAMETER :: BETAGRID(15) = (/ &
     1.0D0, 1.259D0, 1.585D0, 1.995D0, 2.512D0, 3.162D0, 3.981D0, &
     5.012D0, 6.310D0, 7.943D0, 10.0D0, 12.59D0, 15.85D0, 19.95D0, 25.12D0 /)
 
   ! --- Tables (read from file on first call) ---
-  real*8,  save :: PROPBM(5, 15, 7)   ! correction table
-  real*8,  save :: C(5, 7)             ! asymptotic correction coeff
-  real*8,  save :: D(5, 7)             ! asymptotic correction coeff
-  logical, save :: INITIALIZED = .false.
+  REAL(8),  SAVE :: PROPBM(5, 15, 7)   ! correction table
+  REAL(8),  SAVE :: C(5, 7)             ! asymptotic correction coeff
+  REAL(8),  SAVE :: D(5, 7)             ! asymptotic correction coeff
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! --- Local variables ---
-  real*8  :: CORR, B2, SB
-  real*8  :: WTPP, WTPM, WTBP, WTBM, CBP, CBM
-  real*8  :: PR1, PR2, WT, CC, DD
-  integer :: INDX, MMN, IM, IP, J, JM, JP
-  integer :: I, K
-  character(256) :: LINE
+  REAL(8)  :: CORR, B2, SB
+  REAL(8)  :: WTPP, WTPM, WTBP, WTBM, CBP, CBM
+  REAL(8)  :: PR1, PR2, WT, CC, DD
+  INTEGER :: INDX, MMN, IM, IP, J, JM, JP
+  INTEGER :: I, K
+  CHARACTER(256) :: LINE
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING STARK_PROFILE'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING STARK_PROFILE'
 
   !---------------------------------------------------------------------
   ! Read tables from file on first call
   !---------------------------------------------------------------------
-  if (.not. INITIALIZED) then
-    open(unit=89, file=trim(DATADIR)//'stark_profile.dat', &
-         status='OLD', action='READ')
-    do K = 1, 7
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'stark_profile.dat', &
+         STATUS='OLD', ACTION='READ')
+    DO K = 1, 7
       ! Skip comment lines
-      do
-        read(89, '(A)') LINE
-        if (LINE(1:1) /= '#') then
-          backspace(89)
-          exit
-        end if
-      end do
+      DO
+        READ(89, '(A)') LINE
+        IF (LINE(1:1) /= '#') THEN
+          BACKSPACE(89)
+          EXIT
+        END IF
+      END DO
       ! Read PROPBM block: 15 rows of 5 values
-      do I = 1, 15
-        read(89, *) PROPBM(:, I, K)
-      end do
+      DO I = 1, 15
+        READ(89, *) PROPBM(:, I, K)
+      END DO
       ! Skip C comment
-      do
-        read(89, '(A)') LINE
-        if (LINE(1:1) /= '#') then
-          backspace(89)
-          exit
-        end if
-      end do
-      read(89, *) C(:, K)
+      DO
+        READ(89, '(A)') LINE
+        IF (LINE(1:1) /= '#') THEN
+          BACKSPACE(89)
+          EXIT
+        END IF
+      END DO
+      READ(89, *) C(:, K)
       ! Skip D comment
-      do
-        read(89, '(A)') LINE
-        if (LINE(1:1) /= '#') then
-          backspace(89)
-          exit
-        end if
-      end do
-      read(89, *) D(:, K)
-    end do
-    close(89)
-    INITIALIZED = .true.
-  end if
+      DO
+        READ(89, '(A)') LINE
+        IF (LINE(1:1) /= '#') THEN
+          BACKSPACE(89)
+          EXIT
+        END IF
+      END DO
+      READ(89, *) D(:, K)
+    END DO
+    CLOSE(89)
+    INITIALIZED = .TRUE.
+  END IF
 
   !---------------------------------------------------------------------
   ! Select profile index
   !---------------------------------------------------------------------
   INDX = 7                              ! default: generic (Balmer 18)
   MMN = M - N
-  if (N <= 3 .and. MMN <= 2) INDX = 2 * (N - 1) + MMN
+  IF (N <= 3 .AND. MMN <= 2) INDX = 2 * (N - 1) + MMN
 
   CORR = 1.0D0
   B2 = B * B
@@ -15504,10 +15405,10 @@ FUNCTION STARK_PROFILE(B, P, N, M)
   !---------------------------------------------------------------------
   ! B > 500: pure asymptotic wing
   !---------------------------------------------------------------------
-  if (B > 500.0D0) then
+  IF (B > 500.0D0) THEN
     STARK_PROFILE = (1.5D0 / SB + 27.0D0 / B2) / B2 * CORR
-    return
-  end if
+    RETURN
+  END IF
 
   ! Debye parameter interpolation weights
   IM = min(int(5.0D0 * P) + 1, 4)
@@ -15518,25 +15419,25 @@ FUNCTION STARK_PROFILE(B, P, N, M)
   !---------------------------------------------------------------------
   ! 25.12 < B <= 500: asymptotic with C/D correction
   !---------------------------------------------------------------------
-  if (B > 25.12D0) then
+  IF (B > 25.12D0) THEN
     CC = C(IP, INDX) * WTPP + C(IM, INDX) * WTPM
     DD = D(IP, INDX) * WTPP + D(IM, INDX) * WTPM
     CORR = 1.0D0 + DD / (CC + B * SB)
     STARK_PROFILE = (1.5D0 / SB + 27.0D0 / B2) / B2 * CORR
-    return
-  end if
+    RETURN
+  END IF
 
   !---------------------------------------------------------------------
   ! B <= 25.12: bilinear interpolation in correction table
   !---------------------------------------------------------------------
   ! Find beta grid interval
   JM = 1
-  do J = 2, 15
-    if (B <= BETAGRID(J)) then
+  DO J = 2, 15
+    IF (B <= BETAGRID(J)) THEN
       JM = J - 1
-      exit
-    end if
-  end do
+      EXIT
+    END IF
+  END DO
   JP = JM + 1
 
   WTBP = (B - BETAGRID(JM)) / (BETAGRID(JP) - BETAGRID(JM))
@@ -15550,11 +15451,11 @@ FUNCTION STARK_PROFILE(B, P, N, M)
   PR1 = 0.0D0
   PR2 = 0.0D0
   WT = max(min(0.5D0 * (10.0D0 - B), 1.0D0), 0.0D0)
-  if (B <= 10.0D0) PR1 = 8.0D0 / (83.0D0 + (2.0D0 + 0.95D0 * B2) * B)
-  if (B >= 8.0D0)  PR2 = (1.5D0 / SB + 27.0D0 / B2) / B2
+  IF (B <= 10.0D0) PR1 = 8.0D0 / (83.0D0 + (2.0D0 + 0.95D0 * B2) * B)
+  IF (B >= 8.0D0)  PR2 = (1.5D0 / SB + 27.0D0 / B2) / B2
 
   STARK_PROFILE = (PR1 * WT + PR2 * (1.0D0 - WT)) * CORR
-  return
+  RETURN
 
 END FUNCTION STARK_PROFILE
 
@@ -15595,70 +15496,70 @@ END FUNCTION STARK_PROFILE
 ! Van der Waals: includes H₂ contribution (John Lester, Aug 2009).
 !==========================================================================
 
-REAL*8 FUNCTION HPROF4(N, M, J, DELW)
+REAL(8) FUNCTION HPROF4(N, M, J, DELW)
 
-  implicit none
-  integer, intent(in) :: N, M, J
-  real*8,  intent(in) :: DELW
+  IMPLICIT NONE
+  INTEGER, INTENT(IN) :: N, M, J
+  REAL(8),  INTENT(IN) :: DELW
 
   ! --- Saved depth-dependent arrays (recomputed when ITEMP changes) ---
-  real*8,  save :: PP(kw), FO(kw), GCON1(kw), GCON2(kw)
-  real*8,  save :: Y1B(kw), Y1S(kw), C1D(kw), C2D(kw)
-  real*8,  save :: T3NHE(kw), T3NH2(kw), EXP4492T(kw)
-  real*8,  save :: XNE4(kw), XNF4(kw), XNFP4(kw)
-  integer, save :: ITEMP1 = 0
+  REAL(8),  SAVE :: PP(kw), FO(kw), GCON1(kw), GCON2(kw)
+  REAL(8),  SAVE :: Y1B(kw), Y1S(kw), C1D(kw), C2D(kw)
+  REAL(8),  SAVE :: T3NHE(kw), T3NH2(kw), EXP4492T(kw)
+  REAL(8),  SAVE :: XNE4(kw), XNF4(kw), XNFP4(kw)
+  INTEGER, SAVE :: ITEMP1 = 0
 
   ! --- Saved line-dependent quantities (recomputed when N,M change) ---
-  integer, save :: N1 = 0, M1 = 0
-  integer, save :: MMN, IFINS
-  real*8,  save :: XN, XN2, XM, XM2, XMN2, XM2MN2, GNM
-  real*8,  save :: XKNM, FREQNM, DBETA, WAVENM
-  real*8,  save :: C1CON, C2CON, RADAMP, RESONT, VDW, STARKC
-  real*8,  save :: Y1NUM, Y1WHT
-  real*8,  save :: FINEST(14), FINSWT(14)
+  INTEGER, SAVE :: N1 = 0, M1 = 0
+  INTEGER, SAVE :: MMN, IFINS
+  REAL(8),  SAVE :: XN, XN2, XM, XM2, XMN2, XM2MN2, GNM
+  REAL(8),  SAVE :: XKNM, FREQNM, DBETA, WAVENM
+  REAL(8),  SAVE :: C1CON, C2CON, RADAMP, RESONT, VDW, STARKC
+  REAL(8),  SAVE :: Y1NUM, Y1WHT
+  REAL(8),  SAVE :: FINEST(14), FINSWT(14)
 
   ! --- Stark pattern constants ---
-  real*8, parameter :: XKNMTB(4,3) = reshape((/ &
+  REAL(8), PARAMETER :: XKNMTB(4,3) = reshape((/ &
     0.0001716D0, 0.009019D0, 0.1001D0, 0.5820D0, &
     0.0005235D0, 0.01772D0,  0.171D0,  0.866D0, &
     0.0008912D0, 0.02507D0,  0.223D0,  1.02D0 /), (/4,3/))
-  real*8, parameter :: Y1WTM(2,2) = reshape((/ &
+  REAL(8), PARAMETER :: Y1WTM(2,2) = reshape((/ &
     1.D18, 1.D17, 1.D16, 1.D14 /), (/2,2/))
   ! RYDH (hydrogen Rydberg frequency) now FREQ_RYDH from mod_constants
 
   ! --- Fine structure for alpha lines (Δn=1) in freq × 10⁻⁷ ---
-  real*8, parameter :: STALPH(34) = (/ &
+  REAL(8), PARAMETER :: STALPH(34) = (/ &
     -730.D0, 370.D0, 188.D0, 515.D0, 327.D0, 619.D0, &
     -772.D0, -473.D0, -369.D0, 120.D0, 256.D0, 162.D0, &
     285.D0, -161.D0, -38.3D0, 6.82D0, -174.D0, -147.D0, &
     -101.D0, -77.5D0, 55.D0, 126.D0, 75.D0, 139.D0, &
     -60.D0, 3.7D0, 27.D0, -69.D0, -42.D0, -18.D0, &
     -5.5D0, -9.1D0, -33.D0, -24.D0 /)
-  real*8, parameter :: STWTAL(34) = (/ &
+  REAL(8), PARAMETER :: STWTAL(34) = (/ &
     1.D0, 2.D0, 1.D0, 2.D0, 1.D0, 2.D0, 1.D0, 2.D0, &
     3.D0, 1.D0, 2.D0, 1.D0, 2.D0, 1.D0, 4.D0, 6.D0, &
     1.D0, 2.D0, 3.D0, 4.D0, 1.D0, 2.D0, 1.D0, 2.D0, &
     1.D0, 4.D0, 6.D0, 1.D0, 7.D0, 6.D0, 4.D0, 4.D0, &
     4.D0, 5.D0 /)
-  integer, parameter :: ISTAL(4) = (/ 1, 3, 10, 21 /)
-  integer, parameter :: LNGHAL(4) = (/ 2, 7, 11, 14 /)
+  INTEGER, PARAMETER :: ISTAL(4) = (/ 1, 3, 10, 21 /)
+  INTEGER, PARAMETER :: LNGHAL(4) = (/ 2, 7, 11, 14 /)
 
   ! --- Fine structure for m=∞ in freq × 10⁻⁷ ---
-  real*8, parameter :: STCOMP(5,4) = reshape((/ &
+  REAL(8), PARAMETER :: STCOMP(5,4) = reshape((/ &
     0.D0, 0.D0, 0.D0, 0.D0, 0.D0, &
     468.D0, 576.D0, -522.D0, 0.D0, 0.D0, &
     260.D0, 290.D0, -33.D0, -140.D0, 0.0D0, &
     140.D0, 150.D0, 18.D0, -27.D0, -51.D0 /), (/5,4/))
-  real*8, parameter :: STCPWT(5,4) = reshape((/ &
+  REAL(8), PARAMETER :: STCPWT(5,4) = reshape((/ &
     1.D0, 0.D0, 0.D0, 0.D0, 0.D0, &
     1.D0, 1.D0, 2.D0, 0.D0, 0.D0, &
     1.D0, 1.D0, 4.D0, 3.D0, 0.D0, &
     1.D0, 1.D0, 4.D0, 6.D0, 4.D0 /), (/5,4/))
-  integer, parameter :: LNCOMP(4) = (/ 1, 3, 4, 5 /)
+  INTEGER, PARAMETER :: LNCOMP(4) = (/ 1, 3, 4, 5 /)
 
   ! --- Lyman alpha quasi-molecular satellite cutoffs (Allard 1997) ---
   ! H₂⁺ cutoff: Δν = -15000+100*(i-1) cm⁻¹, i=1..111 (to -4000)
-  real*8, parameter :: CUTOFFH2PLUS(111) = (/ &
+  REAL(8), PARAMETER :: CUTOFFH2PLUS(111) = (/ &
     -15.14, -15.06, -14.97, -14.88, -14.80, -14.71, -14.62, -14.53, &
     -14.44, -14.36, -14.27, -14.18, -14.09, -14.01, -13.92, -13.83, &
     -13.74, -13.65, -13.57, -13.48, -13.39, -13.30, -13.21, -13.13, &
@@ -15675,7 +15576,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     -11.13, -11.12, -11.11, -11.10, -11.09, -11.08, -11.07 /)
 
   ! H₂ cutoff: Δν = -22000+200*(i-1) cm⁻¹, i=1..91 (to -4000)
-  real*8, parameter :: CUTOFFH2(91) = (/ &
+  REAL(8), PARAMETER :: CUTOFFH2(91) = (/ &
     -13.43, -13.32, -13.21, -13.10, -12.98, -12.86, -12.79, -12.72, &
     -12.65, -12.58, -12.51, -12.47, -12.45, -12.45, -12.48, -12.51, &
     -12.53, -12.56, -12.59, -12.62, -12.65, -12.69, -12.73, -12.77, &
@@ -15690,7 +15591,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     -12.59, -12.56, -12.53 /)
 
   ! Radiative damping: summed A-values (switched from analytic, Aug 2009)
-  real*8, parameter :: ASUMLYMAN(100) = (/ &
+  REAL(8), PARAMETER :: ASUMLYMAN(100) = (/ &
     0.000E+00, 6.265E+08, 1.897E+08, 8.126E+07, 4.203E+07, &
     2.450E+07, 1.236E+07, 8.249E+06, 5.782E+06, 4.208E+06, &
     3.158E+06, 2.430E+06, 1.910E+06, 1.567E+06, 1.274E+06, &
@@ -15712,7 +15613,7 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     5.706E+03, 5.522E+03, 5.346E+03, 5.177E+03, 5.015E+03, &
     4.860E+03, 4.711E+03, 4.569E+03, 4.432E+03, 4.300E+03 /)
 
-  real*8, parameter :: ASUM(100) = (/ &
+  REAL(8), PARAMETER :: ASUM(100) = (/ &
     0.000E+00, 4.696E+08, 9.980E+07, 3.017E+07, 1.155E+07, &
     5.189E+06, 2.616E+06, 1.437E+06, 8.444E+05, 5.234E+05, &
     3.389E+05, 2.275E+05, 1.575E+05, 1.120E+05, 8.142E+04, &
@@ -15735,26 +15636,26 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     1.642E+01, 1.566E+01, 1.495E+01, 1.427E+01, 1.363E+01 /)
 
   ! Local variables
-  real*8  :: DELstark, WL, FREQ4, DEL, DOP, HFWID
-  real*8  :: HWSTK, HWVDW, HWRAD, HWRES, HWLOR, HHW
-  real*8  :: HPROFLOR, HPROFRES, HPROFRAD, HPROFVDW
-  real*8  :: D, WTY1, Y1SCAL, C1, C2, G1, GNOT, BETA, Y1, Y2, GAM
-  real*8  :: PRQS, F, P1, FNS
-  real*8  :: CUTOFF, SPACING, CUTFREQ, FREQ15000, FREQ22000
-  real*8  :: BETA4000, PRQSP4000, CUTOFF4000
-  real*8  :: XNE16, TT4, T4, T43
-  integer :: I, K, NWID, IFCORE, IPOS, ICUT
+  REAL(8)  :: DELstark, WL, FREQ4, DEL, DOP, HFWID
+  REAL(8)  :: HWSTK, HWVDW, HWRAD, HWRES, HWLOR, HHW
+  REAL(8)  :: HPROFLOR, HPROFRES, HPROFRAD, HPROFVDW
+  REAL(8)  :: D, WTY1, Y1SCAL, C1, C2, G1, GNOT, BETA, Y1, Y2, GAM
+  REAL(8)  :: PRQS, F, P1, FNS
+  REAL(8)  :: CUTOFF, SPACING, CUTFREQ, FREQ15000, FREQ22000
+  REAL(8)  :: BETA4000, PRQSP4000, CUTOFF4000
+  REAL(8)  :: XNE16, TT4, T4, T43
+  INTEGER :: I, K, NWID, IFCORE, IPOS, ICUT
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING HPROF4'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING HPROF4'
 
   ! ==================================================================
   ! Section 1: Temperature-dependent depth vectors
   ! ==================================================================
-  if (ITEMP /= ITEMP1) then
+  IF (ITEMP /= ITEMP1) THEN
     ITEMP1 = ITEMP
-    do K = 1, NRHOX
+    DO K = 1, NRHOX
       XNE4(K) = XNE(K)
-      XNE16 = XNE(K)**0.1666667D0
+      XNE16 = XNE(K)**(1.0D0/6.0D0)
       TT4 = T(K)
       PP(K) = XNE16 * 0.08989D0 / sqrt(TT4)
       FO(K) = XNE16**4 * 1.25D-9
@@ -15770,13 +15671,13 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
       GCON1(K) = 0.2D0 + 0.09D0 * sqrt(T4) / (1.0D0 + XNE4(K) / 1.D13)
       GCON2(K) = 0.2D0 / (1.0D0 + XNE(K) / 1.D15)
       EXP4492T(K) = exp(-4492.0D0 / T(K))
-    end do
-  end if
+    END DO
+  END IF
 
   ! ==================================================================
   ! Section 2: Line-dependent constants (cached per N,M)
   ! ==================================================================
-  if (N /= N1 .or. M /= M1) then
+  IF (N /= N1 .OR. M /= M1) THEN
     N1 = N
     M1 = M
     MMN = M - N
@@ -15789,19 +15690,19 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     GNM = XM2MN2 / XMN2
 
     ! Stark pattern constant
-    if (MMN <= 3 .and. N <= 4) then
+    IF (MMN <= 3 .AND. N <= 4) THEN
       XKNM = XKNMTB(N, MMN)
-    else
+    ELSE
       XKNM = 5.5D-5 / GNM * XMN2 / (1.0D0 + 0.13D0 / dble(MMN))
-    end if
+    END IF
 
     Y1NUM = 320.0D0
-    if (M == 2) Y1NUM = 550.0D0
-    if (M == 3) Y1NUM = 380.0D0
+    IF (M == 2) Y1NUM = 550.0D0
+    IF (M == 3) Y1NUM = 380.0D0
 
     Y1WHT = 1.D13
-    if (MMN <= 3) Y1WHT = 1.D14
-    if (MMN <= 2 .and. N <= 2) Y1WHT = Y1WTM(N, MMN)
+    IF (MMN <= 3) Y1WHT = 1.D14
+    IF (MMN <= 2 .AND. N <= 2) Y1WHT = Y1WTM(N, MMN)
 
     FREQNM = FREQ_RYDH * GNM
     DBETA = CLIGHT_ANGS / FREQNM**2 / XKNM
@@ -15813,13 +15714,13 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
 !     RADAMP=1.389E9/XM**4.53/(1.+5./XM2/XM)
 !     IF(N.NE.1)RADAMP=RADAMP+1.389E9/XN**4.53/(1.+5./XN2/XN)
     RADAMP = dble(ASUM(N)) + dble(ASUM(M))
-    if (N == 1) RADAMP = dble(ASUMLYMAN(M))
+    IF (N == 1) RADAMP = dble(ASUMLYMAN(M))
     RADAMP = RADAMP / FOURPI
     RADAMP = RADAMP / FREQNM
 
     ! Resonance broadening
     RESONT = HFNM(1, M) / XM / (1.0D0 - 1.0D0 / XM2)
-    if (N /= 1) RESONT = RESONT + HFNM(1, N) / XN / (1.0D0 - 1.0D0 / XN2)
+    IF (N /= 1) RESONT = RESONT + HFNM(1, N) / XN / (1.0D0 - 1.0D0 / XN2)
 !      FUDGE TO BASCHEK*2
 !      RESONT=HFNM(1,M)/XM/(1.-1./XM2)*XM/3.*.791*2.
 !      IF(N.NE.1)RESONT=RESONT+HFNM(1,N)/XN/(1.-1./XN2)*XN/3.*.791*2.
@@ -15836,29 +15737,29 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
     STARKC = 1.6678D-18 * FREQNM * XKNM
 
     ! Fine structure components
-    if (N > 4 .or. M > 10) then
+    IF (N > 4 .OR. M > 10) THEN
       ! Single unresolved component
       IFINS = 1
       FINEST(1) = 0.0D0
       FINSWT(1) = 1.0D0
-    else if (MMN /= 1) then
+    ELSE IF (MMN /= 1) THEN
       ! Non-alpha: use m=∞ structure
       IFINS = LNCOMP(N)
-      do I = 1, IFINS
+      DO I = 1, IFINS
         FINEST(I) = STCOMP(I, N) * 1.D7
         FINSWT(I) = STCPWT(I, N) / XN2
-      end do
-    else
+      END DO
+    ELSE
       ! Alpha lines: exact pattern
       IFINS = LNGHAL(N)
       IPOS = ISTAL(N)
-      do I = 1, IFINS
+      DO I = 1, IFINS
         K = IPOS - 1 + I
         FINEST(I) = STALPH(K) * 1.D7
         FINSWT(I) = STWTAL(K) / XN2 / 3.0D0
-      end do
-    end if
-  end if  ! N,M changed
+      END DO
+    END IF
+  END IF  ! N,M changed
 
   ! ==================================================================
   ! Section 3: Profile evaluation at this depth and wavelength
@@ -15880,73 +15781,73 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
 
   ! Determine dominant broadening mechanism
   ! NWID: 1=Doppler, 2=Lorentz, 3=Stark
-  if (DOPPLE(J, 1) >= HWSTK .and. DOPPLE(J, 1) >= HWLOR) then
+  IF (DOPPLE(J, 1) >= HWSTK .AND. DOPPLE(J, 1) >= HWLOR) THEN
     NWID = 1
-  else if (HWLOR >= HWSTK) then
+  ELSE IF (HWLOR >= HWSTK) THEN
     NWID = 2
-  else
+  ELSE
     NWID = 3
-  end if
+  END IF
 
   HFWID = FREQNM * max(DOPPLE(J, 1), HWLOR, HWSTK)
   HPROF4 = 0.0D0
   IFCORE = 0
-  if (abs(DEL) <= HFWID) IFCORE = 1
+  IF (abs(DEL) <= HFWID) IFCORE = 1
   DOP = FREQNM * DOPPLE(J, 1)
 
   ! ------------------------------------------------------------------
   ! Doppler section: fine-structure resolved Gaussian core
   ! In wing (IFCORE=0): always computed. In core: only if NWID=1.
   ! ------------------------------------------------------------------
-  if (IFCORE == 0 .or. NWID == 1) then
-    do I = 1, IFINS
+  IF (IFCORE == 0 .OR. NWID == 1) THEN
+    DO I = 1, IFINS
       D = abs(FREQ4 - FREQNM - FINEST(I)) / DOP
 !     IF(D.LE.7.)HPROF4=HPROF4+EXP(-D*D)/1.77245/DOP*FINSWT(I)
 !     SAME NORMALIZATION AS VOIGT FUNCTION
-      if (D <= 7.0D0) HPROF4 = HPROF4 + exp(-D * D) * FINSWT(I)
-    end do
-    if (IFCORE == 1) return
-  end if
+      IF (D <= 7.0D0) HPROF4 = HPROF4 + exp(-D * D) * FINSWT(I)
+    END DO
+    IF (IFCORE == 1) RETURN
+  END IF
 
   ! ------------------------------------------------------------------
   ! Lorentz section: resonance + van der Waals + radiative damping
   ! In wing (IFCORE=0): always computed. In core: only if NWID=2.
   ! ------------------------------------------------------------------
-  if (IFCORE == 0 .or. NWID == 2) then
-    if (N == 1 .and. M == 2) then
+  IF (IFCORE == 0 .OR. NWID == 2) THEN
+    IF (N == 1 .AND. M == 2) THEN
       ! === Lyman alpha special treatment ===
       ! Modify resonance broadening to match at 4000 cm⁻¹
       HWRES = HWRES * 4.0D0
       HWLOR = HWRES + HWVDW + HWRAD
       HHW = FREQNM * HWLOR
 
-      if (FREQ4 > (82259.105D0 - 4000.0D0) * CLIGHT) then
+      IF (FREQ4 > (82259.105D0 - 4000.0D0) * CLIGHT) THEN
         ! Near center: enhanced resonance Lorentzian
         ! error found by John Lester 31jul2009
         HPROFRES = HWRES * FREQNM / PI / (DEL**2 + HHW**2) &
                  * SQRTPI * DOP
-      else
+      ELSE
         ! Far red wing: Allard & Koester (1992) H₂ satellite
         CUTOFF = 0.0D0
-        if (FREQ4 >= 50000.0D0 * CLIGHT) then
+        IF (FREQ4 >= 50000.0D0 * CLIGHT) THEN
           ! Tabulated at 200 cm⁻¹ spacing
           SPACING = 200.0D0 * CLIGHT
           FREQ22000 = (82259.105D0 - 22000.0D0) * CLIGHT
-          if (FREQ4 < FREQ22000) then
+          IF (FREQ4 < FREQ22000) THEN
             CUTOFF = dble(CUTOFFH2(2) - CUTOFFH2(1)) / SPACING &
                    * (FREQ4 - FREQ22000) + dble(CUTOFFH2(1))
-          else
+          ELSE
             ICUT = int((FREQ4 - FREQ22000) / SPACING)
             CUTFREQ = dble(ICUT) * SPACING + FREQ22000
             CUTOFF = dble(CUTOFFH2(ICUT+2) - CUTOFFH2(ICUT+1)) / SPACING &
                    * (FREQ4 - CUTFREQ) + dble(CUTOFFH2(ICUT+1))
-          end if
+          END IF
           XNFP4(J) = XNFP(J, 1)
           CUTOFF = (10.0D0**(CUTOFF - 14.0D0)) * XNFP4(J) * 2.0D0 &
                  / CLIGHT
-        end if
+        END IF
         HPROFRES = CUTOFF * SQRTPI * DOP
-      end if
+      END IF
 
       ! Radiative damping (cut off below Lyman edge to avoid double-counting
       ! with Rayleigh scattering in HRAYOP)
@@ -15954,25 +15855,25 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
                * SQRTPI * DOP
 !     CORRECTION TO LORENTZ PROFILE   ALLER P.164   NOT USED
 !     HPROFRAD=HPROFRAD*4.*FREQ**2/(FREQ**2+FREQNM**2)
-      if (FREQ4 <= 2.463D15) HPROFRAD = 0.0D0
+      IF (FREQ4 <= 2.463D15) HPROFRAD = 0.0D0
 
       ! Van der Waals (cut off below 60000 cm⁻¹ from line center)
       HPROFVDW = HWVDW * FREQNM / PI / (DEL**2 + HHW**2) &
                * SQRTPI * DOP
-      if (FREQ4 < 1.8D15) HPROFVDW = 0.0D0
+      IF (FREQ4 < 1.8D15) HPROFVDW = 0.0D0
 
       HPROFLOR = HPROFRES + HPROFRAD + HPROFVDW
       HPROF4 = HPROF4 + HPROFLOR
 
-    else
+    ELSE
       ! === Non-Lyman-alpha: simple combined Lorentzian ===
       HHW = FREQNM * HWLOR
       HPROFLOR = HHW / PI / (DEL**2 + HHW**2) * SQRTPI * DOP
       HPROF4 = HPROF4 + HPROFLOR
-    end if
+    END IF
 
-    if (IFCORE == 1) return
-  end if
+    IF (IFCORE == 1) RETURN
+  END IF
 
   ! ------------------------------------------------------------------
   ! Stark section: quasistatic ion microfield + electron impact
@@ -15990,59 +15891,59 @@ REAL*8 FUNCTION HPROF4(N, M, J, DELW)
   Y2 = C2 * BETA**2
   GAM = GNOT
 
-  if (.not. (Y2 <= 1.D-4 .and. Y1 <= 1.D-5)) then
+  IF (.NOT. (Y2 <= 1.D-4 .AND. Y1 <= 1.D-5)) THEN
 !     GAM=G1*(.5*EXP(-MIN(80.,Y1))+VCSE1F(Y1)-.5*VCSE1F(Y2))*
     GAM = G1 * (0.5D0 * exp(-min(80.D0, Y1)) + EXPI(1, Y1) &
         - 0.5D0 * EXPI(1, Y2)) &
         * (1.0D0 - GCON1(J) / (1.0D0 + (90.0D0 * Y1)**3) &
         - GCON2(J) / (1.0D0 + 2000.0D0 * Y1))
-    if (GAM <= 1.D-20) GAM = 0.0D0
-  end if
+    IF (GAM <= 1.D-20) GAM = 0.0D0
+  END IF
 
   PRQS = STARK_PROFILE(BETA, PP(J), N, M)
 
-  if (M <= 2) then
+  IF (M <= 2) THEN
     ! Lyman alpha Stark: assume quasistatic is half protons, half electrons
     PRQS = PRQS * 0.5D0
     CUTOFF = 0.0D0
 
     ! H₂⁺ quasi-molecular satellite (Allard 1997)
-    if (FREQ4 >= (82259.105D0 - 20000.0D0) * CLIGHT) then
-      if (FREQ4 > (82259.105D0 - 4000.0D0) * CLIGHT) then
+    IF (FREQ4 >= (82259.105D0 - 20000.0D0) * CLIGHT) THEN
+      IF (FREQ4 > (82259.105D0 - 4000.0D0) * CLIGHT) THEN
         ! Near center: use ratio method
         BETA4000 = 4000.0D0 * CLIGHT / FO(J) * DBETA
         PRQSP4000 = STARK_PROFILE(BETA4000, PP(J), N, M) * 0.5D0 / FO(J) * DBETA
         CUTOFF4000 = (10.0D0**(-11.07D0 - 14.0D0)) / CLIGHT * XNF(J, 2)
         HPROF4 = HPROF4 + CUTOFF4000 / PRQSP4000 * PRQS / FO(J) * DBETA &
                * SQRTPI * DOP
-      else
+      ELSE
         ! Interpolate H₂⁺ cutoff table (100 cm⁻¹ spacing)
         FREQ15000 = (82259.105D0 - 15000.0D0) * CLIGHT
         SPACING = 100.0D0 * CLIGHT
-        if (FREQ4 < FREQ15000) then
+        IF (FREQ4 < FREQ15000) THEN
           CUTOFF = dble(CUTOFFH2PLUS(2) - CUTOFFH2PLUS(1)) / SPACING &
                  * (FREQ4 - FREQ15000) + dble(CUTOFFH2PLUS(1))
-        else
+        ELSE
           ICUT = int((FREQ4 - FREQ15000) / SPACING)
           CUTFREQ = dble(ICUT) * SPACING + FREQ15000
           CUTOFF = dble(CUTOFFH2PLUS(ICUT+2) - CUTOFFH2PLUS(ICUT+1)) &
                  / SPACING * (FREQ4 - CUTFREQ) + dble(CUTOFFH2PLUS(ICUT+1))
-        end if
+        END IF
         CUTOFF = (10.0D0**(CUTOFF - 14.0D0)) / CLIGHT * XNF(J, 2)
         HPROF4 = HPROF4 + CUTOFF * SQRTPI * DOP
-      end if
-    end if
-  end if
+      END IF
+    END IF
+  END IF
 
   ! Final Stark assembly
   F = 0.0D0
-  if (GAM > 0.0D0) F = GAM / PI / (GAM**2 + BETA**2)
+  IF (GAM > 0.0D0) F = GAM / PI / (GAM**2 + BETA**2)
   P1 = (0.9D0 * Y1)**2
   FNS = (P1 + 0.03D0 * sqrt(Y1)) / (P1 + 1.0D0)
   ! Same normalization as Voigt function
   HPROF4 = HPROF4 + (PRQS * (1.0D0 + FNS) + F) / FO(J) * DBETA &
          * SQRTPI * DOP
-  return
+  RETURN
 
 END FUNCTION HPROF4
 
@@ -16075,34 +15976,34 @@ END FUNCTION HPROF4
 ! Tables are filled by TABVOIGT at 200 steps per Doppler width.
 !-----------------------------------------------------------------------
 
-REAL*8 FUNCTION VOIGT(V, A)
+REAL(8) FUNCTION VOIGT(V, A)
   
-  implicit none
+  IMPLICIT NONE
 
-  real*8, intent(in) :: V, A
+  REAL(8), INTENT(IN) :: V, A
 
-  integer :: IV
-  real*8  :: VV, AA, U, AAU, VVU, UU
-  real*8  :: HH1, HH2, HH3, HH4
+  INTEGER :: IV
+  REAL(8)  :: VV, AA, U, AAU, VVU, UU
+  REAL(8)  :: HH1, HH2, HH3, HH4
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING VOIGT'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING VOIGT'
 
   ! Table index: 200 steps per Doppler width, offset by 1
   IV = INT(V * 200.d0 + 1.5d0)
 
-  if (A < 0.2d0) then
+  IF (A < 0.2d0) THEN
     !-----------------------------------------------------------------
     ! Small damping: Taylor expansion or Lorentz wing
     !-----------------------------------------------------------------
-    if (V <= 10.d0) then
+    IF (V <= 10.d0) THEN
       ! Quadratic Taylor expansion in a using pretabulated coefficients
       VOIGT = (H2TAB(IV)*A + H1TAB(IV))*A + H0TAB(IV)
-    else
+    ELSE
       ! Far wing: Lorentz profile (a << v)
       VOIGT = 0.5642d0 * A / V**2
-    endif
+    ENDIF
 
-  else if (A <= 1.4d0 .and. A + V <= 3.2d0) then
+  ELSE IF (A <= 1.4d0 .AND. A + V <= 3.2d0) THEN
     !-----------------------------------------------------------------
     ! Moderate damping: 4th-order Horner polynomial in a
     ! with empirical correction for normalization
@@ -16118,7 +16019,7 @@ REAL*8 FUNCTION VOIGT(V, A)
           * (((-.122727278d0*A + .532770573d0)*A - .96284325d0)*A &
              + .979895032d0)
 
-  else
+  ELSE
     !-----------------------------------------------------------------
     ! Large damping or far wing: asymptotic Lorentz with correction
     ! H ~ a / (sqrt(2*pi) * U) * [1 + correction terms / U^2]
@@ -16129,15 +16030,15 @@ REAL*8 FUNCTION VOIGT(V, A)
 
     VOIGT = A * 0.79788d0 / U   ! a / sqrt(2*pi) / (a^2+v^2)
 
-    if (A <= 100.d0) then
+    IF (A <= 100.d0) THEN
       ! Higher-order correction terms
       AAU = AA / U
       VVU = VV / U
       UU  = U * U
       VOIGT = ((((AAU - 10.d0*VVU)*AAU*3.d0 + 15.d0*VVU*VVU) &
                + 3.d0*VV - AA) / UU + 1.d0) * VOIGT
-    endif
-  endif
+    ENDIF
+  ENDIF
 
 END FUNCTION VOIGT
 
@@ -16166,106 +16067,106 @@ FUNCTION EXPI(N, X)
 ! but different n (common in radiative transfer calculations).
 !-----------------------------------------------------------------------
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: N
-  real*8,  intent(in) :: X
-  real*8 :: EXPI
+  INTEGER, INTENT(IN) :: N
+  REAL(8),  INTENT(IN) :: X
+  REAL(8) :: EXPI
 
   ! Cached values from previous call
-  real*8, save :: X_prev  = -1.D20
-  real*8, save :: EX_save = 0.d0   ! exp(-x)
-  real*8, save :: E1_save = 0.d0   ! E_1(x)
+  REAL(8), SAVE :: X_prev  = -1.D20
+  REAL(8), SAVE :: EX_save = 0.d0   ! exp(-x)
+  REAL(8), SAVE :: E1_save = 0.d0   ! E_1(x)
 
   ! Local variables
-  real*8 :: EX, E1
-  integer :: I
+  REAL(8) :: EX, E1
+  INTEGER :: I
 
   ! Cody & Thacher rational approximation coefficients
   ! Range 0 < x <= 1: E_1(x) = P(x)/Q(x) - ln(x)
-  real*8, parameter :: A0 = -44178.5471728217d0
-  real*8, parameter :: A1 =  57721.7247139444d0
-  real*8, parameter :: A2 =   9938.31388962037d0
-  real*8, parameter :: A3 =   1842.11088668000d0
-  real*8, parameter :: A4 =    101.093806161906d0
-  real*8, parameter :: A5 =      5.03416184097568d0
-  real*8, parameter :: B0 =  76537.3323337614d0
-  real*8, parameter :: B1 =  32597.1881290275d0
-  real*8, parameter :: B2 =   6106.10794245759d0
-  real*8, parameter :: B3 =    635.419418378382d0
-  real*8, parameter :: B4 =     37.2298352833327d0
+  REAL(8), PARAMETER :: A0 = -44178.5471728217d0
+  REAL(8), PARAMETER :: A1 =  57721.7247139444d0
+  REAL(8), PARAMETER :: A2 =   9938.31388962037d0
+  REAL(8), PARAMETER :: A3 =   1842.11088668000d0
+  REAL(8), PARAMETER :: A4 =    101.093806161906d0
+  REAL(8), PARAMETER :: A5 =      5.03416184097568d0
+  REAL(8), PARAMETER :: B0 =  76537.3323337614d0
+  REAL(8), PARAMETER :: B1 =  32597.1881290275d0
+  REAL(8), PARAMETER :: B2 =   6106.10794245759d0
+  REAL(8), PARAMETER :: B3 =    635.419418378382d0
+  REAL(8), PARAMETER :: B4 =     37.2298352833327d0
 
   ! Range 1 < x <= 4: E_1(x) = exp(-x) * P(x)/Q(x)
-  real*8, parameter :: C0 = 4.65627107975096D-7
-  real*8, parameter :: C1 = 0.999979577051595d0
-  real*8, parameter :: C2 = 9.04161556946329d0
-  real*8, parameter :: C3 = 24.3784088791317d0
-  real*8, parameter :: C4 = 23.0192559391333d0
-  real*8, parameter :: C5 = 6.90522522784444d0
-  real*8, parameter :: C6 = 0.430967839469389d0
-  real*8, parameter :: D1 = 10.0411643829054d0
-  real*8, parameter :: D2 = 32.4264210695138d0
-  real*8, parameter :: D3 = 41.2807841891424d0
-  real*8, parameter :: D4 = 20.4494785013794d0
-  real*8, parameter :: D5 = 3.31909213593302d0
-  real*8, parameter :: D6 = 0.103400130404874d0
+  REAL(8), PARAMETER :: C0 = 4.65627107975096D-7
+  REAL(8), PARAMETER :: C1 = 0.999979577051595d0
+  REAL(8), PARAMETER :: C2 = 9.04161556946329d0
+  REAL(8), PARAMETER :: C3 = 24.3784088791317d0
+  REAL(8), PARAMETER :: C4 = 23.0192559391333d0
+  REAL(8), PARAMETER :: C5 = 6.90522522784444d0
+  REAL(8), PARAMETER :: C6 = 0.430967839469389d0
+  REAL(8), PARAMETER :: D1 = 10.0411643829054d0
+  REAL(8), PARAMETER :: D2 = 32.4264210695138d0
+  REAL(8), PARAMETER :: D3 = 41.2807841891424d0
+  REAL(8), PARAMETER :: D4 = 20.4494785013794d0
+  REAL(8), PARAMETER :: D5 = 3.31909213593302d0
+  REAL(8), PARAMETER :: D6 = 0.103400130404874d0
 
   ! Range x > 4: E_1(x) = exp(-x)/x * [1 + P(1/x)/Q(1/x)]
-  real*8, parameter :: E0 = -0.999999999998447d0
-  real*8, parameter :: E1C = -26.6271060431811d0   ! renamed from E1 to avoid conflict
-  real*8, parameter :: E2 = -241.055827097015d0
-  real*8, parameter :: E3 = -895.927957772937d0
-  real*8, parameter :: E4 = -1298.85688746484d0
-  real*8, parameter :: E5 = -545.374158883133d0
-  real*8, parameter :: E6 = -5.66575206533869d0
-  real*8, parameter :: F1 = 28.6271060422192d0
-  real*8, parameter :: F2 = 292.310039388533d0
-  real*8, parameter :: F3 = 1332.78537748257d0
-  real*8, parameter :: F4 = 2777.61949509163d0
-  real*8, parameter :: F5 = 2404.01713225909d0
-  real*8, parameter :: F6 = 631.657483280800d0
+  REAL(8), PARAMETER :: E0 = -0.999999999998447d0
+  REAL(8), PARAMETER :: E1C = -26.6271060431811d0   ! renamed from E1 to avoid conflict
+  REAL(8), PARAMETER :: E2 = -241.055827097015d0
+  REAL(8), PARAMETER :: E3 = -895.927957772937d0
+  REAL(8), PARAMETER :: E4 = -1298.85688746484d0
+  REAL(8), PARAMETER :: E5 = -545.374158883133d0
+  REAL(8), PARAMETER :: E6 = -5.66575206533869d0
+  REAL(8), PARAMETER :: F1 = 28.6271060422192d0
+  REAL(8), PARAMETER :: F2 = 292.310039388533d0
+  REAL(8), PARAMETER :: F3 = 1332.78537748257d0
+  REAL(8), PARAMETER :: F4 = 2777.61949509163d0
+  REAL(8), PARAMETER :: F5 = 2404.01713225909d0
+  REAL(8), PARAMETER :: F6 = 631.657483280800d0
 
   !=====================================================================
   ! Compute E_1(x) (use cache if x unchanged)
   !=====================================================================
-  if (X /= X_prev) then
+  IF (X /= X_prev) THEN
     EX = EXP(-X)
     X_prev  = X
     EX_save = EX
 
-    if (X > 4.d0) then
+    IF (X > 4.d0) THEN
       ! Asymptotic range: E_1 ~ exp(-x)/x * rational(1/x)
       E1 = (EX + EX*(E0 + (E1C + (E2 + (E3 + (E4 + (E5 + E6/X)/X)/X)/X)/X)/X) &
            / (X + F1 + (F2 + (F3 + (F4 + (F5 + F6/X)/X)/X)/X)/X)) / X
 
-    else if (X > 1.d0) then
+    ELSE IF (X > 1.d0) THEN
       ! Mid-range rational approximation
       E1 = EX * (C6 + (C5 + (C4 + (C3 + (C2 + (C1 + C0*X)*X)*X)*X)*X)*X) &
               / (D6 + (D5 + (D4 + (D3 + (D2 + (D1 + X)*X)*X)*X)*X)*X)
 
-    else if (X > 0.d0) then
+    ELSE IF (X > 0.d0) THEN
       ! Small-x: rational approximation minus logarithmic singularity
       E1 = (A0 + (A1 + (A2 + (A3 + (A4 + A5*X)*X)*X)*X)*X) &
          / (B0 + (B1 + (B2 + (B3 + (B4 + X)*X)*X)*X)*X) - LOG(X)
 
-    else
+    ELSE
       ! x <= 0: return 0
       E1 = 0.d0
-    endif
+    ENDIF
 
     E1_save = E1
-  endif
+  ENDIF
 
   !=====================================================================
   ! Return E_1 or apply recurrence for E_n (n > 1)
   !=====================================================================
   EXPI = E1_save
-  if (N == 1) return
+  IF (N == 1) RETURN
 
   ! Recurrence: E_n(x) = [exp(-x) - x * E_{n-1}(x)] / (n-1)
-  do I = 1, N - 1
+  DO I = 1, N - 1
     EXPI = (EX_save - X * EXPI) / dble(I)
-  end do
+  END DO
 
 END FUNCTION EXPI
 
@@ -16305,23 +16206,23 @@ END FUNCTION EXPI
 
 SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: NELEM, ION
-  real*8,  intent(in) :: TLOG8, POTLOW8
-  real*8,  intent(out) :: PF
+  INTEGER, INTENT(IN) :: NELEM, ION
+  REAL(8),  INTENT(IN) :: TLOG8, POTLOW8
+  REAL(8),  INTENT(OUT) :: PF
 
   ! --- Table dimensions ---
-  integer, parameter :: NPOT = 7       ! potential lowering bins
-  integer, parameter :: NTEMP = 56     ! temperature bins
-  integer, parameter :: NION_TAB = 10  ! max ionization stages in table
-  integer, parameter :: NELEM_TAB = 9  ! elements: Ca(20)..Ni(28)
+  INTEGER, PARAMETER :: NPOT = 7       ! potential lowering bins
+  INTEGER, PARAMETER :: NTEMP = 56     ! temperature bins
+  INTEGER, PARAMETER :: NION_TAB = 10  ! max ionization stages in table
+  INTEGER, PARAMETER :: NELEM_TAB = 9  ! elements: Ca(20)..Ni(28)
 
   ! --- Persistent table data (read once from file) ---
-  real*8,  save :: PFTAB(NPOT, NTEMP, NION_TAB, NELEM_TAB)
-  real*8,  save :: POTLO(NPOT)
-  real*8,  save :: POTLOLOG(NPOT)
-  logical, save :: INITIALIZED = .false.
+  REAL(8),  SAVE :: PFTAB(NPOT, NTEMP, NION_TAB, NELEM_TAB)
+  REAL(8),  SAVE :: POTLO(NPOT)
+  REAL(8),  SAVE :: POTLOLOG(NPOT)
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! --- Precomputed B&C hybrid cache (for ION in 1..3 only) ---
   ! BC_RATIO(IT, ION, IELEM) is a LINEAR multiplicative rescaling applied
@@ -16341,20 +16242,20 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
   ! at IT=31 (T=10000 K), matching the PFGROUND_HYBRID dispatcher policy.
   ! This prevents a spurious discontinuity in d(PF)/dT that would otherwise
   ! trip up ATLAS's adiabatic-gradient finite differences.
-  real*8,  save :: BC_RATIO(NTEMP, 3, NELEM_TAB) = 1.0d0
+  REAL(8),  SAVE :: BC_RATIO(NTEMP, 3, NELEM_TAB) = 1.0d0
 
   ! --- Local variables ---
-  real*8  :: TLOG, POTLOW, F, P
-  integer :: IT, LOW, I, J, K, L, IELEM
+  REAL(8)  :: TLOG, POTLOW, F, P
+  INTEGER :: IT, LOW, I, J, K, L, IELEM
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING PFIRON'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING PFIRON'
 
   ! --- Read table on first call ---
-  if (.not. INITIALIZED) then
-    open(unit=89, file=trim(DATADIR)//'pfiron.dat', status='OLD', action='READ')
-    read(89, '(A)') ; read(89, '(A)') ; read(89, '(A)')
-    read(89, *) ((((PFTAB(I,J,K,L), I=1,NPOT), J=1,NTEMP), K=1,NION_TAB), L=1,NELEM_TAB)
-    close(89)
+  IF (.NOT. INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'pfiron.dat', STATUS='OLD', ACTION='READ')
+    READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
+    READ(89, *) ((((PFTAB(I,J,K,L), I=1,NPOT), J=1,NTEMP), K=1,NION_TAB), L=1,NELEM_TAB)
+    CLOSE(89)
     POTLO = (/ 500.D0, 1000.D0, 2000.D0, 4000.D0, 8000.D0, 16000.D0, 32000.D0 /)
     POTLOLOG = (/ 2.69897D0, 3.D0, 3.30103D0, 3.60206D0, 3.90309D0, 4.20412D0, 4.50515D0 /)
 
@@ -16373,89 +16274,89 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
     !         anything more extreme is almost certainly bad data).
     !     If any guard fails, leave BC_RATIO at its default 1.0 -- the
     !     hybrid becomes a pure no-op for that (IT, ION, IELEM) slot.
-    block
-      real*8 :: TLOG_IT, T_IT, U_BC_val, RATIO, x, w, taper
-      integer :: IT_init, ION_init
-      real*8, parameter :: T_LOW_BC  =  9000.0d0
-      real*8, parameter :: T_HIGH_BC = 10000.0d0
-      do IELEM = 1, NELEM_TAB
-        do ION_init = 1, 3
-          do IT_init = 2, 31
-            if (IT_init <= 21) then
+    BLOCK
+      REAL(8) :: TLOG_IT, T_IT, U_BC_val, RATIO, x, w, taper
+      INTEGER :: IT_init, ION_init
+      REAL(8), PARAMETER :: T_LOW_BC  =  9000.0d0
+      REAL(8), PARAMETER :: T_HIGH_BC = 10000.0d0
+      DO IELEM = 1, NELEM_TAB
+        DO ION_init = 1, 3
+          DO IT_init = 2, 31
+            IF (IT_init <= 21) THEN
               TLOG_IT = 3.32D0 + (IT_init - 2) * 0.02D0
-            else
+            ELSE
               TLOG_IT = 3.70D0 + (IT_init - 21) * 0.03D0
-            end if
+            END IF
             T_IT = 10.0D0**TLOG_IT
             ! Skip the top endpoint: at T_IT = 10000 K U_BC returns
             ! the sentinel anyway, and we want BC_RATIO = 1.0 there.
-            if (T_IT >= T_HIGH_BC) cycle
+            IF (T_IT >= T_HIGH_BC) CYCLE
             U_BC_val = U_BC(IELEM + 19, ION_init, T_IT)
-            if (U_BC_val > 0.0D0 .and. U_BC_val < 1.0D6 .and. &
-                PFTAB(1, IT_init, ION_init, IELEM) >= 0.99D0 .and. &
-                PFTAB(1, IT_init, ION_init, IELEM) < 1.0D6) then
+            IF (U_BC_val > 0.0D0 .AND. U_BC_val < 1.0D6 .AND. &
+                PFTAB(1, IT_init, ION_init, IELEM) >= 0.99D0 .AND. &
+                PFTAB(1, IT_init, ION_init, IELEM) < 1.0D6) THEN
               RATIO = U_BC_val / PFTAB(1, IT_init, ION_init, IELEM)
-              if (RATIO >= 0.5D0 .and. RATIO <= 2.0D0) then
+              IF (RATIO >= 0.5D0 .AND. RATIO <= 2.0D0) THEN
                 ! Compute the smoothstep taper.  taper = 1 below T_LOW_BC,
                 ! 0 above T_HIGH_BC, smooth in between.
-                if (T_IT <= T_LOW_BC) then
+                IF (T_IT <= T_LOW_BC) THEN
                   taper = 1.0D0
-                else
+                ELSE
                   x = (T_IT - T_LOW_BC) / (T_HIGH_BC - T_LOW_BC)
                   w = x * x * (3.0D0 - 2.0D0 * x)   ! smoothstep
                   taper = 1.0D0 - w
-                end if
+                END IF
                 ! Attenuate the ratio toward 1.0 by (1 - taper).
                 BC_RATIO(IT_init, ION_init, IELEM) = &
                   1.0D0 + taper * (RATIO - 1.0D0)
-              end if
-            end if
-          end do
-        end do
-      end do
-    end block
+              END IF
+            END IF
+          END DO
+        END DO
+      END DO
+    END BLOCK
 
-    INITIALIZED = .true.
-  end if
+    INITIALIZED = .TRUE.
+  END IF
 
   ! --- Bounds check: ION must be within table range ---
   !     For higher ionization stages (ION > NION_TAB), the table has no data.
   !     Return PF = 0 (matching pristine behavior; callers of PFSAHA never
   !     hit this path in practice because NION in 1..10 covers all stages).
-  if (ION < 1 .or. ION > NION_TAB) then
-    if (IDEBUG == 1) write(6,'(A,I4,A,I4,A)') &
+  IF (ION < 1 .OR. ION > NION_TAB) THEN
+    IF (IDEBUG == 1) WRITE(6,'(A,I4,A,I4,A)') &
       '  PFIRON: ION =', ION, ' out of table range (1..', NION_TAB, '), returning PF=0'
     PF = 0.0D0
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Bounds check: NELEM must map to valid table index ---
   IELEM = NELEM - 19
-  if (IELEM < 1 .or. IELEM > NELEM_TAB) then
-    write(6,'(A,I4,A)') ' PFIRON: NELEM =', NELEM, ' out of range (20..28), returning PF=0'
+  IF (IELEM < 1 .OR. IELEM > NELEM_TAB) THEN
+    WRITE(6,'(A,I4,A)') ' PFIRON: NELEM =', NELEM, ' out of range (20..28), returning PF=0'
     PF = 0.0D0
-    return
-  end if
+    RETURN
+  END IF
 
   TLOG = TLOG8
   POTLOW = POTLOW8
 
   ! --- Determine temperature bin IT and interpolation fraction F ---
-  if (TLOG <= 3.7D0) then
+  IF (TLOG <= 3.7D0) THEN
     ! Low-T grid: log T = 3.32..3.70, step = 0.02
     IT = int((TLOG - 3.32D0) / 0.02D0) + 2
     IT = max(IT, 2)
     F = (TLOG - (IT - 2) * 0.02D0 - 3.32D0) / 0.02D0
-  else if (TLOG <= 4.0D0) then
+  ELSE IF (TLOG <= 4.0D0) THEN
     ! Mid-T grid: log T = 3.70..4.00, step = 0.03
     IT = int((TLOG - 3.7D0) / 0.03D0) + 21
     F = (TLOG - (IT - 21) * 0.03D0 - 3.7D0) / 0.03D0
-  else
+  ELSE
     ! High-T grid: log T = 4.00..5.25, step = 0.05
     IT = int((TLOG - 4.0D0) / 0.05D0) + 31
     IT = min(IT, NTEMP)
     F = (TLOG - (IT - 31) * 0.05D0 - 4.0D0) / 0.05D0
-  end if
+  END IF
 
   ! Safety clamp: ensure IT-1 >= 1 and IT <= NTEMP
   IT = max(IT, 2)
@@ -16464,25 +16365,25 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
 
   ! --- Determine potential lowering bin LOW ---
   LOW = 1
-  if (POTLOW >= POTLO(1)) then
-    do LOW = 2, NPOT
-      if (POTLOW < POTLO(LOW)) exit
-    end do
-    if (LOW > NPOT) LOW = NPOT
-  end if
+  IF (POTLOW >= POTLO(1)) THEN
+    DO LOW = 2, NPOT
+      IF (POTLOW < POTLO(LOW)) EXIT
+    END DO
+    IF (LOW > NPOT) LOW = NPOT
+  END IF
 
-  if (LOW > 1 .and. POTLOW >= POTLO(1) .and. POTLOW < POTLO(LOW)) then
+  IF (LOW > 1 .AND. POTLOW >= POTLO(1) .AND. POTLOW < POTLO(LOW)) THEN
     ! Two-bin interpolation in potential lowering
     P = (log10(POTLOW) - POTLOLOG(LOW-1)) / 0.30103D0
     PF = P * (F * PFTAB(LOW, IT, ION, IELEM) &
             + (1.0D0 - F) * PFTAB(LOW, IT-1, ION, IELEM)) &
        + (1.0D0 - P) * (F * PFTAB(LOW-1, IT, ION, IELEM) &
             + (1.0D0 - F) * PFTAB(LOW-1, IT-1, ION, IELEM))
-  else
+  ELSE
     ! Single-bin interpolation (POTLOW below first bin or above last)
     PF = F * PFTAB(LOW, IT, ION, IELEM) &
        + (1.0D0 - F) * PFTAB(LOW, IT-1, ION, IELEM)
-  end if
+  END IF
 
   ! --- B&C hybrid rescaling (LINEAR multiplicative correction).
   !     Kurucz PFIRON returns a linear partition function.  Multiply by
@@ -16493,10 +16394,10 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
   !     Across the 9000..10000 K blend window BC_RATIO is smoothstep-
   !     tapered toward 1.0 to keep PF continuous and C^1 at IT=31,
   !     which ATLAS's convergence and finite-difference routines require.
-  if (ION <= 3 .and. IT >= 2) then
+  IF (ION <= 3 .AND. IT >= 2) THEN
     PF = PF * (F * BC_RATIO(IT, ION, IELEM) &
             + (1.0D0 - F) * BC_RATIO(IT-1, ION, IELEM))
-  end if
+  END IF
 
 END SUBROUTINE PFIRON
 
@@ -16523,17 +16424,17 @@ END SUBROUTINE PFIRON
 
 FUNCTION PFGROUND_KURUCZ(NELION, T)
 
-  implicit none
+  IMPLICIT NONE
 
   ! Arguments
-  integer, intent(in)  :: NELION
-  real*8,  intent(in)  :: T
-  real*8               :: PFGROUND_KURUCZ
+  INTEGER, INTENT(IN)  :: NELION
+  REAL(8),  INTENT(IN)  :: T
+  REAL(8)               :: PFGROUND_KURUCZ
 
   ! Local constants
   ! HCK now from mod_constants (updated to CODATA 2018)
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING PFGROUND_KURUCZ'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING PFGROUND_KURUCZ'
 
   ! Default: bare ground state
   PFGROUND_KURUCZ = 1.0d0
@@ -16542,543 +16443,543 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   ! Iron group (Z=20-28, Ca-Ni): partition functions from PFIRON tables.
   ! NELION = 115..168 for these elements.
   !---------------------------------------------------------------------
-  if (NELION >= 115 .and. NELION <= 168) return
+  IF (NELION >= 115 .AND. NELION <= 168) RETURN
 
-  select case (NELION)
+  SELECT CASE (NELION)
 
   ! --- Z= 1  H  ---
-  case (  1); PFGROUND_KURUCZ = 2.                    ! H  I
-  case (  2); PFGROUND_KURUCZ = 1.                    ! H  II
-  case (  3); PFGROUND_KURUCZ = 1.                    ! H  III
-  case (  4); PFGROUND_KURUCZ = 1.                    ! H  IV
-  case (  5); PFGROUND_KURUCZ = 1.                    ! H  V
-  case (  6); PFGROUND_KURUCZ = 1.                    ! H  VI
+  CASE (  1); PFGROUND_KURUCZ = 2.                    ! H  I
+  CASE (  2); PFGROUND_KURUCZ = 1.                    ! H  II
+  CASE (  3); PFGROUND_KURUCZ = 1.                    ! H  III
+  CASE (  4); PFGROUND_KURUCZ = 1.                    ! H  IV
+  CASE (  5); PFGROUND_KURUCZ = 1.                    ! H  V
+  CASE (  6); PFGROUND_KURUCZ = 1.                    ! H  VI
 
   ! --- Z= 2  He ---
-  case (  7); PFGROUND_KURUCZ = 1.                    ! He I
-  case (  8); PFGROUND_KURUCZ = 2.                    ! He II
-  case (  9); PFGROUND_KURUCZ = 1.                    ! He III
-  case ( 10); PFGROUND_KURUCZ = 1.                    ! He IV
-  case ( 11); PFGROUND_KURUCZ = 1.                    ! He V
-  case ( 12); PFGROUND_KURUCZ = 1.                    ! He VI
+  CASE (  7); PFGROUND_KURUCZ = 1.                    ! He I
+  CASE (  8); PFGROUND_KURUCZ = 2.                    ! He II
+  CASE (  9); PFGROUND_KURUCZ = 1.                    ! He III
+  CASE ( 10); PFGROUND_KURUCZ = 1.                    ! He IV
+  CASE ( 11); PFGROUND_KURUCZ = 1.                    ! He V
+  CASE ( 12); PFGROUND_KURUCZ = 1.                    ! He VI
 
   ! --- Z= 3  Li ---
-  case ( 13); PFGROUND_KURUCZ = 2.                    ! Li I
-  case ( 14); PFGROUND_KURUCZ = 1.                    ! Li II
-  case ( 15); PFGROUND_KURUCZ = 2.                    ! Li III
-  case ( 16); PFGROUND_KURUCZ = 1.                    ! Li IV
-  case ( 17); PFGROUND_KURUCZ = 1.                    ! Li V
-  case ( 18); PFGROUND_KURUCZ = 1.                    ! Li VI
+  CASE ( 13); PFGROUND_KURUCZ = 2.                    ! Li I
+  CASE ( 14); PFGROUND_KURUCZ = 1.                    ! Li II
+  CASE ( 15); PFGROUND_KURUCZ = 2.                    ! Li III
+  CASE ( 16); PFGROUND_KURUCZ = 1.                    ! Li IV
+  CASE ( 17); PFGROUND_KURUCZ = 1.                    ! Li V
+  CASE ( 18); PFGROUND_KURUCZ = 1.                    ! Li VI
 
   ! --- Z= 4  Be ---
-  case ( 19); PFGROUND_KURUCZ = 1.                    ! Be I
-  case ( 20); PFGROUND_KURUCZ = 2.                    ! Be II
-  case ( 21); PFGROUND_KURUCZ = 1.                    ! Be III
-  case ( 22); PFGROUND_KURUCZ = 2.                    ! Be IV
-  case ( 23); PFGROUND_KURUCZ = 1.                    ! Be V
-  case ( 24); PFGROUND_KURUCZ = 1.                    ! Be VI
+  CASE ( 19); PFGROUND_KURUCZ = 1.                    ! Be I
+  CASE ( 20); PFGROUND_KURUCZ = 2.                    ! Be II
+  CASE ( 21); PFGROUND_KURUCZ = 1.                    ! Be III
+  CASE ( 22); PFGROUND_KURUCZ = 2.                    ! Be IV
+  CASE ( 23); PFGROUND_KURUCZ = 1.                    ! Be V
+  CASE ( 24); PFGROUND_KURUCZ = 1.                    ! Be VI
 
   ! --- Z= 5  B  ---
-  case ( 25)  ! B  I
+  CASE ( 25)  ! B  I
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*15.254)
-  case ( 26)  ! B  II
+  CASE ( 26)  ! B  II
     PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*37336.7)+3.*EXP(-HCK/T*37342.4)+ 5.*EXP(-HCK/T* 37358.3)+3.*EXP(-HCK/T*73396.60)
-  case ( 27)  ! B  III
+  CASE ( 27)  ! B  III
     PFGROUND_KURUCZ = 2.+2.*EXP(-HCK/T*48358.40)+4.*EXP(-HCK/T*48392.50)
-  case ( 28); PFGROUND_KURUCZ = 1.                    ! B  IV
-  case ( 29); PFGROUND_KURUCZ = 2.                    ! B  V
-  case ( 30); PFGROUND_KURUCZ = 1.                    ! B  VI
+  CASE ( 28); PFGROUND_KURUCZ = 1.                    ! B  IV
+  CASE ( 29); PFGROUND_KURUCZ = 2.                    ! B  V
+  CASE ( 30); PFGROUND_KURUCZ = 1.                    ! B  VI
 
   ! --- Z= 6  C  ---
-  case ( 31)  ! C  I
+  CASE ( 31)  ! C  I
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*16.40)+5.*EXP(-HCK/T*43.40)+ 5.*EXP(-HCK/T*10192.63)
-  case ( 32)  ! C  II
+  CASE ( 32)  ! C  II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*63.42)
-  case ( 33); PFGROUND_KURUCZ = 1.                    ! C  III
-  case ( 34)  ! C  IV
+  CASE ( 33); PFGROUND_KURUCZ = 1.                    ! C  III
+  CASE ( 34)  ! C  IV
     PFGROUND_KURUCZ = 2.+2.*EXP(-HCK/T*64484.0)+4.*EXP(-HCK/T*64591.7)
-  case ( 35); PFGROUND_KURUCZ = 1.                    ! C  V
-  case ( 36); PFGROUND_KURUCZ = 2.                    ! C  VI
+  CASE ( 35); PFGROUND_KURUCZ = 1.                    ! C  V
+  CASE ( 36); PFGROUND_KURUCZ = 2.                    ! C  VI
 
   ! --- Z= 7  N  ---
-  case ( 37); PFGROUND_KURUCZ = 4.                    ! N  I
-  case ( 38)  ! N  II
+  CASE ( 37); PFGROUND_KURUCZ = 4.                    ! N  I
+  CASE ( 38)  ! N  II
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*48.7)+5.*EXP(-HCK/T*130.8)+ 5.*EXP(-HCK/T*15316.2)
-  case ( 39)  ! N  III
+  CASE ( 39)  ! N  III
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*174.4)
-  case ( 40); PFGROUND_KURUCZ = 1.                    ! N  IV
-  case ( 41)  ! N  V
+  CASE ( 40); PFGROUND_KURUCZ = 1.                    ! N  IV
+  CASE ( 41)  ! N  V
     PFGROUND_KURUCZ = 2.+2.*EXP(-HCK/T*80463.2)+4.*EXP(-HCK/T*80721.9)
-  case ( 42); PFGROUND_KURUCZ = 1.                    ! N  VI
+  CASE ( 42); PFGROUND_KURUCZ = 1.                    ! N  VI
 
   ! --- Z= 8  O  ---
-  case ( 43)  ! O  I
+  CASE ( 43)  ! O  I
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*158.265)+EXP(-HCK/T*226.977)
-  case ( 44)  ! O  II
+  CASE ( 44)  ! O  II
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*26810.55)+4.*EXP(-HCK/T*26830.57)
-  case ( 45)  ! O  III
+  CASE ( 45)  ! O  III
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*113.178)+5.*EXP(-HCK/T*306.174)+ 5.*EXP(-HCK/T*20273.27)+1.*EXP(-HCK/T*43185.74)+ &
       5.*EXP(-HCK/T*60324.79)
-  case ( 46)  ! O  IV
+  CASE ( 46)  ! O  IV
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*385.9)+2.*EXP(-HCK/T*71439.8)+ 4.*EXP(-HCK/T*71570.1)+6.*EXP(-HCK/T*71755.5)
-  case ( 47)  ! O  V
+  CASE ( 47)  ! O  V
     PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*81942.5)+3.*EXP(-HCK/T*82078.6)+ 5.*EXP(-HCK/T*82385.3)
-  case ( 48)  ! O  VI
+  CASE ( 48)  ! O  VI
     PFGROUND_KURUCZ = 2.+2.*EXP(-HCK/T*96375.0)+4.*EXP(-HCK/T*96907.5)
 
   ! --- Z= 9  F  ---
-  case ( 49)  ! F  I
+  CASE ( 49)  ! F  I
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*404.1)
-  case ( 50)  ! F  II
+  CASE ( 50)  ! F  II
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*341.0)+EXP(-HCK/T*489.9)+ 5.*EXP(-HCK/T*20873.4)+1.*EXP(-HCK/T*44918.1)
-  case ( 51)  ! F  III
+  CASE ( 51)  ! F  III
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*34087.4)+4.*EXP(-HCK/T*34123.2)+ 4.*EXP(-HCK/T*51561.4)+2.*EXP(-HCK/T*51560.6)
-  case ( 52)  ! F  IV
+  CASE ( 52)  ! F  IV
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*225.2)+5.*EXP(-HCK/T*612.2)+ 5.*EXP(-HCK/T*25238.2)+1.*EXP(-HCK/T*53541.2)+ 5.*EXP(-HCK/T*74194.7)
-  case ( 53)  ! F  V
+  CASE ( 53)  ! F  V
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*744.5)+ 2.*EXP(-HCK/T*85790.2)+4.*EXP(-HCK/T*86043.5)+ 6.*EXP(-HCK/T*86407.0)
-  case ( 54)  ! F  VI
+  CASE ( 54)  ! F  VI
     PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*96590.)+3.*EXP(-HCK/T*96850.)+ 5.*EXP(-HCK/T*97427.)
 
   ! --- Z=10  Ne ---
-  case ( 55); PFGROUND_KURUCZ = 1.                    ! Ne I
-  case ( 56)  ! Ne II
+  CASE ( 55); PFGROUND_KURUCZ = 1.                    ! Ne I
+  CASE ( 56)  ! Ne II
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*780.45)
-  case ( 57)  ! Ne III
+  CASE ( 57)  ! Ne III
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*642.9)+EXP(-HCK/T*920.4)+ 4.*EXP(-HCK/T*96907.5)+5.*EXP(-HCK/T*25840.8)+ 1.*EXP(-HCK/T*55750.6)
-  case ( 58)  ! Ne IV
+  CASE ( 58)  ! Ne IV
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*41234.6)+4.*EXP(-HCK/T*41279.5)+ 2.*EXP(-HCK/T*62434.6)+4.*EXP(-HCK/T*62441.3)
-  case ( 59)  ! Ne V
+  CASE ( 59)  ! Ne V
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*414.)+5.*EXP(-HCK/T*1112.)+ 5.*EXP(-HCK/T*30291.5)+1.*EXP(-HCK/T*63913.6)+ 5.*EXP(-HCK/T*88360.)
-  case ( 60)  ! Ne VI
+  CASE ( 60)  ! Ne VI
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*1310.)+2.*EXP(-HCK/T*100261.)+ 4.*EXP(-HCK/T*100704.)+6.*EXP(-HCK/T*101347.)
 
   ! --- Z=11  Na ---
-  case ( 61); PFGROUND_KURUCZ = 2.                    ! Na I
-  case ( 62); PFGROUND_KURUCZ = 1.                    ! Na II
-  case ( 63)  ! Na III
+  CASE ( 61); PFGROUND_KURUCZ = 2.                    ! Na I
+  CASE ( 62); PFGROUND_KURUCZ = 1.                    ! Na II
+  CASE ( 63)  ! Na III
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*780.45)
-  case ( 64)  ! Na IV
+  CASE ( 64)  ! Na IV
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*642.9)+EXP(-HCK/T*920.4)+ 5.*EXP(-HCK/T*30839.8)+1.*EXP(-HCK/T*66496.)
-  case ( 65)  ! Na V
+  CASE ( 65)  ! Na V
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*48330.)+4.*EXP(-HCK/T*48366.)+ 2.*EXP(-HCK/T*73218.)+4.*EXP(-HCK/T*73255.)
-  case ( 66)  ! Na VI
+  CASE ( 66)  ! Na VI
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*414.)+5.*EXP(-HCK/T*1112.)+ 5.*EXP(-HCK/T*35498.)+1.*EXP(-HCK/T*74414.)
 
   ! --- Z=12  Mg ---
-  case ( 67); PFGROUND_KURUCZ = 1.                    ! Mg I
-  case ( 68); PFGROUND_KURUCZ = 2.                    ! Mg II
-  case ( 69); PFGROUND_KURUCZ = 1.                    ! Mg III
-  case ( 70)  ! Mg IV
+  CASE ( 67); PFGROUND_KURUCZ = 1.                    ! Mg I
+  CASE ( 68); PFGROUND_KURUCZ = 2.                    ! Mg II
+  CASE ( 69); PFGROUND_KURUCZ = 1.                    ! Mg III
+  CASE ( 70)  ! Mg IV
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*2238.)
-  case ( 71)  ! Mg V
+  CASE ( 71)  ! Mg V
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1782.1)+EXP(-HCK/T*2521.8)+ 5.*EXP(-HCK/T*35926.)+1.*EXP(-HCK/T*77279.)
-  case ( 72)  ! Mg VI
+  CASE ( 72)  ! Mg VI
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*55356.)+4.*EXP(-HCK/T*55372.8)+ 2.*EXP(-HCK/T*83920.0)+4.*EXP(-HCK/T*84028.4)
 
   ! --- Z=13  Al ---
-  case ( 73)  ! Al I
+  CASE ( 73)  ! Al I
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*112.061)
-  case ( 74); PFGROUND_KURUCZ = 1.                    ! Al II
-  case ( 75); PFGROUND_KURUCZ = 2.                    ! Al III
-  case ( 76); PFGROUND_KURUCZ = 1.                    ! Al IV
-  case ( 77)  ! Al V
+  CASE ( 74); PFGROUND_KURUCZ = 1.                    ! Al II
+  CASE ( 75); PFGROUND_KURUCZ = 2.                    ! Al III
+  CASE ( 76); PFGROUND_KURUCZ = 1.                    ! Al IV
+  CASE ( 77)  ! Al V
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*3442.)
-  case ( 78)  ! Al VI
+  CASE ( 78)  ! Al VI
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*2732.)+EXP(-HCK/T*3829.)+ 5.*EXP(-HCK/T*41167.)+1.*EXP(-HCK/T*88213.)
 
   ! --- Z=14  Si ---
-  case ( 79)  ! Si I
+  CASE ( 79)  ! Si I
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*77.115)+5.*EXP(-HCK/T*223.157)+ 5.*EXP(-HCK/T*6298.850)
-  case ( 80)  ! Si II
+  CASE ( 80)  ! Si II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*287.32)+2.*EXP(-HCK/T*42824.35)+ 4.*EXP(-HCK/T*42932.68)+6.*EXP(-HCK/T*43107.97)
-  case ( 81)  ! Si III
+  CASE ( 81)  ! Si III
     PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*52724.69)+3.*EXP(-HCK/T*52853.28)+ 5.*EXP(-HCK/T*53115.01)+3.*EXP(-HCK/T*82884.41)
-  case ( 82); PFGROUND_KURUCZ = 2.                    ! Si IV
-  case ( 83); PFGROUND_KURUCZ = 1.                    ! Si V
-  case ( 84)  ! Si VI
+  CASE ( 82); PFGROUND_KURUCZ = 2.                    ! Si IV
+  CASE ( 83); PFGROUND_KURUCZ = 1.                    ! Si V
+  CASE ( 84)  ! Si VI
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*5090.)
 
   ! --- Z=15  P  ---
-  case ( 85); PFGROUND_KURUCZ = 4.                    ! P  I
-  case ( 86)  ! P  II
+  CASE ( 85); PFGROUND_KURUCZ = 4.                    ! P  I
+  CASE ( 86)  ! P  II
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*164.90)+5.*EXP(-HCK/T*469.12)+ 5.*EXP(-HCK/T*8882.31)+1.*EXP(-HCK/T*21575.63)
-  case ( 87)  ! P  III
+  CASE ( 87)  ! P  III
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*559.14)+2.*EXP(-HCK/T*56021.67)+ 4.*EXP(-HCK/T*57125.98)+6.*EXP(-HCK/T*57454.00)+ &
       4.*EXP(-HCK/T*74916.85)+6.*EXP(-HCK/T*74945.86)
-  case ( 88)  ! P  IV
+  CASE ( 88)  ! P  IV
     PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*67918.03)+3.*EXP(-HCK/T*68146.48)+ 5.*EXP(-HCK/T*68615.17)
-  case ( 89)  ! P  V
+  CASE ( 89)  ! P  V
     PFGROUND_KURUCZ = 2.+2.*EXP(-HCK/T*88651.87)+4.*EXP(-HCK/T*89447.25)
-  case ( 90); PFGROUND_KURUCZ = 1.                    ! P  VI
+  CASE ( 90); PFGROUND_KURUCZ = 1.                    ! P  VI
 
   ! --- Z=16  S  ---
-  case ( 91)  ! S  I
+  CASE ( 91)  ! S  I
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*396.055)+EXP(-HCK/T*573.640)+ 5.*EXP(-HCK/T*9238.609)
-  case ( 92)  ! S  II
+  CASE ( 92)  ! S  II
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*14852.94)+6.*EXP(-HCK/T*14884.73)+ 2.*EXP(-HCK/T*24524.83)+4.*EXP(-HCK/T*24571.54)
-  case ( 93)  ! S  III
+  CASE ( 93)  ! S  III
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*298.69)+5.*EXP(-HCK/T*833.08)+ 5.*EXP(-HCK/T*11322.7)+1.*EXP(-HCK/T*27161.0)
-  case ( 94)  ! S  IV
+  CASE ( 94)  ! S  IV
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*951.43)+2.*EXP(-HCK/T*71184.1)+ 4.*EXP(-HCK/T*71528.7)+6.*EXP(-HCK/T*72074.4)+ &
       4.*EXP(-HCK/T*94103.1)+6.*EXP(-HCK/T*94150.4)
-  case ( 95)  ! S  V
+  CASE ( 95)  ! S  V
     PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*83024.0)+3.*EXP(-HCK/T*83393.5)+ 5.*EXP(-HCK/T*84155.2)
-  case ( 96); PFGROUND_KURUCZ = 2.                    ! S  VI
+  CASE ( 96); PFGROUND_KURUCZ = 2.                    ! S  VI
 
   ! --- Z=17  Cl ---
-  case ( 97)  ! Cl I
+  CASE ( 97)  ! Cl I
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*882.36)
-  case ( 98)  ! Cl II
+  CASE ( 98)  ! Cl II
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*696.1)+EXP(-HCK/T*996.4)+ 5.*EXP(-HCK/T*11653.58)+1.*EXP(-HCK/T*27878.02)
-  case ( 99)  ! Cl III
+  CASE ( 99)  ! Cl III
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*18053.)+6.*EXP(-HCK/T*18118.6)+ 2.*EXP(-HCK/T*29812.)+4.*EXP(-HCK/T*29907.)
-  case (100)  ! Cl IV
+  CASE (100)  ! Cl IV
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*491.)+5.*EXP(-HCK/T*1341.)+ 5.*EXP(-HCK/T*13767.6)+1.*EXP(-HCK/T*32547.8)+ 5.*EXP(-HCK/T*65000.)
-  case (101)  ! Cl V
+  CASE (101)  ! Cl V
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*1490.8)+2.*EXP(-HCK/T*86000.)+ 4.*EXP(-HCK/T*86538.)+6.*EXP(-HCK/T*87381.)
-  case (102)  ! Cl VI
+  CASE (102)  ! Cl VI
     PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*97405.)+3.*EXP(-HCK/T*97958.)+ 5.*EXP(-HCK/T*99123.)
 
   ! --- Z=18  Ar ---
-  case (103); PFGROUND_KURUCZ = 1.                    ! Ar I
-  case (104)  ! Ar II
+  CASE (103); PFGROUND_KURUCZ = 1.                    ! Ar I
+  CASE (104)  ! Ar II
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*1431.41)
-  case (105)  ! Ar III
+  CASE (105)  ! Ar III
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1112.1)+EXP(-HCK/T*1570.2)+ 5.*EXP(-HCK/T*14010.004)+1.*EXP(-HCK/T*33265.724)
-  case (106)  ! Ar IV
+  CASE (106)  ! Ar IV
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*21090.4)+6.*EXP(-HCK/T*21219.3)+ 2.*EXP(-HCK/T*34855.5)+4.*EXP(-HCK/T*35032.6)
-  case (107)  ! Ar V
+  CASE (107)  ! Ar V
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*765.)+5.*EXP(-HCK/T*2030.)+ 5.*EXP(-HCK/T*16298.9)+1.*EXP(-HCK/T*37912.0)+ 5.*EXP(-HCK/T*84100.0)
-  case (108)  ! Ar VI
+  CASE (108)  ! Ar VI
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*2208.)
 
   ! --- Z=19  K  ---
-  case (109); PFGROUND_KURUCZ = 2.                    ! K  I
-  case (110); PFGROUND_KURUCZ = 1.                    ! K  II
-  case (111)  ! K  III
+  CASE (109); PFGROUND_KURUCZ = 2.                    ! K  I
+  CASE (110); PFGROUND_KURUCZ = 1.                    ! K  II
+  CASE (111)  ! K  III
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*2166.)
-  case (112)  ! K  IV
+  CASE (112)  ! K  IV
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1673.)+EXP(-HCK/T*2325.)+ 5.*EXP(-HCK/T*16384.1)+EXP(-HCK/T*38546.3)
-  case (113)  ! K  V
+  CASE (113)  ! K  V
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*24012.5)+6.*EXP(-HCK/T*24249.6)+ 2.*EXP(-HCK/T*39758.1)+4.*EXP(-HCK/T*40080.2)
-  case (114)  ! K  VI
+  CASE (114)  ! K  VI
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1132.)+5.*EXP(-HCK/T*2924.)+ 5.*EXP(-HCK/T*18977.8)+1.*EXP(-HCK/T*43358.8)
 
   ! --- Z=29  Cu ---
-  case (169); PFGROUND_KURUCZ = 2.                    ! Cu I
-  case (170); PFGROUND_KURUCZ = 1.                    ! Cu II
-  case (171)  ! Cu III
+  CASE (169); PFGROUND_KURUCZ = 2.                    ! Cu I
+  CASE (170); PFGROUND_KURUCZ = 1.                    ! Cu II
+  CASE (171)  ! Cu III
     PFGROUND_KURUCZ = 6.+4.*EXP(-HCK/T*2071.8)
-  case (172); PFGROUND_KURUCZ = 1.                    ! Cu IV
-  case (173); PFGROUND_KURUCZ = 1.                    ! Cu V
-  case (174); PFGROUND_KURUCZ = 1.                    ! Cu VI
+  CASE (172); PFGROUND_KURUCZ = 1.                    ! Cu IV
+  CASE (173); PFGROUND_KURUCZ = 1.                    ! Cu V
+  CASE (174); PFGROUND_KURUCZ = 1.                    ! Cu VI
 
   ! --- Z=30  Zn ---
-  case (175); PFGROUND_KURUCZ = 1.                    ! Zn I
-  case (176); PFGROUND_KURUCZ = 2.                    ! Zn II
-  case (177); PFGROUND_KURUCZ = 1.                    ! Zn III
-  case (178); PFGROUND_KURUCZ = 1.                    ! Zn IV
-  case (179); PFGROUND_KURUCZ = 1.                    ! Zn V
-  case (180); PFGROUND_KURUCZ = 1.                    ! Zn VI
+  CASE (175); PFGROUND_KURUCZ = 1.                    ! Zn I
+  CASE (176); PFGROUND_KURUCZ = 2.                    ! Zn II
+  CASE (177); PFGROUND_KURUCZ = 1.                    ! Zn III
+  CASE (178); PFGROUND_KURUCZ = 1.                    ! Zn IV
+  CASE (179); PFGROUND_KURUCZ = 1.                    ! Zn V
+  CASE (180); PFGROUND_KURUCZ = 1.                    ! Zn VI
 
   ! --- Z=31  Ga ---
-  case (181)  ! Ga I
+  CASE (181)  ! Ga I
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*826.19)
-  case (182); PFGROUND_KURUCZ = 1.                    ! Ga II
-  case (183); PFGROUND_KURUCZ = 2.                    ! Ga III
-  case (184); PFGROUND_KURUCZ = 1.                    ! Ga IV
-  case (185); PFGROUND_KURUCZ = 1.                    ! Ga V
-  case (186); PFGROUND_KURUCZ = 1.                    ! Ga VI
+  CASE (182); PFGROUND_KURUCZ = 1.                    ! Ga II
+  CASE (183); PFGROUND_KURUCZ = 2.                    ! Ga III
+  CASE (184); PFGROUND_KURUCZ = 1.                    ! Ga IV
+  CASE (185); PFGROUND_KURUCZ = 1.                    ! Ga V
+  CASE (186); PFGROUND_KURUCZ = 1.                    ! Ga VI
 
   ! --- Z=32  Ge ---
-  case (187)  ! Ge I
+  CASE (187)  ! Ge I
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*557.134)+5.*EXP(-HCK/T*1409.961)+ 5.*EXP(-HCK/T*7125.299)
-  case (188)  ! Ge II
+  CASE (188)  ! Ge II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*1767.356)
-  case (189); PFGROUND_KURUCZ = 1.                    ! Ge III
-  case (190); PFGROUND_KURUCZ = 1.                    ! Ge IV
-  case (191); PFGROUND_KURUCZ = 1.                    ! Ge V
-  case (192); PFGROUND_KURUCZ = 1.                    ! Ge VI
+  CASE (189); PFGROUND_KURUCZ = 1.                    ! Ge III
+  CASE (190); PFGROUND_KURUCZ = 1.                    ! Ge IV
+  CASE (191); PFGROUND_KURUCZ = 1.                    ! Ge V
+  CASE (192); PFGROUND_KURUCZ = 1.                    ! Ge VI
 
   ! --- Z=33  As ---
-  case (193); PFGROUND_KURUCZ = 4.                    ! As I
-  case (194)  ! As II
+  CASE (193); PFGROUND_KURUCZ = 4.                    ! As I
+  CASE (194)  ! As II
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1061.)+5.*EXP(-HCK/T*2538.)
-  case (195)  ! As III
+  CASE (195)  ! As III
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*2940.)
-  case (196); PFGROUND_KURUCZ = 1.                    ! As IV
-  case (197); PFGROUND_KURUCZ = 1.                    ! As V
-  case (198); PFGROUND_KURUCZ = 1.                    ! As VI
+  CASE (196); PFGROUND_KURUCZ = 1.                    ! As IV
+  CASE (197); PFGROUND_KURUCZ = 1.                    ! As V
+  CASE (198); PFGROUND_KURUCZ = 1.                    ! As VI
 
   ! --- Z=34  Se ---
-  case (199)  ! Se I
+  CASE (199)  ! Se I
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1989.49)+EXP(-HCK/T*2534.35)+ 5.*EXP(-HCK/T*9576.149)+1.*EXP(-HCK/T*22446.202)
-  case (200)  ! Se II
+  CASE (200)  ! Se II
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*13168.2)+6.*EXP(-HCK/T*13784.4)+ 2.*EXP(-HCK/T*23038.3)+4.*EXP(-HCK/T*23894.8)
-  case (201)  ! Se III
+  CASE (201)  ! Se III
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1741.)+5.*EXP(-HCK/T*3937.)+ 5.*EXP(-HCK/T*13032.)+1.*EXP(-HCK/T*28430.)
-  case (202); PFGROUND_KURUCZ = 1.                    ! Se IV
-  case (203); PFGROUND_KURUCZ = 1.                    ! Se V
-  case (204); PFGROUND_KURUCZ = 1.                    ! Se VI
+  CASE (202); PFGROUND_KURUCZ = 1.                    ! Se IV
+  CASE (203); PFGROUND_KURUCZ = 1.                    ! Se V
+  CASE (204); PFGROUND_KURUCZ = 1.                    ! Se VI
 
   ! --- Z=35  Br ---
-  case (205)  ! Br I
+  CASE (205)  ! Br I
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*3685.24)
-  case (206)  ! Br II
+  CASE (206)  ! Br II
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*3136.4)+EXP(-HCK/T*3837.5)+ 5.*EXP(-HCK/T*12089.1)
-  case (207)  ! Br III
+  CASE (207)  ! Br III
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*15042.0)+6.*EXP(-HCK/T*16301.0)+ 2.*EXP(-HCK/T*26915.0)+4.*EXP(-HCK/T*28579.0)
-  case (208); PFGROUND_KURUCZ = 1.                    ! Br IV
-  case (209); PFGROUND_KURUCZ = 1.                    ! Br V
-  case (210); PFGROUND_KURUCZ = 1.                    ! Br VI
+  CASE (208); PFGROUND_KURUCZ = 1.                    ! Br IV
+  CASE (209); PFGROUND_KURUCZ = 1.                    ! Br V
+  CASE (210); PFGROUND_KURUCZ = 1.                    ! Br VI
 
   ! --- Z=36  Kr ---
-  case (211); PFGROUND_KURUCZ = 1.                    ! Kr I
-  case (212)  ! Kr II
+  CASE (211); PFGROUND_KURUCZ = 1.                    ! Kr I
+  CASE (212)  ! Kr II
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*5371.)
-  case (213)  ! Kr III
+  CASE (213)  ! Kr III
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*3136.4)+EXP(-HCK/T*3837.5)+ 5.*EXP(-HCK/T*14644.3)+1.*EXP(-HCK/T*33079.6)
-  case (214); PFGROUND_KURUCZ = 1.                    ! Kr IV
-  case (215); PFGROUND_KURUCZ = 1.                    ! Kr V
-  case (216); PFGROUND_KURUCZ = 1.                    ! Kr VI
+  CASE (214); PFGROUND_KURUCZ = 1.                    ! Kr IV
+  CASE (215); PFGROUND_KURUCZ = 1.                    ! Kr V
+  CASE (216); PFGROUND_KURUCZ = 1.                    ! Kr VI
 
   ! --- Z=37  Rb ---
-  case (217); PFGROUND_KURUCZ = 2.                    ! Rb I
-  case (218); PFGROUND_KURUCZ = 1.                    ! Rb II
-  case (219)  ! Rb III
+  CASE (217); PFGROUND_KURUCZ = 2.                    ! Rb I
+  CASE (218); PFGROUND_KURUCZ = 1.                    ! Rb II
+  CASE (219)  ! Rb III
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*7380.)
-  case (220); PFGROUND_KURUCZ = 1.                    ! Rb IV
-  case (221); PFGROUND_KURUCZ = 1.                    ! Rb V
-  case (222); PFGROUND_KURUCZ = 1.                    ! Rb VI
+  CASE (220); PFGROUND_KURUCZ = 1.                    ! Rb IV
+  CASE (221); PFGROUND_KURUCZ = 1.                    ! Rb V
+  CASE (222); PFGROUND_KURUCZ = 1.                    ! Rb VI
 
   ! --- Z=38  Sr ---
-  case (223); PFGROUND_KURUCZ = 1.                    ! Sr I
-  case (224)  ! Sr II
+  CASE (223); PFGROUND_KURUCZ = 1.                    ! Sr I
+  CASE (224)  ! Sr II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*14555.50)+6.*EXP(-HCK/T*14836.24)
-  case (225); PFGROUND_KURUCZ = 1.                    ! Sr III
-  case (226); PFGROUND_KURUCZ = 1.                    ! Sr IV
-  case (227); PFGROUND_KURUCZ = 1.                    ! Sr V
-  case (228); PFGROUND_KURUCZ = 1.                    ! Sr VI
+  CASE (225); PFGROUND_KURUCZ = 1.                    ! Sr III
+  CASE (226); PFGROUND_KURUCZ = 1.                    ! Sr IV
+  CASE (227); PFGROUND_KURUCZ = 1.                    ! Sr V
+  CASE (228); PFGROUND_KURUCZ = 1.                    ! Sr VI
 
   ! --- Z=39  Y  ---
-  case (229)  ! Y  I
+  CASE (229)  ! Y  I
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*530.36)
-  case (230)  ! Y  II
+  CASE (230)  ! Y  II
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*840.198)+5.*EXP(-HCK/T*1045.076)+ 7.*EXP(-HCK/T*1449.752)+5.*EXP(-HCK/T*3296.280)+ &
       5.*EXP(-HCK/T*8003.126)+7.*EXP(-HCK/T*8328.039)+ 9.*EXP(-HCK/T*8743.322)
-  case (231)  ! Y  III
+  CASE (231)  ! Y  III
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*724.15)+2.*EXP(-HCK/T*7467.10)
-  case (232); PFGROUND_KURUCZ = 1.                    ! Y  IV
-  case (233); PFGROUND_KURUCZ = 1.                    ! Y  V
-  case (234); PFGROUND_KURUCZ = 1.                    ! Y  VI
+  CASE (232); PFGROUND_KURUCZ = 1.                    ! Y  IV
+  CASE (233); PFGROUND_KURUCZ = 1.                    ! Y  V
+  CASE (234); PFGROUND_KURUCZ = 1.                    ! Y  VI
 
   ! --- Z=40  Zr ---
-  case (235)  ! Zr I
+  CASE (235)  ! Zr I
     PFGROUND_KURUCZ = 5.+7.*EXP(-HCK/T*570.41)+9.*EXP(-HCK/T*1240.84)+ 1.*EXP(-HCK/T*4196.85)+3.*EXP(-HCK/T*4376.28)+ &
       5.*EXP(-HCK/T*4186.11)+3.*EXP(-HCK/T*4870.53)+ 5.*EXP(-HCK/T*5023.41)+7.*EXP(-HCK/T*5249.07)+ 9.*EXP(-HCK/T*5540.54)+ &
       11.*EXP(-HCK/T*5888.93)+ 5.*EXP(-HCK/T*5101.68)+9.*EXP(-HCK/T*8057.30)
-  case (236)  ! Zr II
+  CASE (236)  ! Zr II
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*314.67)+8.*EXP(-HCK/T*763.44)+ 10.*EXP(-HCK/T*1322.91)+4.*EXP(-HCK/T*2572.21)+ &
       6.*EXP(-HCK/T*2895.00)+8.*EXP(-HCK/T*3299.58)+ 10.*EXP(-HCK/T*3757.63)+4.*EXP(-HCK/T*4247.97)+ 6.*EXP(-HCK/T*4505.30)+ &
       2.*EXP(-HCK/T*5723.78)+ 4.*EXP(-HCK/T*6111.16)+6.*EXP(-HCK/T*5752.55)+ 8.*EXP(-HCK/T*6467.10)+2.*EXP(-HCK/T*7512.61)+ &
       4.*EXP(-HCK/T*7736.05)+6.*EXP(-HCK/T*8058.27)+ 8.*EXP(-HCK/T*7837.49)+10.*EXP(-HCK/T*8152.57)+ 2.*EXP(-HCK/T*9553.13)+ &
       4.*EXP(-HCK/T*9742.80)+ 6.*EXP(-HCK/T*9968.75)
-  case (237)  ! Zr III
+  CASE (237)  ! Zr III
     PFGROUND_KURUCZ = 5.+7.*EXP(-HCK/T*681.2)+9.*EXP(-HCK/T*1485.8)+ 5.*EXP(-HCK/T*5742.8)+1.*EXP(-HCK/T*8062.7)+ &
       3.*EXP(-HCK/T*8327.0)+5.*EXP(-HCK/T*8839.7)+ 9.*EXP(-HCK/T*11049.9)+1.*EXP(-HCK/T*23974.9)+ 3.*EXP(-HCK/T*18400.8)+ &
       5.*EXP(-HCK/T*18804.7)+ 7.*EXP(-HCK/T*19535.3)+5.*EXP(-HCK/T*25066.9)+ 1.*EXP(-HCK/T*36473.7)
-  case (238); PFGROUND_KURUCZ = 1.                    ! Zr IV
-  case (239); PFGROUND_KURUCZ = 1.                    ! Zr V
-  case (240); PFGROUND_KURUCZ = 1.                    ! Zr VI
+  CASE (238); PFGROUND_KURUCZ = 1.                    ! Zr IV
+  CASE (239); PFGROUND_KURUCZ = 1.                    ! Zr V
+  CASE (240); PFGROUND_KURUCZ = 1.                    ! Zr VI
 
   ! --- Z=41  Nb ---
-  case (241)  ! Nb I
+  CASE (241)  ! Nb I
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*154.19)+6.*EXP(-HCK/T*391.99)+ 8.*EXP(-HCK/T*695.25)+10.*EXP(-HCK/T*1050.26)+ &
       4.*EXP(-HCK/T*1142.79)+6.*EXP(-HCK/T*1586.90)+ 8.*EXP(-HCK/T*2154.11)+10.*EXP(-HCK/T*2805.36)+ 2.*EXP(-HCK/T*4998.17)+ &
       4.*EXP(-HCK/T*5297.92)+ 6.*EXP(-HCK/T*5965.45)+2.*EXP(-HCK/T*8410.90)+ 4.*EXP(-HCK/T*8705.32)+6.*EXP(-HCK/T*9043.14)+ &
       8.*EXP(-HCK/T*9497.52)+8.*EXP(-HCK/T*8827.00)+ 10.*EXP(-HCK/T*9328.88)+4.*EXP(-HCK/T*9439.08)+ 6.*EXP(-HCK/T*10237.51)
-  case (242)  ! Nb II
+  CASE (242)  ! Nb II
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*158.99)+5.*EXP(-HCK/T*438.38)+ 7.*EXP(-HCK/T*801.38)+9.*EXP(-HCK/T*1224.87)+ &
       3.*EXP(-HCK/T*2356.76)+5.*EXP(-HCK/T*2629.07)+ 7.*EXP(-HCK/T*3029.57)+9.*EXP(-HCK/T*3542.50)+ 11.*EXP(-HCK/T*4146.00)+ &
       1.*EXP(-HCK/T*5562.26)+ 3.*EXP(-HCK/T*6192.33)+5.*EXP(-HCK/T*7261.33)+ 5.*EXP(-HCK/T*7505.78)+7.*EXP(-HCK/T*7900.65)+ &
       9.*EXP(-HCK/T*8320.40)+9.*EXP(-HCK/T*9509.67)+ 11.*EXP(-HCK/T*9812.56)+13.*EXP(-HCK/T*10186.41)
-  case (243)  ! Nb III
+  CASE (243)  ! Nb III
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*515.8)+8.*EXP(-HCK/T*1176.6)+ 10.*EXP(-HCK/T*1939.0)+ 2.*EXP(-HCK/T*8664.3)+ &
       4.*EXP(-HCK/T*8607.5)+ 6.*EXP(-HCK/T*9593.7)+8.*EXP(-HCK/T*9236.1)+ 10.*EXP(-HCK/T*9804.5)+4.*EXP(-HCK/T*10912.2)+ &
       6.*EXP(-HCK/T*13094.0)+10.*EXP(-HCK/T*12916.0)+ 12.*EXP(-HCK/T*13263.8)+6.*EXP(-HCK/T*19975.0)+ 8.*EXP(-HCK/T*19861.0)+ &
       4.*EXP(-HCK/T*25220.2)+ 6.*EXP(-HCK/T*25735.2)+8.*EXP(-HCK/T*26463.7)+ 10.*EXP(-HCK/T*27373.5)
-  case (244); PFGROUND_KURUCZ = 1.                    ! Nb IV
-  case (245); PFGROUND_KURUCZ = 1.                    ! Nb V
-  case (246); PFGROUND_KURUCZ = 1.                    ! Nb VI
+  CASE (244); PFGROUND_KURUCZ = 1.                    ! Nb IV
+  CASE (245); PFGROUND_KURUCZ = 1.                    ! Nb V
+  CASE (246); PFGROUND_KURUCZ = 1.                    ! Nb VI
 
   ! --- Z=42  Mo ---
-  case (247); PFGROUND_KURUCZ = 7.                    ! Mo I
-  case (248); PFGROUND_KURUCZ = 6.                    ! Mo II
-  case (249)  ! Mo III
+  CASE (247); PFGROUND_KURUCZ = 7.                    ! Mo I
+  CASE (248); PFGROUND_KURUCZ = 6.                    ! Mo II
+  CASE (249)  ! Mo III
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*243.10)+5.*EXP(-HCK/T*669.60)+ 7.*EXP(-HCK/T*1225.20)+9.*EXP(-HCK/T*1873.80)
-  case (250); PFGROUND_KURUCZ = 1.                    ! Mo IV
-  case (251); PFGROUND_KURUCZ = 1.                    ! Mo V
-  case (252); PFGROUND_KURUCZ = 1.                    ! Mo VI
+  CASE (250); PFGROUND_KURUCZ = 1.                    ! Mo IV
+  CASE (251); PFGROUND_KURUCZ = 1.                    ! Mo V
+  CASE (252); PFGROUND_KURUCZ = 1.                    ! Mo VI
 
   ! --- Z=43  Tc ---
-  case (253)  ! Tc I
+  CASE (253)  ! Tc I
     PFGROUND_KURUCZ = 6.   +10.*EXP(-HCK/T*2572.89)+8.*EXP(-HCK/T*3250.91)+ 6.*EXP(-HCK/T*3700.54)+4.*EXP(-HCK/T*4002.57)+ &
       2.*EXP(-HCK/T*4178.75)
-  case (254)  ! Tc II
+  CASE (254)  ! Tc II
     PFGROUND_KURUCZ = 7.  +9.*EXP(-HCK/T*3461.27)+7.*EXP(-HCK/T*4217.17)+ 5.*EXP(-HCK/T*4669.22)+3.*EXP(-HCK/T*4961.14)+ &
       1.*EXP(-HCK/T*5100.98)
-  case (255); PFGROUND_KURUCZ = 6.                    ! Tc III
-  case (256); PFGROUND_KURUCZ = 1.                    ! Tc IV
-  case (257); PFGROUND_KURUCZ = 1.                    ! Tc V
-  case (258); PFGROUND_KURUCZ = 1.                    ! Tc VI
+  CASE (255); PFGROUND_KURUCZ = 6.                    ! Tc III
+  CASE (256); PFGROUND_KURUCZ = 1.                    ! Tc IV
+  CASE (257); PFGROUND_KURUCZ = 1.                    ! Tc V
+  CASE (258); PFGROUND_KURUCZ = 1.                    ! Tc VI
 
   ! --- Z=44  Ru ---
-  case (259)  ! Ru I
+  CASE (259)  ! Ru I
     PFGROUND_KURUCZ = 11.+9.*EXP(-HCK/T*1190.64)+7.*EXP(-HCK/T*2091.54)+ 5.*EXP(-HCK/T*2713.24)+3.*EXP(-HCK/T*3105.49)+ &
       9.*EXP(-HCK/T*6545.03)+7.*EXP(-HCK/T*8084.12)+ 5.*EXP(-HCK/T*9183.66)+9.*EXP(-HCK/T*7483.07)+ 7.*EXP(-HCK/T*8575.42)+ &
       5.*EXP(-HCK/T*9057.64)+ 3.*EXP(-HCK/T*9072.98)+1.*EXP(-HCK/T*8492.37)+ 7.*EXP(-HCK/T*8770.93)+5.*EXP(-HCK/T*8043.69)+ &
       3.*EXP(-HCK/T*9620.29)+9.*EXP(-HCK/T*9120.63)
-  case (260)  ! Ru II
+  CASE (260)  ! Ru II
     PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*1523.1)+6.*EXP(-HCK/T*2493.9)+ 4.*EXP(-HCK/T*3104.2)+6.*EXP(-HCK/T*8256.7)+ &
       4.*EXP(-HCK/T*8477.4)+2.*EXP(-HCK/T*9373.4)+ 10.*EXP(-HCK/T*9151.6)
-  case (261)  ! Ru III
+  CASE (261)  ! Ru III
     PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*1158.8)+5.*EXP(-HCK/T*1826.3)+ 3.*EXP(-HCK/T*2266.3)+EXP(-HCK/T*2476.0)+ 7.*EXP(-HCK/T*27162.8)+ &
       5.*EXP(-HCK/T*41111.7)
-  case (262); PFGROUND_KURUCZ = 1.                    ! Ru IV
-  case (263); PFGROUND_KURUCZ = 1.                    ! Ru V
-  case (264); PFGROUND_KURUCZ = 1.                    ! Ru VI
+  CASE (262); PFGROUND_KURUCZ = 1.                    ! Ru IV
+  CASE (263); PFGROUND_KURUCZ = 1.                    ! Ru V
+  CASE (264); PFGROUND_KURUCZ = 1.                    ! Ru VI
 
   ! --- Z=45  Rh ---
-  case (265)  ! Rh I
+  CASE (265)  ! Rh I
     PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*1529.97)+6.*EXP(-HCK/T*2598.03)+ 4.*EXP(-HCK/T*3472.68)+6.*EXP(-HCK/T*3309.86)+ &
       4.*EXP(-HCK/T*5657.97)+8.*EXP(-HCK/T*5690.97)+ 6.*EXP(-HCK/T*7791.23)+6.*EXP(-HCK/T*9221.22)
-  case (266)  ! Rh II
+  CASE (266)  ! Rh II
     PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*2401.3)+5.*EXP(-HCK/T*3580.7)+ 5.*EXP(-HCK/T*8164.4)+1.*EXP(-HCK/T*10760.8)+ &
       3.*EXP(-HCK/T*10515.0)+5.*EXP(-HCK/T*11643.7)+ 9.*EXP(-HCK/T*14855.4)+11.*EXP(-HCK/T*16884.8)+ 9.*EXP(-HCK/T*18540.4)+ &
       7.*EXP(-HCK/T*19792.4)
-  case (267)  ! Rh III
+  CASE (267)  ! Rh III
     PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*2147.8)+6.*EXP(-HCK/T*3485.7)+ 4.*EXP(-HCK/T*4322.0)+6.*EXP(-HCK/T*11062.3)+ &
       4.*EXP(-HCK/T*10997.1)+2.*EXP(-HCK/T*12469.8)+ 10.*EXP(-HCK/T*14044.0)+8.*EXP(-HCK/T*15256.8)+ 4.*EXP(-HCK/T*16870.7)+ &
       2.*EXP(-HCK/T*18303.7)+ 12.*EXP(-HCK/T*19490.2)+6.*EXP(-HCK/T*19528.5)
-  case (268); PFGROUND_KURUCZ = 1.                    ! Rh IV
-  case (269); PFGROUND_KURUCZ = 1.                    ! Rh V
-  case (270); PFGROUND_KURUCZ = 1.                    ! Rh VI
+  CASE (268); PFGROUND_KURUCZ = 1.                    ! Rh IV
+  CASE (269); PFGROUND_KURUCZ = 1.                    ! Rh V
+  CASE (270); PFGROUND_KURUCZ = 1.                    ! Rh VI
 
   ! --- Z=46  Pd ---
-  case (271)  ! Pd I
+  CASE (271)  ! Pd I
     PFGROUND_KURUCZ = 1.+7.*EXP(-HCK/T*6564.11)+5.*EXP(-HCK/T*7754.99)
-  case (272)  ! Pd II
+  CASE (272)  ! Pd II
     PFGROUND_KURUCZ = 6.+4.*EXP(-HCK/T*3539.2)
-  case (273)  ! Pd III
+  CASE (273)  ! Pd III
     PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*3229.3)+5.*EXP(-HCK/T*4687.5)+ 5.*EXP(-HCK/T*10229.3)+3.*EXP(-HCK/T*13468.9)+ &
       1.*EXP(-HCK/T*13697.5)+5.*EXP(-HCK/T*14634.4)+ 9.*EXP(-HCK/T*17879.3)
-  case (274); PFGROUND_KURUCZ = 1.                    ! Pd IV
-  case (275); PFGROUND_KURUCZ = 1.                    ! Pd V
-  case (276); PFGROUND_KURUCZ = 1.                    ! Pd VI
+  CASE (274); PFGROUND_KURUCZ = 1.                    ! Pd IV
+  CASE (275); PFGROUND_KURUCZ = 1.                    ! Pd V
+  CASE (276); PFGROUND_KURUCZ = 1.                    ! Pd VI
 
   ! --- Z=47  Ag ---
-  case (277); PFGROUND_KURUCZ = 2.                    ! Ag I
-  case (278); PFGROUND_KURUCZ = 1.                    ! Ag II
-  case (279)  ! Ag III
+  CASE (277); PFGROUND_KURUCZ = 2.                    ! Ag I
+  CASE (278); PFGROUND_KURUCZ = 1.                    ! Ag II
+  CASE (279)  ! Ag III
     PFGROUND_KURUCZ = 6.+4.*EXP(-HCK/T*4607.)
-  case (280); PFGROUND_KURUCZ = 1.                    ! Ag IV
-  case (281); PFGROUND_KURUCZ = 1.                    ! Ag V
-  case (282); PFGROUND_KURUCZ = 1.                    ! Ag VI
+  CASE (280); PFGROUND_KURUCZ = 1.                    ! Ag IV
+  CASE (281); PFGROUND_KURUCZ = 1.                    ! Ag V
+  CASE (282); PFGROUND_KURUCZ = 1.                    ! Ag VI
 
   ! --- Z=48  Cd ---
-  case (283); PFGROUND_KURUCZ = 1.                    ! Cd I
-  case (284); PFGROUND_KURUCZ = 2.                    ! Cd II
-  case (285); PFGROUND_KURUCZ = 1.                    ! Cd III
-  case (286); PFGROUND_KURUCZ = 1.                    ! Cd IV
-  case (287); PFGROUND_KURUCZ = 1.                    ! Cd V
-  case (288); PFGROUND_KURUCZ = 1.                    ! Cd VI
+  CASE (283); PFGROUND_KURUCZ = 1.                    ! Cd I
+  CASE (284); PFGROUND_KURUCZ = 2.                    ! Cd II
+  CASE (285); PFGROUND_KURUCZ = 1.                    ! Cd III
+  CASE (286); PFGROUND_KURUCZ = 1.                    ! Cd IV
+  CASE (287); PFGROUND_KURUCZ = 1.                    ! Cd V
+  CASE (288); PFGROUND_KURUCZ = 1.                    ! Cd VI
 
   ! --- Z=49  In ---
-  case (289)  ! In I
+  CASE (289)  ! In I
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*2212.598)
-  case (290); PFGROUND_KURUCZ = 1.                    ! In II
-  case (291); PFGROUND_KURUCZ = 2.                    ! In III
-  case (292); PFGROUND_KURUCZ = 1.                    ! In IV
-  case (293); PFGROUND_KURUCZ = 1                    ! In V
-  case (294); PFGROUND_KURUCZ = 1.                    ! In VI
+  CASE (290); PFGROUND_KURUCZ = 1.                    ! In II
+  CASE (291); PFGROUND_KURUCZ = 2.                    ! In III
+  CASE (292); PFGROUND_KURUCZ = 1.                    ! In IV
+  CASE (293); PFGROUND_KURUCZ = 1                    ! In V
+  CASE (294); PFGROUND_KURUCZ = 1.                    ! In VI
 
   ! --- Z=50  Sn ---
-  case (295)  ! Sn I
+  CASE (295)  ! Sn I
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1691.8)+5.*EXP(-HCK/T*3427.7)+ 5.*EXP(-HCK/T*6513.0)
-  case (296)  ! Sn II
+  CASE (296)  ! Sn II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*4251.4)
-  case (297); PFGROUND_KURUCZ = 1.                    ! Sn III
-  case (298); PFGROUND_KURUCZ = 1.                    ! Sn IV
-  case (299); PFGROUND_KURUCZ = 1.                    ! Sn V
-  case (300); PFGROUND_KURUCZ = 1.                    ! Sn VI
+  CASE (297); PFGROUND_KURUCZ = 1.                    ! Sn III
+  CASE (298); PFGROUND_KURUCZ = 1.                    ! Sn IV
+  CASE (299); PFGROUND_KURUCZ = 1.                    ! Sn V
+  CASE (300); PFGROUND_KURUCZ = 1.                    ! Sn VI
 
   ! --- Z=51  Sb ---
-  case (301)  ! Sb I
+  CASE (301)  ! Sb I
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*8512.1)+6.*EXP(-HCK/T*9854.1)
-  case (302)  ! Sb II
+  CASE (302)  ! Sb II
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*3055.0)+5.*EXP(-HCK/T*5659.0)
-  case (303)  ! Sb III
+  CASE (303)  ! Sb III
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*6576.)
-  case (304); PFGROUND_KURUCZ = 1.                    ! Sb IV
-  case (305); PFGROUND_KURUCZ = 1.                    ! Sb V
-  case (306); PFGROUND_KURUCZ = 1.                    ! Sb VI
+  CASE (304); PFGROUND_KURUCZ = 1.                    ! Sb IV
+  CASE (305); PFGROUND_KURUCZ = 1.                    ! Sb V
+  CASE (306); PFGROUND_KURUCZ = 1.                    ! Sb VI
 
   ! --- Z=52  Te ---
-  case (307)  ! Te I
+  CASE (307)  ! Te I
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*4750.712)+EXP(-HCK/T*4706.5)
-  case (308)  ! Te II
+  CASE (308)  ! Te II
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*10222.385)+6.*EXP(-HCK/T*12421.854)+ 2.*EXP(-HCK/T*20546.591)+4.*EXP(-HCK/T*24032.2)
-  case (309)  ! Te III
+  CASE (309)  ! Te III
     PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*4756.5)+5.*EXP(-HCK/T*8166.9)+ 5.*EXP(-HCK/T*17358.)
-  case (310); PFGROUND_KURUCZ = 1.                    ! Te IV
-  case (311); PFGROUND_KURUCZ = 1.                    ! Te V
-  case (312); PFGROUND_KURUCZ = 1.                    ! Te VI
+  CASE (310); PFGROUND_KURUCZ = 1.                    ! Te IV
+  CASE (311); PFGROUND_KURUCZ = 1.                    ! Te V
+  CASE (312); PFGROUND_KURUCZ = 1.                    ! Te VI
 
   ! --- Z=53  I  ---
-  case (313)  ! I  I
+  CASE (313)  ! I  I
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*7063.15)
-  case (314)  ! I  II
+  CASE (314)  ! I  II
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*7087.0)+EXP(-HCK/T*6447.9)+ 5.*EXP(-HCK/T*13727.2)+1.*EXP(-HCK/T*29501.3)
-  case (315)  ! I  III
+  CASE (315)  ! I  III
     PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*11711.2)+6.*EXP(-HCK/T*14901.9)+ 2.*EXP(-HCK/T*24299.3)+4.*EXP(-HCK/T*29636.8)
-  case (316); PFGROUND_KURUCZ = 1.                    ! I  IV
-  case (317); PFGROUND_KURUCZ = 1.                    ! I  V
-  case (318); PFGROUND_KURUCZ = 1.                    ! I  VI
+  CASE (316); PFGROUND_KURUCZ = 1.                    ! I  IV
+  CASE (317); PFGROUND_KURUCZ = 1.                    ! I  V
+  CASE (318); PFGROUND_KURUCZ = 1.                    ! I  VI
 
   ! --- Z=54  Xe ---
-  case (319); PFGROUND_KURUCZ = 1.                    ! Xe I
-  case (320)  ! Xe II
+  CASE (319); PFGROUND_KURUCZ = 1.                    ! Xe I
+  CASE (320)  ! Xe II
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*10537.01)
-  case (321)  ! Xe III
+  CASE (321)  ! Xe III
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*9794.36)+EXP(-HCK/T*8130.08)+ 5.*EXP(-HCK/T*17098.73)+1.*EXP(-HCK/T*36102.94)
-  case (322); PFGROUND_KURUCZ = 1.                    ! Xe IV
-  case (323); PFGROUND_KURUCZ = 1.                    ! Xe V
-  case (324); PFGROUND_KURUCZ = 1.                    ! Xe VI
+  CASE (322); PFGROUND_KURUCZ = 1.                    ! Xe IV
+  CASE (323); PFGROUND_KURUCZ = 1.                    ! Xe V
+  CASE (324); PFGROUND_KURUCZ = 1.                    ! Xe VI
 
   ! --- Z=55  Cs ---
-  case (325); PFGROUND_KURUCZ = 2.                    ! Cs I
-  case (326); PFGROUND_KURUCZ = 1.                    ! Cs II
-  case (327)  ! Cs III
+  CASE (325); PFGROUND_KURUCZ = 2.                    ! Cs I
+  CASE (326); PFGROUND_KURUCZ = 1.                    ! Cs II
+  CASE (327)  ! Cs III
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*13884.)
-  case (328); PFGROUND_KURUCZ = 1.                    ! Cs IV
-  case (329); PFGROUND_KURUCZ = 1.                    ! Cs V
-  case (330); PFGROUND_KURUCZ = 1.                    ! Cs VI
+  CASE (328); PFGROUND_KURUCZ = 1.                    ! Cs IV
+  CASE (329); PFGROUND_KURUCZ = 1.                    ! Cs V
+  CASE (330); PFGROUND_KURUCZ = 1.                    ! Cs VI
 
   ! --- Z=56  Ba ---
-  case (331); PFGROUND_KURUCZ = 1.                    ! Ba I
-  case (332)  ! Ba II
+  CASE (331); PFGROUND_KURUCZ = 1.                    ! Ba I
+  CASE (332)  ! Ba II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*4873.852)+6.*EXP(-HCK/T*5674.807)
-  case (333); PFGROUND_KURUCZ = 1.                    ! Ba III
-  case (334); PFGROUND_KURUCZ = 1.                    ! Ba IV
-  case (335); PFGROUND_KURUCZ = 1.                    ! Ba V
-  case (336); PFGROUND_KURUCZ = 1.                    ! Ba VI
+  CASE (333); PFGROUND_KURUCZ = 1.                    ! Ba III
+  CASE (334); PFGROUND_KURUCZ = 1.                    ! Ba IV
+  CASE (335); PFGROUND_KURUCZ = 1.                    ! Ba V
+  CASE (336); PFGROUND_KURUCZ = 1.                    ! Ba VI
 
   ! Default for all other NELION values
-  case default
+  CASE DEFAULT
     PFGROUND_KURUCZ = 1.0d0
 
-  end select
+  END SELECT
 
 END FUNCTION PFGROUND_KURUCZ
 
@@ -17116,60 +17017,60 @@ END FUNCTION PFGROUND_KURUCZ
 
 FUNCTION PFGROUND_HYBRID(NELION, T)
 
-  implicit none
+  IMPLICIT NONE
 
   ! Arguments
-  integer, intent(in)  :: NELION
-  real*8,  intent(in)  :: T
-  real*8               :: PFGROUND_HYBRID
+  INTEGER, INTENT(IN)  :: NELION
+  REAL(8),  INTENT(IN)  :: T
+  REAL(8)               :: PFGROUND_HYBRID
 
   ! Locals
-  integer :: IZ, ION
-  real*8  :: U_bc_val, U_kurucz_val, x, w
+  INTEGER :: IZ, ION
+  REAL(8)  :: U_bc_val, U_kurucz_val, x, w
 
   ! Blend window [K].  Chosen so that T_HIGH_BC matches the top of the
   ! B&C tabulated grid (10000 K) -- no extrapolation ever.
-  real*8, parameter :: T_LOW_BC  =  9000.0d0
-  real*8, parameter :: T_HIGH_BC = 10000.0d0
+  REAL(8), PARAMETER :: T_LOW_BC  =  9000.0d0
+  REAL(8), PARAMETER :: T_HIGH_BC = 10000.0d0
 
-  if (IDEBUG == 1) write(6,'(A)') ' RUNNING PFGROUND_HYBRID'
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING PFGROUND_HYBRID'
 
   ! --- Iron group deferred to PFIRON; short-circuit ---
-  if (NELION >= 115 .and. NELION <= 168) then
+  IF (NELION >= 115 .AND. NELION <= 168) THEN
     PFGROUND_HYBRID = 1.0d0
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Above the blend window: pure Kurucz ---
-  if (T >= T_HIGH_BC) then
+  IF (T >= T_HIGH_BC) THEN
     PFGROUND_HYBRID = PFGROUND_KURUCZ(NELION, T)
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Decode NELION into (IZ, ION); out-of-range ION -> pure Kurucz ---
   IZ  = (NELION - 1) / 6 + 1
   ION = NELION - (IZ - 1) * 6
-  if (ION < 1 .or. ION > 3) then
+  IF (ION < 1 .OR. ION > 3) THEN
     PFGROUND_HYBRID = PFGROUND_KURUCZ(NELION, T)
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Ask B&C for its value; sentinel means no B&C data for this species ---
   U_bc_val = U_BC(IZ, ION, T)
-  if (U_bc_val <= 0.0d0) then
+  IF (U_bc_val <= 0.0d0) THEN
     ! No B&C value available; use Kurucz everywhere, including the blend
     ! window.  (U_BC returns <0 for out-of-coverage species regardless of
     ! T, so this branch is entered for Z>92 or for those (Z, ION) combos
     ! B&C doesn't tabulate.)
     PFGROUND_HYBRID = PFGROUND_KURUCZ(NELION, T)
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Below the blend window: pure B&C ---
-  if (T <= T_LOW_BC) then
+  IF (T <= T_LOW_BC) THEN
     PFGROUND_HYBRID = U_bc_val
-    return
-  end if
+    RETURN
+  END IF
 
   ! --- Blend region: smoothstep from B&C (w=0) at T_LOW_BC to Kurucz
   !     (w=1) at T_HIGH_BC.  w = 3x^2 - 2x^3 with x in [0,1]:
@@ -17203,52 +17104,52 @@ END FUNCTION PFGROUND_HYBRID
 
 FUNCTION PARTFNH2(T)
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8, intent(in) :: T
-  real*8 :: PARTFNH2
+  REAL(8), INTENT(IN) :: T
+  REAL(8) :: PARTFNH2
 
-  integer, parameter :: NMAX = 500   ! max table entries
-  real*8,  save :: PF(NMAX)          ! partition function values
-  real*8,  save :: TSTEP = 100.0d0   ! temperature step (K)
-  real*8,  save :: TSTART = 100.0d0  ! first temperature in table
-  integer, save :: NPF = 0           ! number of entries loaded
-  logical, save :: INITIALIZED = .false.
+  INTEGER, PARAMETER :: NMAX = 500   ! max table entries
+  REAL(8),  SAVE :: PF(NMAX)          ! partition function values
+  REAL(8),  SAVE :: TSTEP = 100.0d0   ! temperature step (K)
+  REAL(8),  SAVE :: TSTART = 100.0d0  ! first temperature in table
+  INTEGER, SAVE :: NPF = 0           ! number of entries loaded
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
   
-  integer :: N, IOS, LUN
-  real*8  :: frac, TDUM, QDUM
-  character(len=256) :: LINE
+  INTEGER :: N, IOS, LUN
+  REAL(8)  :: frac, TDUM, QDUM
+  CHARACTER(len=256) :: LINE
 
   ! Read table from file on first call
-  if (.not. INITIALIZED) then
-    INITIALIZED = .true.
+  IF (.NOT. INITIALIZED) THEN
+    INITIALIZED = .TRUE.
     NPF = 0
     LUN = 89
-    open(LUN, file=trim(DATADIR)//'partfnh2.dat', status='old', iostat=IOS)
-    if (IOS /= 0) then
-      stop ' PARTFNH2 ERROR: cannot open '//trim(DATADIR)//'partfnh2.dat'
-   endif
-   do while (NPF < NMAX)
-      read(LUN, '(A)', iostat=IOS) LINE
-      if (IOS /= 0) exit
+    OPEN(LUN, FILE=trim(DATADIR)//'partfnh2.dat', STATUS='old', IOSTAT=IOS)
+    IF (IOS /= 0) THEN
+      STOP ' PARTFNH2 ERROR: cannot open '//trim(DATADIR)//'partfnh2.dat'
+   ENDIF
+   DO WHILE (NPF < NMAX)
+      READ(LUN, '(A)', IOSTAT=IOS) LINE
+      IF (IOS /= 0) EXIT
       ! Skip comment and blank lines
       LINE = adjustl(LINE)
-      if (LINE(1:1) == '#' .or. len_trim(LINE) == 0) cycle
-      read(LINE, *, iostat=IOS) TDUM, QDUM
-      if (IOS /= 0) cycle
+      IF (LINE(1:1) == '#' .OR. len_trim(LINE) == 0) CYCLE
+      READ(LINE, *, IOSTAT=IOS) TDUM, QDUM
+      IF (IOS /= 0) CYCLE
       NPF = NPF + 1
       PF(NPF) = QDUM
-      if (NPF == 1) TSTART = TDUM
-      if (NPF == 2) TSTEP = TDUM - TSTART
-   end do
-   close(LUN)
-  end if
+      IF (NPF == 1) TSTART = TDUM
+      IF (NPF == 2) TSTEP = TDUM - TSTART
+   END DO
+   CLOSE(LUN)
+  END IF
 
   ! Fallback if no table loaded
-  if (NPF == 0) then
+  IF (NPF == 0) THEN
     PARTFNH2 = max(T / 100.0d0, 0.5d0)
-    return
-  end if
+    RETURN
+  END IF
 
   ! Table index from temperature
   N = INT((T - TSTART) / TSTEP) + 1
@@ -17280,29 +17181,29 @@ END FUNCTION PARTFNH2
 
 FUNCTION EQUILH2(T)
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8, intent(in) :: T
-  real*8 :: EQUILH2
+  REAL(8), INTENT(IN) :: T
+  REAL(8) :: EQUILH2
 
   ! External function
 
   ! Physical constants from mod_constants; only local spectroscopic data here
-  real*8, parameter :: m_H  = 1.008d0 * AMU        ! H atom mass [g]
+  REAL(8), PARAMETER :: m_H  = 1.008d0 * AMU        ! H atom mass [g]
 
   ! H2 dissociation energy
-  real*8, parameter :: D0_cm = 36118.11d0           ! D0(H2) [cm^-1]
-  real*8, parameter :: D0_over_kT_coeff = D0_cm * HCK
+  REAL(8), PARAMETER :: D0_cm = 36118.11d0           ! D0(H2) [cm^-1]
+  REAL(8), PARAMETER :: D0_over_kT_coeff = D0_cm * HCK
   !                                     = 51967.8 K  (D0/k)
 
   ! Translational partition function prefactor (T-independent part)
   ! = 2^1.5 / 4 / (2*pi*m_H*k/h^2)^1.5
   ! where m_H appears because the reduced mass for equal-mass dissociation
   ! products cancels to give the atomic H mass in the Saha-like expression.
-  real*8, parameter :: trans_prefactor = 2.d0**1.5d0 / 4.d0 &
+  REAL(8), PARAMETER :: trans_prefactor = 2.d0**1.5d0 / 4.d0 &
     / (2.d0 * PI * m_H * KBOL / HPLANCK**2)**1.5d0
 
-  real*8 :: Q_H2
+  REAL(8) :: Q_H2
 
   ! Internal partition function
   Q_H2 = PARTFNH2(T)
@@ -17335,22 +17236,22 @@ END FUNCTION EQUILH2
 
 FUNCTION holtsmark_Q(beta)
 
-  implicit none
+  IMPLICIT NONE
 
-  real*8, intent(in) :: beta
-  real*8 :: holtsmark_Q
+  REAL(8), INTENT(IN) :: beta
+  REAL(8) :: holtsmark_Q
 
-  real*8  :: log_beta, idx_f, frac
-  integer :: idx
+  REAL(8)  :: log_beta, idx_f, frac
+  INTEGER :: idx
 
-  if (beta <= 0.01D0) then
+  IF (beta <= 0.01D0) THEN
     holtsmark_Q = 0.0D0
-    return
-  end if
-  if (beta >= 50.0D0) then
+    RETURN
+  END IF
+  IF (beta >= 50.0D0) THEN
     holtsmark_Q = 1.0D0
-    return
-  end if
+    RETURN
+  END IF
 
   log_beta = LOG10(beta)
   idx_f = (log_beta - LOG_BETA_MIN) / LOG_BETA_STEP
@@ -17392,18 +17293,18 @@ END FUNCTION holtsmark_Q
 
 FUNCTION occupation_prob(n, xne)
 
-  implicit none
+  IMPLICIT NONE
 
-  integer, intent(in) :: n
-  real*8,  intent(in) :: xne
-  real*8 :: occupation_prob
+  INTEGER, INTENT(IN) :: n
+  REAL(8),  INTENT(IN) :: xne
+  REAL(8) :: occupation_prob
 
-  real*8 :: beta
+  REAL(8) :: beta
 
-  if (n <= 1 .or. xne <= 0.0D0) then
+  IF (n <= 1 .OR. xne <= 0.0D0) THEN
     occupation_prob = 1.0D0
-    return
-  end if
+    RETURN
+  END IF
 
   beta = BETA_COEFF_HM88 / (DBLE(n)**5 * xne**(2.0D0/3.0D0))
   occupation_prob = holtsmark_Q(beta)
@@ -17411,5 +17312,5 @@ FUNCTION occupation_prob(n, xne)
 END FUNCTION occupation_prob
 
 
-end module mod_atlas_data
+END MODULE mod_atlas_data
 
