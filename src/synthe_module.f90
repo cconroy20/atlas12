@@ -3767,10 +3767,8 @@ CONTAINS
     ! ------------------------------------------------------------------
     !  ATLAS setup flags  (mirror of the original program's flag setting)
     ! ------------------------------------------------------------------
-    IFOP(14) = 0
-    IFOP(15) = 0
-    IFOP(16) = 0
-    IFOP(17) = 0
+    !IFOP(15) = 0
+    !IFOP(17) = 0
     itemp_a  = 0
     ! IFPRES=0 during Sections 1-3 and 6-7: prevents COMPUTE_ONE_POP
     ! from triggering NMOLEC internally.  The explicit NMOLEC(1) call

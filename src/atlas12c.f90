@@ -471,8 +471,8 @@ PROGRAM ATLAS12
       IF (ITER == 1 .AND. IFREADLINES == 1 .AND. ITEMP == 1) CALL SELECTLINES
 
       ! --- Compute line opacities ---
-      IF (IFOP(15) == 1) CALL LINOP1
-      IF (IFOP(17) == 1) CALL XLINOP
+      CALL LINOP1
+      CALL XLINOP
 
       ! ---------------------------------------------------------------
       ! INITIALIZE FREQUENCY INTEGRALS (mode=1: erase accumulators)

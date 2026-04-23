@@ -1060,10 +1060,6 @@ MODULE mod_atlas_data
   INTEGER :: IFEQUA(101), KCOMPS(maxloc), LOCJ(max1), IDEQUA(maxeq)
   INTEGER :: NEQUA, NEQUA1, NEQNEQ, NUMMOL, NLOC
 
-  ! --- Opacity control flags ---
-  ! COMMON /IFOP/
-  INTEGER :: IFOP(20) = (/1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,1,0,0,0/)
-
   ! --- Population control flag ---
   ! COMMON /IFPOP/
   INTEGER :: IFPOP
@@ -1092,6 +1088,9 @@ MODULE mod_atlas_data
   ! --- Flag set if SYNTHE is running ---
   INTEGER :: IFSYNTHE = 0
 
+  ! --- Flag set to use TOPbase metal continuum opacities ---
+  LOGICAL :: USE_TOPBASE_MBF = .TRUE.
+  
   ! --- Flag set if SYNTHE should emit .mol/.linform output files ---
   ! Gated by the more_output CLI argument.  NMOLEC checks IFMOLOUT to
   ! decide whether to write its molecular-density table to unit 35.
@@ -1118,13 +1117,64 @@ MODULE mod_atlas_data
   REAL(8)  :: AH2COLL(kw)           ! H2-H2 collision-induced absorption
   REAL(8)  :: ACONT_METAL(kw)       ! consolidated metal+molecular continuum
   REAL(8)  :: SIGEL(kw), SIGH2(kw), AHLINE(kw), ALINES(kw), SIGLIN(kw)
-  REAL(8)  :: AXLINE(kw), SIGXL(kw), AXCONT(kw), SIGX(kw)
+  REAL(8)  :: AXLINE(kw), SIGXL(kw), SIGX(kw)
   REAL(8)  :: SHYD(kw), SHMIN(kw), SHLINE(kw), SXLINE(kw), SXCONT(kw)
 
   ! --- Total opacity ---
   ! COMMON /OPTOT/
   REAL(8)  :: ACONT(kw), SCONT(kw), ALINE(kw), SLINE(kw)
   REAL(8)  :: SIGMAC(kw), SIGMAL(kw)
+
+  ! --- TOPbase / Allende-Prieto metal bound-free data ---
+  !
+  ! Each TOPbase level stores pre-smoothed photoionization cross section
+  ! on a uniform 3% log-spaced energy grid (Allende Prieto et al. 2003,
+  ! ApJS 147, 363).  Threshold energies are shifted at init time so the
+  ! ground-state ionization potential matches NIST exactly; the same
+  ! shift is applied to every level's photon-energy grid.
+  !
+  TYPE :: TOPBASE_LEVEL
+    INTEGER :: ISLP                    ! term: 100*(2S+1) + 10*L + parity
+    INTEGER :: ILV                     ! level index within term
+    INTEGER :: G_STAT                  ! stat. weight (2S+1)*(2L+1)
+    INTEGER :: NP                      ! number of (E, sigma) points
+    REAL(8) :: E_BIND_RY               ! binding energy (negative, Ry)
+    REAL(8) :: E_EXC_RY                ! excitation energy from ground (Ry)
+    REAL(8) :: LOG_E_MIN               ! log10 of first photon-energy point
+    REAL(8) :: LOG_E_STRIDE            ! log10 stride between points
+    REAL(8), ALLOCATABLE :: E_PHOTON_RY(:)   ! photon energy grid (Ry)
+    REAL(8), ALLOCATABLE :: SIGMA_MB(:)      ! cross section (Mb = 1e-18 cm^2)
+  END TYPE TOPBASE_LEVEL
+
+  TYPE :: TOPBASE_SPECIES
+    CHARACTER(len=16) :: LABEL        ! e.g. "CaI", "FeII"
+    INTEGER :: XNFP_INDEX             ! XNFP/XNF slot for this species
+    INTEGER :: NLEVELS                ! # levels
+    REAL(8) :: E_IP_NIST_RY           ! NIST ionization potential (Ry)
+    REAL(8) :: E_SHIFT_RY             ! applied E shift = IP_NIST - |E_ground_raw|
+    TYPE(TOPBASE_LEVEL), ALLOCATABLE :: LEVELS(:)
+  END TYPE TOPBASE_SPECIES
+
+  INTEGER, PARAMETER :: N_TB_SPECIES_MAX = 30
+  TYPE(TOPBASE_SPECIES) :: TB_SPECIES(N_TB_SPECIES_MAX)
+  INTEGER :: N_TB_SPECIES = 0
+  LOGICAL :: TB_INITIALIZED = .FALSE.
+
+  ! Per-depth Boltzmann cache for MBF_TOPBASE.  Indexed by depth J and
+  ! species S; each slot holds sum over levels of g_i * exp(-E_exc_i/kT_J)
+  ! times the per-level sigma(nu).  Rebuilt when either T(J) or FREQ
+  ! changes.  We use two cache levels: Boltzmann factors alone (cached
+  ! until T(J) changes) plus sigma at the current FREQ (recomputed every
+  ! frequency call).
+  REAL(8), ALLOCATABLE :: TB_BOLTZ(:,:)    ! (level_flat_idx, J)
+  REAL(8), ALLOCATABLE :: TB_T_LAST(:)     ! last T(J) at which TB_BOLTZ was built
+  INTEGER, ALLOCATABLE :: TB_LEVEL_SPECIES(:)  ! flat -> species index
+  INTEGER :: N_TB_LEVELS_TOTAL = 0
+
+  ! Filtered hotop.dat data (excludes species covered by TOPbase)
+  INTEGER :: N_HIGH_ION_EDGES = 0
+  REAL(8), ALLOCATABLE :: HI_EDGE_DATA(:,:)   ! (NPAR=7, N_HIGH_ION_EDGES)
+  LOGICAL :: HIGH_ION_INITIALIZED = .FALSE.
 
   ! --- Ionization potentials ---
   ! COMMON /POTION/
@@ -4108,20 +4158,19 @@ SUBROUTINE READIN(MODE)
     IF (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
     CHARGESQ(J) = XNE(J)
   END DO
-  WRITE(6, '(/" H1",I2," H2PLUS",I2," HMINUS",I2," HRAY",I2,' // &
-    '" HE1",I2," HE2",I2," HEMINUS",I2," HERAY",I2," COOL",I2,' // &
-    '" LUKE",I2/" HOT",I2," ELECTRON",I2," H2RAY",I2," HLINES",' // &
-    'I2," LINES",I2," LINESCAT",I2," XLINES",I2," XLSCAT",I2,' // &
-    '" XCONT",I2," XSCAT",I2)') IFOP
   WRITE(6, '(" IFCORR",I2,"  IFPRES",I2,"  IFSURF",I2,' // &
     '"  IFSCAT",I2,"  IFCONV",I2,"  MIXLTH",F6.2,"  IFMOL",I2/' // &
     '" IFTURB",I2,"  TRBFDG",F6.2,"  TRBPOW",F6.2,' // &
     '"  TRBSND",F6.2,"  TRBCON",F6.2)') &
     IFCORR, IFPRES, IFSURF, IFSCAT, IFCONV, MIXLTH, IFMOL, &
     IFTURB, TRBFDG, TRBPOW, TRBSND, TRBCON
-  WRITE(6, *)
-  WRITE(6, '(" NUMITS",I3,"  IFPRNT",*(I2))') NUMITS, IFPRNT(1:NUMITS)
-  WRITE(6, '(10X,"  IFPNCH",*(I2))') IFPNCH(1:NUMITS)
+
+  IF (IFSYNTHE.EQ.0) THEN
+     !only write if running atlas12
+     WRITE(6, *)
+     WRITE(6, '(" NUMITS",I3,"  IFPRNT",*(I2))') NUMITS, IFPRNT(1:NUMITS)
+     WRITE(6, '(10X,"  IFPNCH",*(I2))') IFPNCH(1:NUMITS)
+  ENDIF
 
   ! Auto-generate title from mixing length
   BLOCK
@@ -7406,23 +7455,7 @@ END SUBROUTINE COMPUTE_PTURB
 ! At the current frequency (set by BNU, FREQ, etc. before calling KAPP),
 ! this routine:
 !   1. Zeros all per-source opacity arrays
-!   2. Calls each enabled opacity source (controlled by IFOP flags):
-!        IFOP(1)  HOP     — hydrogen bound-free and free-free
-!        IFOP(2)  H2PLOP  — H2+ opacity
-!        IFOP(3)  HMINOP  — H- bound-free and free-free
-!        IFOP(4)  HRAYOP  — hydrogen Rayleigh scattering
-!        IFOP(5)  HE1OP   — neutral helium bound-free
-!        IFOP(6)  HE2OP   — ionized helium bound-free and free-free
-!        IFOP(7)  HEMIOP  — He- free-free
-!        IFOP(8)  HERAOP  — helium Rayleigh scattering
-!        IFOP(9)  CONT_METAL_OPACITY_LEGACY — all metal/molecular/CIA continuum
-!                 (consolidates former COOLOP + WARMOP + HOTOP)
-!        IFOP(10) unused (was WARMOP, now part of IFOP(9); kept for back-compat)
-!        IFOP(11) unused (was HOTOP,  now part of IFOP(9); kept for back-compat)
-!        IFOP(12) ELECOP  — electron (Thomson) scattering
-!        IFOP(13) H2RAOP  — H2 Rayleigh scattering
-!        IFOP(14) HLINOP  — hydrogen line opacity (Stark broadened)
-!        IFOP(19) XCONOP  — extra continuum opacity (user-defined)
+!   2. Calls each opacity source
 !   3. Assembles the total true absorption (ACONT, ALINE), scattering
 !      (SIGMAC, SIGMAL), and source functions (SCONT, SLINE) from
 !      the source-weighted contributions.
@@ -7437,10 +7470,8 @@ SUBROUTINE KAPP
 
   IMPLICIT NONE
 
-  INTEGER :: J
-  REAL(8)  :: A         ! sum of non-H, non-Hminus, non-extra continuum absorption
-
-  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING KAPP'
+  INTEGER  :: J
+  REAL(8)  :: A ! sum of non-H, non-Hminus, non-extra continuum absorption
 
   ! Zero all per-source opacity arrays
   DO J = 1, NRHOX
@@ -7464,7 +7495,6 @@ SUBROUTINE KAPP
     SIGLIN(J) = 0.0D0
     AXLINE(J) = 0.0D0
     SIGXL(J)  = 0.0D0
-    AXCONT(J) = 0.0D0
     SIGX(J)   = 0.0D0
     SHYD(J)   = 0.0D0
     SHMIN(J)  = 0.0D0
@@ -7477,24 +7507,23 @@ SUBROUTINE KAPP
     SC1(J)    = 0.0D0
   END DO
 
-  ! Call each enabled opacity source
-  IF (IFOP(1)  == 1) CALL HOP
-  IF (IFOP(2)  == 1) CALL H2PLOP
-  IF (IFOP(3)  == 1) CALL HMINOP
-  IF (IFOP(4)  == 1) CALL HRAYOP
-  IF (IFOP(5)  == 1) CALL HE1OP
-  IF (IFOP(6)  == 1) CALL HE2OP
-  IF (IFOP(7)  == 1) CALL HEMIOP
-  IF (IFOP(8)  == 1) CALL HERAOP
-  IF (IFOP(9)  == 1) CALL CONT_METAL_OPACITY_LEGACY
-  ! IFOP(10) and IFOP(11) are retained in the flag array for backward
-  ! compatibility with existing model decks but are no longer dispatched;
-  ! the content of the former WARMOP and HOTOP is now inside
-  ! CONT_METAL_OPACITY_LEGACY along with the former COOLOP.
-  IF (IFOP(12) == 1) CALL ELECOP
-  IF (IFOP(13) == 1) CALL H2RAOP
-  IF (IFOP(14) == 1) CALL HLINOP
-  IF (IFOP(19) == 1) CALL XCONOP
+  ! Call each opacity source
+  CALL HOP
+  CALL H2PLOP
+  CALL HMINOP
+  CALL HRAYOP
+  CALL HE1OP
+  CALL HE2OP
+  CALL HEMIOP
+  CALL HERAOP
+  IF (USE_TOPBASE_MBF) THEN
+    CALL CONT_METAL_OPACITY_TOPBASE
+  ELSE
+    CALL CONT_METAL_OPACITY_LEGACY
+  ENDIF
+  CALL ELECOP
+  CALL H2RAOP
+  CALL HLINOP
 
   ! Assemble totals: true absorption, source function, and scattering.
   !
@@ -7530,13 +7559,13 @@ SUBROUTINE KAPP
     A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) + ACONT_METAL(J)
 
     ! Total continuum absorption
-    ACONT(J) = A + AHYD(J) + AHMIN(J) + AXCONT(J)
+    ACONT(J) = A + AHYD(J) + AHMIN(J)
 
     ! Continuum source function (atlas12.for form)
     SCONT(J) = BNU(J)
     IF (ACONT(J) > 0.0D0) THEN
       SCONT(J) = (A * BNU(J) + AHYD(J) * SHYD(J) &
-               + AHMIN(J) * SHMIN(J) + AXCONT(J) * SXCONT(J)) / ACONT(J)
+               + AHMIN(J) * SHMIN(J)) / ACONT(J)
     END IF
 
     ! Line absorption and source function
@@ -10074,6 +10103,571 @@ SUBROUTINE CONT_METAL_OPACITY_LEGACY
 END SUBROUTINE CONT_METAL_OPACITY_LEGACY
 
 !=========================================================================
+! SUBROUTINE CONT_METAL_OPACITY_TOPBASE
+!
+! Consolidated continuum-metal opacity from TOPbase photoionization cross
+! sections (Opacity Project; Seaton et al. 1994) as processed by Allende
+! Prieto et al. (2003, ApJS 147, 363) into uniform 3%-log-spaced grids
+! with resonances averaged.  Covers 30 species (neutrals and first ions
+! of Li, Be, B, C, N, O, F, Ne, Na, Mg, Al, Si, S, Ar, Ca).
+!
+! Higher ionization stages (C III+, N III+, O III+, Ne III+) and the
+! Coulomb free-free for I-V stages come from MBF_HIGH_ION (a filtered
+! subset of hotop.dat, excluding species already covered by TOPbase).
+! Fe I retains the legacy FE1OP routine (no Iron Project data here);
+! Fe II is a known gap.  H and He are unchanged (HOP/HE1OP/HE2OP).
+!
+! Output: ACONT_METAL(J) in cm^2/g, stimulated-emission corrected.
+!
+! Known limitation: the .xs files identify levels by LS term (ISLP)
+! without resolving J.  Barklem & Collet (2016) partition functions
+! used in Saha DO resolve J, so per-species opacity carries a factor
+! U_TB/U_BC that is within a few percent for most species but reaches
+! ~13% for Ar II, ~7% for Ne II, ~6% for Si II.  J-resolved data would
+! be needed for precision work on those species.
+!=========================================================================
+
+SUBROUTINE CONT_METAL_OPACITY_TOPBASE
+
+  IMPLICIT NONE
+  INTEGER :: J
+
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING CONT_METAL_OPACITY_TOPBASE'
+
+  ! One-time initialization of TOPbase data from data/mbf/*.xs
+  IF (.NOT. TB_INITIALIZED) CALL INIT_MBF_TOPBASE
+
+  ! Zero output
+  DO J = 1, NRHOX
+    ACONT_METAL(J) = 0.0D0
+  END DO
+
+  !--- TOPbase metal bound-free (28 species) -----------------------------
+  CALL MBF_TOPBASE
+
+  !--- High-ionization bound-free + Coulomb free-free from hotop.dat -----
+  CALL MBF_HIGH_ION
+
+  !--- Fe I from legacy FE1OP (tracked exception) ------------------------
+  CALL FE1OP
+  DO J = 1, NRHOX
+    ACONT_METAL(J) = ACONT_METAL(J) + AFE1(J)
+  END DO
+
+  RETURN
+
+END SUBROUTINE CONT_METAL_OPACITY_TOPBASE
+
+!=========================================================================
+! SUBROUTINE MBF_TOPBASE
+!
+! Runtime level-by-level sum for the 28 TOPbase species.
+!
+! For each species s with population n_s and partition function U_s
+! (implicit in XNFP = n_s / U_s) the photoionization opacity is:
+!
+!     kappa_s(nu, T, rho) = XNFP(s) * sum_i [ g_i exp(-E_exc_i/kT) sigma_i(nu) ]
+!                           * STIM / RHO
+!
+! The partition function U_s cancels between the Saha population ratio
+! (implicit in XNFP) and the Boltzmann weighting of the level sum,
+! leaving the level sum unnormalized.
+!
+! Two cache levels:
+!   1. Boltzmann factors g_i exp(-E_exc_i/kT_J) are recomputed at each
+!      depth J only when T(J) changes from TB_T_LAST(J).
+!   2. Cross sections sigma_i(nu) are recomputed at every frequency call
+!      via log-grid interpolation on each level's native 3% log grid.
+!=========================================================================
+
+SUBROUTINE MBF_TOPBASE
+
+  IMPLICIT NONE
+
+  INTEGER :: J, IS, IL, IFLAT
+  REAL(8) :: TJ, KT_RY, EVOLT_RY, SIGMA_NU, SUM_S, SIG_PER_ATOM
+  REAL(8) :: LOG_E, XI
+  INTEGER :: K
+  REAL(8), PARAMETER :: RY_EV = 13.6056923D0          ! 1 Ry in eV
+  REAL(8), PARAMETER :: RY_HZ = 3.289842D15           ! 1 Ry in Hz
+  REAL(8) :: EPHOTON_RY   ! current FREQ in Ry
+
+  ! --- Photon energy in Ry for current FREQ ---
+  EPHOTON_RY = FREQ / RY_HZ
+
+  ! --- Rebuild Boltzmann cache per depth if T has changed ---
+  ! kT in Ry: kT[eV] = T[K] * 8.617e-5;  kT[Ry] = kT[eV] / 13.6057
+  DO J = 1, NRHOX
+    IF (abs(T(J) - TB_T_LAST(J)) < 1.0D-6) CYCLE
+    TJ = T(J)
+    KT_RY = TJ * 8.617333D-5 / RY_EV
+    ! Walk species and levels in flat order, matching TB_LEVEL_SPECIES layout
+    IFLAT = 0
+    DO IS = 1, N_TB_SPECIES
+      DO IL = 1, TB_SPECIES(IS)%NLEVELS
+        IFLAT = IFLAT + 1
+        TB_BOLTZ(IFLAT, J) = dble(TB_SPECIES(IS)%LEVELS(IL)%G_STAT) &
+          * exp(-TB_SPECIES(IS)%LEVELS(IL)%E_EXC_RY / KT_RY)
+      END DO
+    END DO
+    TB_T_LAST(J) = TJ
+  END DO
+
+  ! --- Sum per species per depth ---
+  IFLAT = 0
+  DO IS = 1, N_TB_SPECIES
+    ! Skip if species has no levels or FREQ below the smallest threshold
+    ! (we still iterate levels individually; the interpolation handles
+    ! below-threshold by returning zero.)
+    DO J = 1, NRHOX
+      SUM_S = 0.0D0
+      ! Walk levels of this species
+      DO IL = 1, TB_SPECIES(IS)%NLEVELS
+        ! Threshold test: photon energy must clear |E_bind| for this level
+        IF (EPHOTON_RY < abs(TB_SPECIES(IS)%LEVELS(IL)%E_BIND_RY)) CYCLE
+
+        ! Log-grid interpolation of sigma(nu) on this level's native grid
+        LOG_E = log10(EPHOTON_RY)
+        XI = (LOG_E - TB_SPECIES(IS)%LEVELS(IL)%LOG_E_MIN) &
+             / TB_SPECIES(IS)%LEVELS(IL)%LOG_E_STRIDE
+        K = int(XI) + 1
+        IF (K < 1) CYCLE
+        IF (K >= TB_SPECIES(IS)%LEVELS(IL)%NP) THEN
+          ! Above grid - use Kramers tail: sigma ~ (nu_thr/nu)^3
+          SIGMA_NU = TB_SPECIES(IS)%LEVELS(IL)%SIGMA_MB(TB_SPECIES(IS)%LEVELS(IL)%NP) &
+            * (TB_SPECIES(IS)%LEVELS(IL)%E_PHOTON_RY(TB_SPECIES(IS)%LEVELS(IL)%NP) &
+               / EPHOTON_RY)**3
+        ELSE
+          SIGMA_NU = TB_SPECIES(IS)%LEVELS(IL)%SIGMA_MB(K) &
+            + (TB_SPECIES(IS)%LEVELS(IL)%SIGMA_MB(K+1) &
+               - TB_SPECIES(IS)%LEVELS(IL)%SIGMA_MB(K)) * (XI - dble(K-1))
+        END IF
+
+        ! Convert Mb to cm^2
+        SIGMA_NU = SIGMA_NU * 1.0D-18
+
+        ! Accumulate: g_i exp(-E/kT) * sigma
+        SUM_S = SUM_S + TB_BOLTZ(IFLAT + IL, J) * SIGMA_NU
+      END DO
+
+      ! Multiply by XNFP and stim/rho, accumulate
+      ACONT_METAL(J) = ACONT_METAL(J) &
+        + XNFP(J, TB_SPECIES(IS)%XNFP_INDEX) * SUM_S * STIM(J) / RHO(J)
+    END DO
+    IFLAT = IFLAT + TB_SPECIES(IS)%NLEVELS
+  END DO
+
+  RETURN
+
+END SUBROUTINE MBF_TOPBASE
+
+!=========================================================================
+! SUBROUTINE MBF_HIGH_ION
+!
+! High-ionization bound-free (C III/IV, N III-V, O III-VI, Ne III-VI)
+! from filtered hotop.dat, plus Coulomb free-free for C/N/O/Ne/Mg/Si/S/Fe
+! ions (stages I-V).  On first call, hotop.dat is read and edges whose
+! species_id is already covered by TOPbase (IDs 22, 29, 37, 55, 56) are
+! skipped, leaving ~40 of the original 60 edges in HI_EDGE_DATA.
+!=========================================================================
+
+SUBROUTINE MBF_HIGH_ION
+
+  IMPLICIT NONE
+  INTEGER, PARAMETER :: NPAR = 7
+  INTEGER, PARAMETER :: N_TB_COV = 5
+  INTEGER, PARAMETER :: TB_COVERED(N_TB_COV) = (/22, 29, 37, 55, 56/)
+
+  REAL(8) :: AHOT_TMP(kw)
+  REAL(8) :: FREE, XSECT, XX, FRATIO
+  REAL(8) :: ROW(NPAR)
+  INTEGER :: I, J, ID, IREAD, IKEEP
+  CHARACTER(256) :: LINE
+  LOGICAL :: SKIP
+
+  !--- First-call initialization of filtered hotop.dat ---
+  IF (.NOT. HIGH_ION_INITIALIZED) THEN
+    OPEN(UNIT=89, FILE=trim(DATADIR)//'hotop.dat', STATUS='OLD', ACTION='READ')
+    DO
+      READ(89, '(A)') LINE
+      IF (LINE(1:1) /= '#') THEN
+        BACKSPACE(89)
+        EXIT
+      END IF
+    END DO
+    ! First pass: count how many edges we keep
+    IKEEP = 0
+    DO IREAD = 1, 60
+      READ(89, *) ROW
+      ID = int(ROW(7))
+      SKIP = .FALSE.
+      DO I = 1, N_TB_COV
+        IF (ID == TB_COVERED(I)) SKIP = .TRUE.
+      END DO
+      IF (.NOT. SKIP) IKEEP = IKEEP + 1
+    END DO
+    N_HIGH_ION_EDGES = IKEEP
+    ALLOCATE(HI_EDGE_DATA(NPAR, N_HIGH_ION_EDGES))
+
+    ! Second pass: actually store them
+    REWIND(89)
+    DO
+      READ(89, '(A)') LINE
+      IF (LINE(1:1) /= '#') THEN
+        BACKSPACE(89)
+        EXIT
+      END IF
+    END DO
+    IKEEP = 0
+    DO IREAD = 1, 60
+      READ(89, *) ROW
+      ID = int(ROW(7))
+      SKIP = .FALSE.
+      DO I = 1, N_TB_COV
+        IF (ID == TB_COVERED(I)) SKIP = .TRUE.
+      END DO
+      IF (.NOT. SKIP) THEN
+        IKEEP = IKEEP + 1
+        HI_EDGE_DATA(:, IKEEP) = ROW
+      END IF
+    END DO
+    CLOSE(89)
+    HIGH_ION_INITIALIZED = .TRUE.
+    IF (IDEBUG == 1) THEN
+      WRITE(6,'(A,I3,A,I3,A)') ' MBF_HIGH_ION: kept ', N_HIGH_ION_EDGES, &
+        ' of 60 hotop.dat edges after filtering TOPbase-covered species'
+    END IF
+  END IF
+
+  !--- Coulomb free-free: C/N/O/Ne/Mg/Si/S/Fe ions (stages I-V) ---
+  DO J = 1, NRHOX
+    FREE = COULFF(J,1) * 1.0D0                                           &
+            * (XNF(J,22) + XNF(J,29) + XNF(J,37) + XNF(J,56)             &
+             + XNF(J,79) + XNF(J,106) + XNF(J,137) + XNF(J,352))         &
+         + COULFF(J,2) * 4.0D0                                           &
+            * (XNF(J,23) + XNF(J,30) + XNF(J,38) + XNF(J,57)             &
+             + XNF(J,80) + XNF(J,107) + XNF(J,138) + XNF(J,353))         &
+         + COULFF(J,3) * 9.0D0                                           &
+            * (XNF(J,24) + XNF(J,31) + XNF(J,39) + XNF(J,58)             &
+             + XNF(J,81) + XNF(J,108) + XNF(J,139) + XNF(J,354))         &
+         + COULFF(J,4) * 16.0D0                                          &
+            * (XNF(J,25) + XNF(J,32) + XNF(J,40) + XNF(J,59)             &
+             + XNF(J,82) + XNF(J,109) + XNF(J,140) + XNF(J,355))         &
+         + COULFF(J,5) * 25.0D0                                          &
+            * (XNF(J,26) + XNF(J,33) + XNF(J,41) + XNF(J,60)             &
+             + XNF(J,83) + XNF(J,110) + XNF(J,141) + XNF(J,356))
+    AHOT_TMP(J) = FREE * COEFF_FF / (FREQ * FREQ * FREQ) * XNE(J) / sqrt(T(J))
+  END DO
+
+  !--- Filtered bound-free edges (modified Seaton, with "< 1%" skip) ---
+  DO I = 1, N_HIGH_ION_EDGES
+    IF (FREQ < HI_EDGE_DATA(1, I)) CYCLE
+    FRATIO = HI_EDGE_DATA(1, I) / FREQ
+    XSECT = HI_EDGE_DATA(2, I) * (HI_EDGE_DATA(3, I) + FRATIO &
+          - HI_EDGE_DATA(3, I) * FRATIO)                      &
+          * sqrt(FRATIO ** int(HI_EDGE_DATA(4, I)))
+    ID = int(HI_EDGE_DATA(7, I))
+    DO J = 1, NRHOX
+      XX = XSECT * XNFP(J, ID) * HI_EDGE_DATA(5, I)
+      IF (XX > AHOT_TMP(J) / 100.0D0) THEN
+        AHOT_TMP(J) = AHOT_TMP(J) + XX / exp(HI_EDGE_DATA(6, I) / TKEV(J))
+      END IF
+    END DO
+  END DO
+
+  !--- Apply STIM/RHO and accumulate into ACONT_METAL ---
+  DO J = 1, NRHOX
+    ACONT_METAL(J) = ACONT_METAL(J) + AHOT_TMP(J) * STIM(J) / RHO(J)
+  END DO
+
+  RETURN
+
+END SUBROUTINE MBF_HIGH_ION
+
+!=========================================================================
+! SUBROUTINE INIT_MBF_TOPBASE
+!
+! First-call setup for the TOPbase/Allende-Prieto metal bound-free.
+!
+! Actions:
+!   1. Define the species table (filename, XNFP index, NIST IP).
+!   2. For each species, read data/mbf/<sym><ion>.xs via READ_XS_FILE.
+!   3. Compute NIST shift = IP_NIST_Ry - |E_bind_ground_raw|, apply to
+!      every level's E_BIND and to every level's photon energy grid.
+!   4. Compute E_EXC_i = |E_bind_ground_shifted| - |E_bind_i_shifted|
+!      relative to the ground-state threshold.
+!   5. Precompute LOG_E_MIN, LOG_E_STRIDE for fast log-grid lookup.
+!   6. Decode G_STAT from ISLP.
+!   7. Allocate TB_BOLTZ cache.
+!   8. If IDEBUG==1, print a PF comparison vs Barklem & Collet.
+!=========================================================================
+
+SUBROUTINE INIT_MBF_TOPBASE
+
+  IMPLICIT NONE
+
+  ! --- Species table (30 entries) ---
+  ! Hardcoded arrays: filenames, XNFP indices, NIST IPs in Ry
+  INTEGER, PARAMETER :: NSPEC = 30
+  CHARACTER(len=16), PARAMETER :: SPEC_LABEL(NSPEC) = (/ &
+    'LiI  ', 'LiII ', 'BeI  ', 'BeII ', 'BI   ', 'BII  ',                &
+    'CI   ', 'CII  ', 'NI   ', 'NII  ', 'OI   ', 'OII  ',                &
+    'FI   ', 'FII  ', 'NeI  ', 'NeII ', 'NaI  ', 'NaII ',                &
+    'MgI  ', 'MgII ', 'AlI  ', 'AlII ', 'SiI  ', 'SiII ',                &
+    'SI   ', 'SII  ', 'ArI  ', 'ArII ', 'CaI  ', 'CaII ' /)
+  CHARACTER(len=8), PARAMETER :: FN(NSPEC) = (/ &
+    'li1.xs  ', 'li2.xs  ', 'be1.xs  ', 'be2.xs  ', 'b1.xs   ', 'b2.xs   ',  &
+    'c1.xs   ', 'c2.xs   ', 'n1.xs   ', 'n2.xs   ', 'o1.xs   ', 'o2.xs   ',  &
+    'f1.xs   ', 'f2.xs   ', 'ne1.xs  ', 'ne2.xs  ', 'na1.xs  ', 'na2.xs  ',  &
+    'mg1.xs  ', 'mg2.xs  ', 'al1.xs  ', 'al2.xs  ', 'si1.xs  ', 'si2.xs  ',  &
+    's1.xs   ', 's2.xs   ', 'ar1.xs  ', 'ar2.xs  ', 'ca1.xs  ', 'ca2.xs  ' /)
+  INTEGER, PARAMETER :: XNFP_IDX(NSPEC) = (/ &
+      6,   7,  10,  11,  15,  16,   &    ! Li I/II, Be I/II, B I/II
+     21,  22,  28,  29,  36,  37,   &    ! C I/II, N I/II, O I/II
+     45,  46,  55,  56,  66,  67,   &    ! F I/II, Ne I/II, Na I/II
+     78,  79,  91,  92, 105, 106,   &    ! Mg I/II, Al I/II, Si I/II
+    136, 137, 171, 172, 210, 211 /)      ! S I/II, Ar I/II, Ca I/II
+  ! Z and ionization stage, aligned with SPEC_LABEL order (for PF diagnostic)
+  INTEGER, PARAMETER :: SPEC_Z(NSPEC) = (/ &
+      3,  3,   4,  4,   5,  5,          &    ! Li, Be, B
+      6,  6,   7,  7,   8,  8,          &    ! C, N, O
+      9,  9,  10, 10,  11, 11,          &    ! F, Ne, Na
+     12, 12,  13, 13,  14, 14,          &    ! Mg, Al, Si
+     16, 16,  18, 18,  20, 20 /)             ! S, Ar, Ca
+  INTEGER, PARAMETER :: SPEC_ION(NSPEC) = (/ &
+      1,  2,   1,  2,   1,  2,          &
+      1,  2,   1,  2,   1,  2,          &
+      1,  2,   1,  2,   1,  2,          &
+      1,  2,   1,  2,   1,  2,          &
+      1,  2,   1,  2,   1,  2 /)
+  REAL(8), PARAMETER :: IP_EV(NSPEC) = (/ &
+       5.3917D0, 75.6400D0,  9.3227D0, 18.2112D0,  8.2980D0, 25.1548D0,    &
+      11.2603D0, 24.3833D0, 14.5341D0, 29.6013D0, 13.6181D0, 35.1211D0,    &
+      17.4228D0, 34.9708D0, 21.5645D0, 40.9630D0,  5.1391D0, 47.2864D0,    &
+       7.6462D0, 15.0353D0,  5.9858D0, 18.8286D0,  8.1517D0, 16.3459D0,    &
+      10.3600D0, 23.3379D0, 15.7596D0, 27.6297D0,  6.1132D0, 11.8717D0 /)
+  REAL(8), PARAMETER :: RY_EV = 13.6056923D0
+
+  INTEGER :: IS, IL, K, IP_MIN
+  REAL(8) :: E_BIND_MIN_RAW, IP_RY, SHIFT_RY
+  REAL(8) :: TCHECK(3) = (/ 5000.0D0, 8000.0D0, 12000.0D0 /)
+  REAL(8) :: U_TB, U_BC_VAL, KT_RY
+  INTEGER :: IS_NLEVELS, ITC, IZ, IZ_IPION
+  CHARACTER(len=256) :: PATH
+
+  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING INIT_MBF_TOPBASE'
+
+  ! --- Read each species' .xs file ---
+  N_TB_SPECIES = NSPEC
+  DO IS = 1, NSPEC
+    TB_SPECIES(IS)%LABEL = SPEC_LABEL(IS)
+    TB_SPECIES(IS)%XNFP_INDEX = XNFP_IDX(IS)
+    TB_SPECIES(IS)%E_IP_NIST_RY = IP_EV(IS) / RY_EV
+
+    PATH = trim(DATADIR) // 'mbf/' // trim(FN(IS))
+    CALL READ_XS_FILE(trim(PATH), TB_SPECIES(IS)%LEVELS, IS_NLEVELS)
+    TB_SPECIES(IS)%NLEVELS = IS_NLEVELS
+
+    ! Identify ground state: most negative E_BIND
+    E_BIND_MIN_RAW = TB_SPECIES(IS)%LEVELS(1)%E_BIND_RY
+    IP_MIN = 1
+    DO IL = 2, IS_NLEVELS
+      IF (TB_SPECIES(IS)%LEVELS(IL)%E_BIND_RY < E_BIND_MIN_RAW) THEN
+        E_BIND_MIN_RAW = TB_SPECIES(IS)%LEVELS(IL)%E_BIND_RY
+        IP_MIN = IL
+      END IF
+    END DO
+
+    ! NIST shift: we want the ground state to be at -IP_NIST exactly.
+    ! raw ground E_BIND = E_BIND_MIN_RAW (negative).  Shift so that
+    ! shifted ground = -IP_NIST_RY.  SHIFT = -IP_NIST_RY - E_BIND_MIN_RAW.
+    ! Apply this shift (additive) to every level's E_BIND.
+    ! We do NOT shift photon energies: the cross-section sigma(E_photon)
+    ! tables are with respect to absolute photon energy, which doesn't
+    ! move; only the level threshold moves.
+    IP_RY = TB_SPECIES(IS)%E_IP_NIST_RY
+    SHIFT_RY = -IP_RY - E_BIND_MIN_RAW
+    TB_SPECIES(IS)%E_SHIFT_RY = SHIFT_RY
+
+    DO IL = 1, IS_NLEVELS
+      TB_SPECIES(IS)%LEVELS(IL)%E_BIND_RY = &
+        TB_SPECIES(IS)%LEVELS(IL)%E_BIND_RY + SHIFT_RY
+      ! Excitation energy: relative to ground = |E_BIND_ground| - |E_BIND_this|
+      !                  = -E_BIND_ground - (-E_BIND_this)
+      !                  = E_BIND_this - E_BIND_ground   (both negative)
+      !                  = (E_BIND_this + SHIFT) - (E_BIND_ground + SHIFT)
+      !                  = E_BIND_this_raw - E_BIND_ground_raw  (SHIFT cancels)
+      ! After shift, E_BIND_ground = -IP_NIST_RY.
+      TB_SPECIES(IS)%LEVELS(IL)%E_EXC_RY = &
+        TB_SPECIES(IS)%LEVELS(IL)%E_BIND_RY - (-IP_RY)
+
+      ! Decode G_STAT from ISLP: ISLP = 100*(2S+1) + 10*L + parity
+      ! g_stat = (2S+1)*(2L+1)
+      K = TB_SPECIES(IS)%LEVELS(IL)%ISLP
+      TB_SPECIES(IS)%LEVELS(IL)%G_STAT = (K / 100) * (2 * mod(K / 10, 10) + 1)
+
+      ! Precompute log10 grid parameters for fast interpolation
+      TB_SPECIES(IS)%LEVELS(IL)%LOG_E_MIN = &
+        log10(TB_SPECIES(IS)%LEVELS(IL)%E_PHOTON_RY(1))
+      IF (TB_SPECIES(IS)%LEVELS(IL)%NP >= 2) THEN
+        TB_SPECIES(IS)%LEVELS(IL)%LOG_E_STRIDE = &
+          log10(TB_SPECIES(IS)%LEVELS(IL)%E_PHOTON_RY(2)) &
+          - TB_SPECIES(IS)%LEVELS(IL)%LOG_E_MIN
+      ELSE
+        TB_SPECIES(IS)%LEVELS(IL)%LOG_E_STRIDE = 1.0D-3
+      END IF
+    END DO
+
+    IF (IDEBUG == 1) THEN
+      WRITE(6,'(A,A,I3,A,F8.4,A,F8.4,A)') ' INIT_MBF_TOPBASE: ',          &
+        trim(TB_SPECIES(IS)%LABEL), TB_SPECIES(IS)%NLEVELS,                 &
+        ' levels, IP_NIST=', IP_EV(IS), ' eV, shift=',                      &
+        SHIFT_RY * RY_EV, ' eV'
+    END IF
+  END DO
+
+  ! --- Allocate Boltzmann cache ---
+  N_TB_LEVELS_TOTAL = 0
+  DO IS = 1, N_TB_SPECIES
+    N_TB_LEVELS_TOTAL = N_TB_LEVELS_TOTAL + TB_SPECIES(IS)%NLEVELS
+  END DO
+  ALLOCATE(TB_BOLTZ(N_TB_LEVELS_TOTAL, kw))
+  ALLOCATE(TB_T_LAST(kw))
+  ALLOCATE(TB_LEVEL_SPECIES(N_TB_LEVELS_TOTAL))
+  TB_BOLTZ = 0.0D0
+  TB_T_LAST = -1.0D0   ! force first-call rebuild
+  K = 0
+  DO IS = 1, N_TB_SPECIES
+    DO IL = 1, TB_SPECIES(IS)%NLEVELS
+      K = K + 1
+      TB_LEVEL_SPECIES(K) = IS
+    END DO
+  END DO
+
+  ! --- Diagnostic: compare TOPbase-derived U(T) vs Barklem & Collet ---
+  IF (IDEBUG == 1) THEN
+    WRITE(6,'(A)') ' INIT_MBF_TOPBASE: U(T) comparison (TOPbase / B&C):'
+    WRITE(6,'(A)') &
+      '   Species   Z  ION        T=5000        T=8000       T=12000'
+    DO IS = 1, N_TB_SPECIES
+      IZ = SPEC_Z(IS)
+      IZ_IPION = SPEC_ION(IS)
+      WRITE(6,'(A11,I4,I5)', advance='no') &
+        '  '//trim(TB_SPECIES(IS)%LABEL), IZ, IZ_IPION
+      DO ITC = 1, 3
+        KT_RY = TCHECK(ITC) * 8.617333D-5 / RY_EV
+        U_TB = 0.0D0
+        DO IL = 1, TB_SPECIES(IS)%NLEVELS
+          U_TB = U_TB + dble(TB_SPECIES(IS)%LEVELS(IL)%G_STAT) &
+               * exp(-TB_SPECIES(IS)%LEVELS(IL)%E_EXC_RY / KT_RY)
+        END DO
+        IF (IZ > 0 .AND. IZ_IPION > 0 .AND. IZ_IPION <= 3) THEN
+          U_BC_VAL = U_BC(IZ, IZ_IPION, TCHECK(ITC))
+          IF (U_BC_VAL > 0.0D0) THEN
+            WRITE(6,'(F14.4)', advance='no') U_TB / U_BC_VAL
+          ELSE
+            WRITE(6,'(A14)', advance='no') '         --'
+          END IF
+        ELSE
+          WRITE(6,'(A14)', advance='no') '         --'
+        END IF
+      END DO
+      WRITE(6,'(A)') ''
+    END DO
+  END IF
+
+  TB_INITIALIZED = .TRUE.
+
+  RETURN
+
+END SUBROUTINE INIT_MBF_TOPBASE
+
+!=========================================================================
+! SUBROUTINE READ_XS_FILE
+!
+! Parse one Allende-Prieto .xs file into an array of TOPBASE_LEVEL.
+!
+! File format:
+!   5-line header (with '===' banner)
+!   per level:
+!     header line: I NZ NE ISLP ILV  E(RYD)  NP
+!     NP data lines:  E_photon(Ry)  sigma(Mb)
+!
+! Returns LEVELS(1:NLEVELS_OUT) allocated.
+!=========================================================================
+
+SUBROUTINE READ_XS_FILE(FNAME, LEVELS, NLEVELS_OUT)
+
+  IMPLICIT NONE
+  CHARACTER(len=*), INTENT(IN)  :: FNAME
+  TYPE(TOPBASE_LEVEL), ALLOCATABLE, INTENT(OUT) :: LEVELS(:)
+  INTEGER, INTENT(OUT) :: NLEVELS_OUT
+
+  INTEGER, PARAMETER :: MAX_LEVELS = 500
+  TYPE(TOPBASE_LEVEL) :: TMP(MAX_LEVELS)
+  INTEGER :: LUN, IOS, II, NZ, NE, ISLP, ILV, NP, K
+  REAL(8) :: EBIND
+  CHARACTER(len=256) :: LINE
+  LOGICAL :: AT_LEVEL_HEADER
+
+  LUN = 89
+  OPEN(UNIT=LUN, FILE=FNAME, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+  IF (IOS /= 0) THEN
+    WRITE(6,*) 'READ_XS_FILE: cannot open ', trim(FNAME)
+    STOP 'READ_XS_FILE: missing file'
+  END IF
+
+  ! Skip header lines: read until first data-looking line, then backspace
+  AT_LEVEL_HEADER = .FALSE.
+  DO
+    READ(LUN, '(A)', IOSTAT=IOS) LINE
+    IF (IOS /= 0) EXIT
+    IF (LINE(1:1) == ' ' .AND. index(LINE, '=') == 0 .AND. &
+        index(LINE, 'I') == 0) THEN
+      BACKSPACE(LUN)
+      EXIT
+    END IF
+  END DO
+
+  ! Read level blocks until EOF
+  NLEVELS_OUT = 0
+  DO
+    READ(LUN, *, IOSTAT=IOS) II, NZ, NE, ISLP, ILV, EBIND, NP
+    IF (IOS /= 0) EXIT
+    NLEVELS_OUT = NLEVELS_OUT + 1
+    IF (NLEVELS_OUT > MAX_LEVELS) THEN
+      WRITE(6,*) 'READ_XS_FILE: level overflow in ', trim(FNAME)
+      STOP
+    END IF
+    TMP(NLEVELS_OUT)%ISLP = ISLP
+    TMP(NLEVELS_OUT)%ILV = ILV
+    TMP(NLEVELS_OUT)%E_BIND_RY = EBIND
+    TMP(NLEVELS_OUT)%NP = NP
+    ALLOCATE(TMP(NLEVELS_OUT)%E_PHOTON_RY(NP))
+    ALLOCATE(TMP(NLEVELS_OUT)%SIGMA_MB(NP))
+    DO K = 1, NP
+      READ(LUN, *) TMP(NLEVELS_OUT)%E_PHOTON_RY(K), TMP(NLEVELS_OUT)%SIGMA_MB(K)
+    END DO
+  END DO
+  CLOSE(LUN)
+
+  ! Pack into output array
+  ALLOCATE(LEVELS(NLEVELS_OUT))
+  DO II = 1, NLEVELS_OUT
+    LEVELS(II)%ISLP = TMP(II)%ISLP
+    LEVELS(II)%ILV = TMP(II)%ILV
+    LEVELS(II)%E_BIND_RY = TMP(II)%E_BIND_RY
+    LEVELS(II)%NP = TMP(II)%NP
+    CALL MOVE_ALLOC(TMP(II)%E_PHOTON_RY, LEVELS(II)%E_PHOTON_RY)
+    CALL MOVE_ALLOC(TMP(II)%SIGMA_MB,    LEVELS(II)%SIGMA_MB)
+  END DO
+
+  RETURN
+
+END SUBROUTINE READ_XS_FILE
+
+
+!=========================================================================
 ! SUBROUTINE C1OP
 !
 ! C I bound-free photoionization opacity.
@@ -12252,6 +12846,8 @@ END SUBROUTINE H2RAOP
 !=========================================================================
 ! SUBROUTINE HLINOP
 !
+! ***************** DEAD CODE *****************
+!
 ! Hydrogen line opacity using Stark-broadened profiles.
 !
 ! Computes the absorption coefficient AHLINE(J) and source function
@@ -13283,26 +13879,6 @@ SUBROUTINE LINOP1
 
 END SUBROUTINE LINOP1
 
-
-!=======================================================================
-! XCONOP
-!=======================================================================
-
-SUBROUTINE XCONOP
-
-  IMPLICIT NONE
-  INTEGER :: J
-
-  IF (IDEBUG == 1) WRITE(6,'(A)') ' RUNNING XCONOP'
-  ! Extra user-defined continuum opacity from tabulated Rosseland mean
-  ! Source function = (sigma/pi) * T^4 (Stefan-Boltzmann)
-  DO J = 1, NRHOX
-    AXCONT(J) = ROSSTAB(T(J), P(J), VTURB(J))
-    SXCONT(J) = SIGMA_SB / FOURPI * T(J)**4 * 4.0D0
-  END DO
-  RETURN
-
-END SUBROUTINE XCONOP
 
 !=========================================================================
 ! SUBROUTINE JOSH(IFSCAT, IFSURF)
@@ -14896,17 +15472,6 @@ SUBROUTINE XLINOP
 
   IF (IDEBUG == 1) WRITE(6, '(A)') ' RUNNING XLINOP'
   RATIOLG = log(1.0D0 + 1.0D0 / 2000000.0D0)
-
-  !---------------------------------------------------------------------
-  ! Zero XLINES if LINOP1 was not called
-  !---------------------------------------------------------------------
-  IF (IFOP(15) == 0) THEN
-    DO NU = 1, NUMNU
-      DO J = 1, NRHOX
-        XLINES(J, NU) = 0.0
-      END DO
-    END DO
-  END IF
 
   !---------------------------------------------------------------------
   ! Precompute depth-dependent quantities
