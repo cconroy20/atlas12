@@ -1186,6 +1186,10 @@ MODULE mod_atlas_data
   !     x    = log10(nu / nu_threshold)
   !     sig  = 10^(logsig) * 1e-18 cm^2     (logsig = log10(sigma in Mb))
   ! Used by FELO_OPACITY when USE_TOPBASE_MBF = .TRUE.
+  !
+  ! Filtering note: hotop.dat contains NO iron edges at any ionization
+  ! stage (verified by inventory -- only C/N/O/Ne, IDs 22-60), so no
+  ! double-counting occurs with felo regardless of filter configuration.
   INTEGER, PARAMETER :: FELO_N_ION    = 2      ! 1 = Fe I, 2 = Fe II
   INTEGER, PARAMETER :: FELO_NLEV_MAX = 60     ! Fe I has 45, Fe II has 33
   INTEGER, PARAMETER :: FELO_NPTS_MAX = 200    ! Fe II max NF = 118
@@ -10024,18 +10028,18 @@ END SUBROUTINE CONT_METAL_OPACITY_LEGACY
 !     TOPbase / Allende Prieto et al. (2003, ApJS 147, 363) processed
 !     cross sections.
 !   - MBF_HIGH_ION supplies high-ionization bound-free + Coulomb
-!     free-free (C III-V, N III-V, O III-VI, Ne III-VI, Fe III-V) from
-!     filtered hotop.dat, with Fe I and Fe II edges filtered out to
-!     avoid double-counting with felo.
+!     free-free (C III+, N III+, O III+, Ne III+, Fe III-V) from
+!     filtered hotop.dat.  hotop.dat contains NO iron bound-free edges
+!     (only C/N/O/Ne), so no double-counting with felo can occur.
 !   - FELO_OPACITY supplies Fe I and Fe II bound-free using OP / Iron
 !     Project R-matrix data (Bautista 1997 for Fe I, Nahar & Pradhan
 !     1994 for Fe II).
 !
 ! When USE_TOPBASE_MBF = .FALSE. (legacy mode):
-!   - Same MBF_TOPBASE and MBF_HIGH_ION, but hotop covers all Fe stages
-!     including Fe I and Fe II.
+!   - Same MBF_TOPBASE and MBF_HIGH_ION.
 !   - FE1OP supplies Fe I via the 48-level Kurucz Fano fit.
-!   - Fe II has no dedicated bound-free treatment (hotop only).
+!   - Fe II has no dedicated bound-free treatment (known gap; Coulomb
+!     free-free for Fe II is provided by MBF_HIGH_ION regardless).
 !
 ! Output: ACONT_METAL(J) in cm^2/g, stimulated-emission corrected.
 !
@@ -10065,9 +10069,6 @@ SUBROUTINE CONT_METAL_OPACITY_TOPBASE
   CALL MBF_TOPBASE
 
   !--- High-ionization bound-free + Coulomb free-free from hotop.dat -----
-  ! When USE_TOPBASE_MBF is on, MBF_HIGH_ION additionally filters out
-  ! hotop's Fe I (ID=351) and Fe II (ID=352) edges, leaving felo to
-  ! handle those two ion stages.
   CALL MBF_HIGH_ION
 
   !--- Fe I and Fe II bound-free -----------------------------------------
@@ -10215,35 +10216,21 @@ SUBROUTINE MBF_TOPBASE
 END SUBROUTINE MBF_TOPBASE
 
 !=========================================================================
-!=========================================================================
 ! SUBROUTINE MBF_HIGH_ION
 !
-! High-ionization bound-free (C III/IV, N III-V, O III-VI, Ne III-VI,
-! Fe III-V) from filtered hotop.dat, plus Coulomb free-free for
-! C/N/O/Ne/Mg/Si/S/Fe ions (stages I-V).
-!
-! On first call, hotop.dat is read and edges whose species_id appear
-! in the runtime-built TB_COVERED list are skipped.  The base filter
-! list is (22, 29, 37, 55, 56) = C II, N II, O II, Ne I, Ne II --
-! species already covered by TOPbase.  When USE_TOPBASE_MBF is .TRUE.,
-! species IDs 351 (Fe I) and 352 (Fe II) are additionally filtered out,
-! because FELO_OPACITY covers those directly.
-!
-! The Coulomb free-free computation is independent of the bound-free
-! filter and uses all XNF iron stages (I-V) regardless of the flag.
+! High-ionization bound-free (C III/IV, N III-V, O III-VI, Ne III-VI)
+! from filtered hotop.dat, plus Coulomb free-free for C/N/O/Ne/Mg/Si/S/Fe
+! ions (stages I-V).  On first call, hotop.dat is read and edges whose
+! species_id is already covered by TOPbase (IDs 22, 29, 37, 55, 56) are
+! skipped, leaving ~40 of the original 60 edges in HI_EDGE_DATA.
 !=========================================================================
 
 SUBROUTINE MBF_HIGH_ION
 
   IMPLICIT NONE
   INTEGER, PARAMETER :: NPAR = 7
-
-  ! Runtime filter list.  Base set is 5 IDs; two more are added when
-  ! felo handles Fe I and Fe II directly.  The filter list depends on
-  ! USE_TOPBASE_MBF, which must be stable across the run; toggling it
-  ! mid-run would leave HI_EDGE_DATA stale.
-  INTEGER :: TB_COVERED(7)
-  INTEGER :: N_TB_COV
+  INTEGER, PARAMETER :: N_TB_COV = 5
+  INTEGER, PARAMETER :: TB_COVERED(N_TB_COV) = (/22, 29, 37, 55, 56/)
 
   REAL(8) :: AHOT_TMP(kw)
   REAL(8) :: FREE, XSECT, XX, FRATIO
@@ -10251,15 +10238,6 @@ SUBROUTINE MBF_HIGH_ION
   INTEGER :: I, J, ID, IREAD, IKEEP
   CHARACTER(256) :: LINE
   LOGICAL :: SKIP
-
-  ! Build filter list (linear-search order is irrelevant).
-  TB_COVERED(1:5) = (/22, 29, 37, 55, 56/)
-  N_TB_COV = 5
-  IF (USE_TOPBASE_MBF) THEN
-    TB_COVERED(6) = 351
-    TB_COVERED(7) = 352
-    N_TB_COV = 7
-  END IF
 
   !--- First-call initialization of filtered hotop.dat ---
   IF (.NOT. HIGH_ION_INITIALIZED) THEN
