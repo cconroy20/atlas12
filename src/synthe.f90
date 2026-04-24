@@ -139,9 +139,9 @@ PROGRAM SYNTHE
 
   ! --- Data directory (via $ATLAS12; defaults to ./data) ----------------
   CALL GET_ENVIRONMENT_VARIABLE('ATLAS12', envval, envlen, envstat)
-  IF (envstat == 0 .AND. envlen > 0) THEN
+  IF (envstat .EQ. 0 .AND. envlen .GT. 0) THEN
     DATADIR = TRIM(envval)
-    IF (DATADIR(envlen:envlen) /= '/') DATADIR = TRIM(DATADIR) // '/'
+    IF (DATADIR(envlen:envlen) .NE. '/') DATADIR = TRIM(DATADIR) // '/'
     DATADIR = TRIM(DATADIR) // 'data/'
   ELSE
     DATADIR = 'data/'
@@ -161,7 +161,7 @@ PROGRAM SYNTHE
   !                      Default: no.
   ! Output file basenames are model_file with extension stripped.
   ! -----------------------------------------------------------------------
-  IF (COMMAND_ARGUMENT_COUNT() < 1) THEN
+  IF (COMMAND_ARGUMENT_COUNT() .LT. 1) THEN
     WRITE(6,'(A)') ' ERROR: expected model filename as first argument'
     WRITE(6,'(A)') USAGE
     STOP 1
@@ -177,7 +177,7 @@ PROGRAM SYNTHE
   DO i = 2, COMMAND_ARGUMENT_COUNT()
     CALL GET_COMMAND_ARGUMENT(i, tmparg)
     eqpos = INDEX(tmparg, '=')
-    IF (eqpos < 2) THEN
+    IF (eqpos .LT. 2) THEN
       WRITE(6,'(A,A)') ' ERROR: unrecognised argument (expected key=value): ', TRIM(tmparg)
       STOP 1
     END IF
@@ -203,7 +203,7 @@ PROGRAM SYNTHE
     END SELECT
   END DO
 
-  IF (wlbeg <= 0.0D0 .OR. wlend <= wlbeg) THEN
+  IF (wlbeg .LE. 0.0D0 .OR. wlend .LE. wlbeg) THEN
     WRITE(6,'(A)') ' ERROR: require 0 < wlbeg < wlend'
     WRITE(6,'(A)') USAGE
     STOP 1
@@ -218,17 +218,16 @@ PROGRAM SYNTHE
   WRITE(6,'(A,F10.3)') ' wlend (nm)       = ', wlend
   WRITE(6,'(A,F10.1)') ' resolu           = ', resolu
   WRITE(6,'(A,F8.4)')  ' turbv (km/s)     = ', turbv
-  WRITE(6,'(A,L1)')    ' more_output      = ', more_output
 
   ! Derive output filenames: strip leading path, strip last extension
   dotpos = INDEX(TRIM(model_file), '/', BACK=.TRUE.)
-  IF (dotpos > 0) THEN
+  IF (dotpos .GT. 0) THEN
     model_base = model_file(dotpos+1:)
   ELSE
     model_base = TRIM(model_file)
   END IF
   dotpos = INDEX(TRIM(model_base), '.', BACK=.TRUE.)
-  IF (dotpos > 1) model_base = model_base(1:dotpos-1)
+  IF (dotpos .GT. 1) model_base = model_base(1:dotpos-1)
   spec_file    = TRIM(model_base) // '.spec'
   mol_file     = TRIM(model_base) // '.mol'
   linform_file = TRIM(model_base) // '.linform'
@@ -243,7 +242,7 @@ PROGRAM SYNTHE
   length  = INT(LOG(wlend / wlbeg) / ratiolg)
   ixwlbeg = INT(LOG(wlbeg) / ratiolg)
   wbegin  = EXP(DBLE(ixwlbeg) * ratiolg)
-  IF (wbegin < wlbeg) THEN
+  IF (wbegin .LT. wlbeg) THEN
     ixwlbeg = ixwlbeg + 1
     wbegin  = EXP(DBLE(ixwlbeg) * ratiolg)
   END IF
@@ -323,7 +322,7 @@ PROGRAM SYNTHE
     bfudge_sv(j) = bhyd_gs(j)**PH1 * (bc1_gs(j)/bc2_gs(j))**PC1 * &
                    (bsi1_gs(j)/bsi2_gs(j))**PSI1
     fscat_sv(j)  = 0.0D0
-    IF (LINE_SCAT_RHOX_SCALE /= 0.0D0) &
+    IF (LINE_SCAT_RHOX_SCALE .NE. 0.0D0) &
       fscat_sv(j) = EXP(-rhox_a(j) / LINE_SCAT_RHOX_SCALE)
   END DO
 
@@ -369,7 +368,7 @@ PROGRAM SYNTHE
     iedge = 1
     DO nbuff_i = 1, length
       wave8 = wbegin * ratio**(nbuff_i-1)
-      DO WHILE (wave8 >= wledge(iedge+1) .AND. iedge < nedge-1)
+      DO WHILE (wave8 .GE. wledge(iedge+1) .AND. iedge .LT. nedge-1)
         iedge = iedge + 1
       END DO
       continuum(nbuff_i) = REAL( &
@@ -398,14 +397,14 @@ PROGRAM SYNTHE
 
     DO i = 1, mw6
       xnfpel(i) = 0.0D0
-      IF (qxnfpel(i) < 1.0D25) xnfpel(i) = qxnfpel(i)
+      IF (qxnfpel(i) .LT. 1.0D25) xnfpel(i) = qxnfpel(i)
     END DO
 
     DO i = 1, mw6
       qdopple(i) = SQRT(qdopple(i)**2 + (DBLE(turbv)/CLIGHT_KMS)**2)
       dopple(i)  = qdopple(i)
       xnfpel(i)  = xnfpel(i) / rho(j)
-      IF (qdopple(i) > 0.0D0) THEN
+      IF (qdopple(i) .GT. 0.0D0) THEN
         xnfdop(i) = qxnfpel(i) / xf_rho(j) / qdopple(i)
       ELSE
         xnfdop(i) = 0.0D0
@@ -416,10 +415,10 @@ PROGRAM SYNTHE
                      (t(j)/10000.0D0)**0.3D0 )
 
     ! NLTE / complex-profile lines (velshift argument reserved for future use)
-    IF (nlines_nlte > 0) CALL compute_line_opacity(j, nlines_nlte, CUTOFF, 0.0, IFVAC)
+    IF (nlines_nlte .GT. 0) CALL compute_line_opacity(j, nlines_nlte, CUTOFF, 0.0, IFVAC)
 
     ! LTE metal lines: Voigt core on the wavelength grid + r^-2 far-wing tail
-    IF (nlines_lte > 0) THEN
+    IF (nlines_lte .GT. 0) THEN
        DO iline = 1, nlines_lte
           nbuff_s   = lte_lines(iline)%nbuff
           congf_s   = lte_lines(iline)%cgf
@@ -431,15 +430,15 @@ PROGRAM SYNTHE
 
           kappa0_s = congf_s * REAL(xnfdop(congf_nel))
           kapmin_s = continuum(MIN(MAX(nbuff_s,1),length)) * CUTOFF
-          IF (kappa0_s < kapmin_s) CYCLE
+          IF (kappa0_s .LT. kapmin_s) CYCLE
           kappa0_s = kappa0_s * REAL(EXP(-elo_s * hckt(j)))
-          IF (kappa0_s < kapmin_s) CYCLE
+          IF (kappa0_s .LT. kapmin_s) CYCLE
 
           adamp_s    = REAL((gamrf + gamsf*xne(j) + gamwf*txnxn(j)) / dopple(congf_nel))
           n10dop     = INT(10.0D0 * dopple(congf_nel) * DBLE(resolu))
           dopple_nel = REAL(dopple(congf_nel))
 
-          centre_on_grid: IF (nbuff_s >= 1 .AND. nbuff_s <= length) THEN
+          centre_on_grid: IF (nbuff_s .GE. 1 .AND. nbuff_s .LE. length) THEN
              kapcen_s = kappa0_s * voigt_profile(0.0, adamp_s)
              buffer(nbuff_s) = buffer(nbuff_s) + kapcen_s
           END IF centre_on_grid
@@ -448,11 +447,11 @@ PROGRAM SYNTHE
           dvoigt = 1.0 / dopple_nel / REAL(resolu)
           DO nstep = 1, n10dop
              profile(nstep) = kappa0_s * voigt_profile(REAL(nstep)*dvoigt, adamp_s)
-             IF (profile(nstep) < kapmin_s) EXIT
+             IF (profile(nstep) .LT. kapmin_s) EXIT
           END DO
 
           ! Far wing: extend as x_wing / nstep^2 (Lorentzian asymptote).
-          IF (nstep > n10dop) THEN
+          IF (nstep .GT. n10dop) THEN
              x_wing  = profile(n10dop) * REAL(n10dop)**2
              maxstep = INT(SQRT(x_wing/kapmin_s)) + 1
              maxstep = MIN(maxstep, maxprof)
@@ -463,16 +462,16 @@ PROGRAM SYNTHE
              nstep = maxstep
           END IF
 
-          IF (nbuff_s+nstep < 1 .OR. nbuff_s-nstep > length) CYCLE
+          IF (nbuff_s+nstep .LT. 1 .OR. nbuff_s-nstep .GT. length) CYCLE
 
           ! Red wing (plus +0 lines that fell just off-grid at centre).
-          IF (nbuff_s < length) THEN
+          IF (nbuff_s .LT. length) THEN
              maxred    = MIN(length - nbuff_s, nstep)
              minblue_i = MAX(1, 1 - nbuff_s)
              DO istep = minblue_i, maxred
                 buffer(nbuff_s + istep) = buffer(nbuff_s + istep) + profile(istep)
              END DO
-             IF (nbuff_s <= 1) CYCLE
+             IF (nbuff_s .LE. 1) CYCLE
           END IF
 
           ! Blue wing.
@@ -533,7 +532,7 @@ CONTAINS
     REAL(8) :: freq15, c1, c2, c3
     INTEGER :: jj
 
-    DO WHILE (wave >= wledge(iedge_sv + 1))
+    DO WHILE (wave .GE. wledge(iedge_sv + 1))
       iedge_sv = iedge_sv + 1
     END DO
 
@@ -588,8 +587,8 @@ CONTAINS
     ! Pure-continuum JOSH -> surf_sv (used as baseline for each mu)
     CALL josh(IFSCAT, IFSURF)
     DO mu_loc = 1, NMU
-      IF (IFSURF == 1) surf_sv(mu_loc) = HNU(1)
-      IF (IFSURF == 2) surf_sv(mu_loc) = SURFI(mu_loc)
+      IF (IFSURF .EQ. 1) surf_sv(mu_loc) = HNU(1)
+      IF (IFSURF .EQ. 2) surf_sv(mu_loc) = SURFI(mu_loc)
     END DO
 
     ! Blend line opacity + fudge source function, then JOSH again.
@@ -605,8 +604,8 @@ CONTAINS
            (TAUNU(jj), jj=1,nrhox)
 
     DO mu_loc = 1, NMU
-      IF (IFSURF == 1) resid = HNU(1)          / surf_sv(mu_loc)
-      IF (IFSURF == 2) resid = SURFI(mu_loc)   / surf_sv(mu_loc)
+      IF (IFSURF .EQ. 1) resid = HNU(1)          / surf_sv(mu_loc)
+      IF (IFSURF .EQ. 2) resid = SURFI(mu_loc)   / surf_sv(mu_loc)
       q_loc(mu_loc)       = resid * surf_sv(mu_loc)
       q_loc(mu_loc + NMU) = surf_sv(mu_loc)
     END DO
@@ -629,9 +628,9 @@ CONTAINS
     REAL(8), INTENT(IN) :: seconds
     INTEGER :: h, m, s
 
-    IF (seconds < 60.0D0) THEN
+    IF (seconds .LT. 60.0D0) THEN
       WRITE(6,'(/A,F6.2,A)') ' Runtime: ', seconds, 's'
-    ELSE IF (seconds < 3600.0D0) THEN
+    ELSE IF (seconds .LT. 3600.0D0) THEN
       m = INT(seconds / 60.0D0)
       s = NINT(seconds - 60.0D0 * m)
       WRITE(6,'(/A,I0,A,I2.2,A)') ' Runtime: ', m, 'm ', s, 's'

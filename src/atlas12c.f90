@@ -97,7 +97,7 @@ PROGRAM ATLAS12
   DO I = 1, NARGS
     CALL GET_COMMAND_ARGUMENT(I, ARGBUF)
     IEQPOS = INDEX(ARGBUF, '=')
-    IF (IEQPOS == 0) THEN
+    IF (IEQPOS .EQ. 0) THEN
       ! positional argument -> basename
       OUTBASE = ARGBUF
       CYCLE
@@ -122,7 +122,7 @@ PROGRAM ATLAS12
       CASE DEFAULT
         WRITE(6, '(A)') ' WARNING: unknown argument: '//TRIM(ARGBUF)
       END SELECT
-      IF (ISTAT /= 0) THEN
+      IF (ISTAT .NE. 0) THEN
         WRITE(6, '(A,A,A)') ' ERROR: invalid ', TRIM(key), ' value: '//TRIM(ARGBUF)
         STOP 1
       END IF
@@ -131,10 +131,10 @@ PROGRAM ATLAS12
 
   ! Are any CLI overrides active?  (Controls whether we re-apply abundance
   ! math and/or recompute derived quantities after READIN.)
-  have_abund_overrides = CMD_ZSCALE > 0.0D0 .OR. CMD_HEABND > 0.0D0 &
-                         .OR. LEN_TRIM(ABUND_FILE) > 0
-  have_overrides       = have_abund_overrides .OR. VTURB_KMS >= 0.0D0 &
-                         .OR. CMD_TEFF > 0.0D0 .OR. CMD_LOGG > -98.0D0
+  have_abund_overrides = CMD_ZSCALE .GT. 0.0D0 .OR. CMD_HEABND .GT. 0.0D0 &
+                         .OR. LEN_TRIM(ABUND_FILE) .GT. 0
+  have_overrides       = have_abund_overrides .OR. VTURB_KMS .GE. 0.0D0 &
+                         .OR. CMD_TEFF .GT. 0.0D0 .OR. CMD_LOGG .GT. -98.0D0
 
   ! Initialize IFPNCH: punch=2 only on last iteration
   ! Initialize IFPRNT: print=1 except last iteration=3
@@ -153,9 +153,9 @@ PROGRAM ATLAS12
 
   ! --- Locate data files via $ATLAS12 environment variable ---
   CALL GET_ENVIRONMENT_VARIABLE('ATLAS12', ENVVAL, ENVLEN, ENVSTAT)
-  IF (ENVSTAT == 0 .AND. ENVLEN > 0) THEN
+  IF (ENVSTAT .EQ. 0 .AND. ENVLEN .GT. 0) THEN
     DATADIR = TRIM(ENVVAL)
-    IF (DATADIR(ENVLEN:ENVLEN) /= '/') DATADIR = TRIM(DATADIR) // '/'
+    IF (DATADIR(ENVLEN:ENVLEN) .NE. '/') DATADIR = TRIM(DATADIR) // '/'
     DATADIR = TRIM(DATADIR) // 'data/'
   ELSE
     DATADIR = 'data/'
@@ -195,7 +195,7 @@ PROGRAM ATLAS12
     ! are log10(number fraction), as set by READIN finalization.
 
     ! --- Step 1: Apply metallicity scaling (shifts all metals) ---
-    IF (CMD_ZSCALE > 0.0D0) THEN
+    IF (CMD_ZSCALE .GT. 0.0D0) THEN
       DO IZ_ABUND = 3, 99
         XRELATIVE(IZ_ABUND) = LOG10(CMD_ZSCALE)
       END DO
@@ -207,25 +207,25 @@ PROGRAM ATLAS12
     !     e.g.:  6  -3.52
     !           26  -4.54
     !     Lines starting with '#' or '!' are comments.
-    IF (LEN_TRIM(ABUND_FILE) > 0) THEN
+    IF (LEN_TRIM(ABUND_FILE) .GT. 0) THEN
       OPEN(UNIT=4, FILE=TRIM(ABUND_FILE), STATUS='OLD', ACTION='READ', &
            IOSTAT=IOS_ABUND)
-      IF (IOS_ABUND /= 0) THEN
+      IF (IOS_ABUND .NE. 0) THEN
         WRITE(6, '(A,A)') ' ERROR: cannot open abundance file: ', &
               TRIM(ABUND_FILE)
         STOP 1
       END IF
       DO
         READ(4, '(A)', IOSTAT=IOS_ABUND) ABUND_LINE
-        IF (IOS_ABUND /= 0) EXIT
+        IF (IOS_ABUND .NE. 0) EXIT
         ABUND_LINE = ADJUSTL(ABUND_LINE)
-        IF (LEN_TRIM(ABUND_LINE) == 0) CYCLE
-        IF (ABUND_LINE(1:1) == '#' .OR. ABUND_LINE(1:1) == '!') CYCLE
+        IF (LEN_TRIM(ABUND_LINE) .EQ. 0) CYCLE
+        IF (ABUND_LINE(1:1) .EQ. '#' .OR. ABUND_LINE(1:1) .EQ. '!') CYCLE
         READ(ABUND_LINE, *, IOSTAT=IOS_ABUND) IZ_ABUND, ABUND_VAL
-        IF (IOS_ABUND /= 0) CYCLE
-        IF (IZ_ABUND < 1 .OR. IZ_ABUND > 99) CYCLE
+        IF (IOS_ABUND .NE. 0) CYCLE
+        IF (IZ_ABUND .LT. 1 .OR. IZ_ABUND .GT. 99) CYCLE
         ABUND(IZ_ABUND) = ABUND_VAL
-        IF (IZ_ABUND > 2) XRELATIVE(IZ_ABUND) = 0.0D0
+        IF (IZ_ABUND .GT. 2) XRELATIVE(IZ_ABUND) = 0.0D0
       END DO
       CLOSE(UNIT=4)
     END IF
@@ -238,10 +238,10 @@ PROGRAM ATLAS12
         Z_TOTAL = Z_TOTAL + 10.0D0**(ABUND(IZ_ABUND) + XRELATIVE(IZ_ABUND))
       END DO
       ! Set He: from command line or keep model value
-      IF (CMD_HEABND > 0.0D0) ABUND(2) = CMD_HEABND
+      IF (CMD_HEABND .GT. 0.0D0) ABUND(2) = CMD_HEABND
       ! Compute H = 1 - Y - Z
       ABUND(1) = 1.0D0 - ABUND(2) - Z_TOTAL
-      IF (ABUND(1) < 0.0D0) THEN
+      IF (ABUND(1) .LT. 0.0D0) THEN
         WRITE(6, '(A,F10.6)') ' ERROR: H abundance is negative: ', ABUND(1)
         WRITE(6, '(A,F10.6,A,F10.6)') '   Y = ', ABUND(2), '  Z = ', Z_TOTAL
         STOP 1
@@ -287,47 +287,39 @@ PROGRAM ATLAS12
     ! --- Regrid and rescale model to target Teff/logg if specified ---
     !     If neither teff= nor logg= given, use values from the model file.
     !     If only one is given, the other defaults to the model file value.
-    IF (CMD_TEFF > 0.0D0 .OR. CMD_LOGG > -98.0D0) THEN
-      IF (CMD_TEFF < 0.0D0) CMD_TEFF = TEFF
-      IF (CMD_LOGG < -98.0D0) CMD_LOGG = GLOG
+    IF (CMD_TEFF .GT. 0.0D0 .OR. CMD_LOGG .GT. -98.0D0) THEN
+      IF (CMD_TEFF .LT. 0.0D0) CMD_TEFF = TEFF
+      IF (CMD_LOGG .LT. -98.0D0) CMD_LOGG = GLOG
       CALL SCALE_MODEL(CMD_TEFF, CMD_LOGG)
     END IF
 
     ! --- Apply command-line VTURB override (km/s → cm/s) if specified ---
-    IF (VTURB_KMS >= 0.0D0) THEN
-      DO J = 1, NRHOX
-        VTURB(J) = VTURB_KMS * 1.0D5
-      END DO
+    IF (VTURB_KMS .GE. 0.0D0) THEN
+      VTURB = VTURB_KMS * 1.0D5
     END IF
 
     ! --- Recompute derived quantities after any overrides ---
     !     READIN's finalization computed these from the original model;
     !     if we changed abundances, regridded, or changed VTURB, they need updating.
     IF (have_overrides) THEN
-      DO J = 1, NRHOX
-        TK(J) = KBOL * T(J)
-        HKT(J) = HPLANCK / TK(J)
-        HCKT(J) = HKT(J) * CLIGHT
-        TKEV(J) = KBOL_EV * T(J)
-        TLOG(J) = LOG(T(J))
-        XNATOM(J) = P(J) / TK(J) - XNE(J)
-        RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
-        IF (IFTURB > 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
+        TK   = KBOL * T
+        HKT  = HPLANCK / TK
+        HCKT = HKT * CLIGHT
+        TKEV = KBOL_EV * T
+        TLOG = LOG(T)
+        XNATOM = P / TK - XNE
+        RHO  = XNATOM * WTMOLE * AMU
+        IF (IFTURB .GT. 0) PTURB = 0.5D0 * RHO * VTURB**2
         ! Approximate CHARGESQ = sum(n_i * Z_i^2) + n_e for Debye shielding.
         ! Assuming mostly singly ionized gas, the ion sum ~ n_e, so
         ! CHARGESQ ~ 2*n_e.  NELECT recomputes this self-consistently.
-        CHARGESQ(J) = XNE(J) * 2.0D0
-      END DO
+        CHARGESQ = XNE * 2.0D0
     END IF
 
     ! --- Zero out number densities and Doppler widths for all species ---
-    DO NELION = 1, MION
-      DO J = 1, NRHOX
-        XNF(J, NELION)  = 0.0D0
-        XNFP(J, NELION) = 0.0D0
-        DOPPLE(J, NELION) = 0.0
-      END DO
-    END DO
+    XNF    = 0.0D0
+    XNFP   = 0.0D0
+    DOPPLE = 0.0D0
 
     ! --- Load isotope mass fractions ---
     CALL ISOTOPES
@@ -337,13 +329,13 @@ PROGRAM ATLAS12
     DO NELION = 1, MION
       XMAX = 0.0D0
       DO I = 1, 10
-        IF (ISOTOPE(I, 2, NELION) > XMAX) THEN
+        IF (ISOTOPE(I, 2, NELION) .GT. XMAX) THEN
           AMASSISO(1, NELION) = ISOTOPE(I, 1, NELION)
           XMAX = ISOTOPE(I, 2, NELION)
         END IF
       END DO
       ! Fallback: if no isotope fractions given, use first listed mass
-      IF (XMAX <= 0.0D0 .AND. ISOTOPE(1, 1, NELION) > 0.0) THEN
+      IF (XMAX .LE. 0.0D0 .AND. ISOTOPE(1, 1, NELION) .GT. 0.0) THEN
         AMASSISO(1, NELION) = ISOTOPE(1, 1, NELION)
       END IF
     END DO
@@ -369,10 +361,10 @@ PROGRAM ATLAS12
 
     ! Select starting wavelength index based on Teff
     NUSTART = 1
-    IF (TEFF < 30000.0D0) NUSTART = NUHEII
-    IF (TEFF < 13000.0D0) NUSTART = NUHEI
-    IF (TEFF < 7250.0D0)  NUSTART = NULYMAN
-    IF (TEFF < 4500.0D0)  NUSTART = NUCI
+    IF (TEFF .LT. 30000.0D0) NUSTART = NUHEII
+    IF (TEFF .LT. 13000.0D0) NUSTART = NUHEI
+    IF (TEFF .LT. 7250.0D0)  NUSTART = NULYMAN
+    IF (TEFF .LT. 4500.0D0)  NUSTART = NUCI
 
     ! Build the wavelength array
     NUMNU = NUHI
@@ -413,14 +405,15 @@ PROGRAM ATLAS12
       ! ---------------------------------------------------------------
       ! HYDROSTATIC EQUILIBRIUM
       ! ---------------------------------------------------------------
-      IF (IFPRES /= 0) THEN
+      IF (IFPRES .NE. 0) THEN
 
-        IF (ITEMP /= 1) THEN
+         IF (ITEMP .NE. 1) THEN
+            
           ! Integrate the equation of hydrostatic equilibrium:
           !   P_gas = g * RHOX - P_rad - P_turb - P_con
           DO J = 1, NRHOX
             P(J) = GRAV * RHOX(J) - PRAD(J) - PTURB(J) - PCON
-            IF (P(J) <= 0.0D0) THEN
+            IF (P(J) .LE. 0.0D0) THEN
                P(J) = MAX(GRAV * RHOX(J) * 1.0D-4, 1.0D-10)
             END IF
           END DO
@@ -434,7 +427,7 @@ PROGRAM ATLAS12
           CHARGESQ(J) = XNE(J) * 2.0D0
           EXCESS = 2.0D0 * XNE(J) - P(J) / TK(J)
           ! Allowance for doubly ionized helium
-          IF (EXCESS > 0.0D0) CHARGESQ(J) = CHARGESQ(J) + 2.0D0 * EXCESS
+          IF (EXCESS .GT. 0.0D0) CHARGESQ(J) = CHARGESQ(J) + 2.0D0 * EXCESS
           PTOTAL(J) = GRAV * RHOX(J) + PZERO
         END DO
 
@@ -446,7 +439,7 @@ PROGRAM ATLAS12
       END IF  ! IFPRES
 
       ! --- Radiation energy density (if needed) ---
-      IF (IFEDNS == 1) CALL ENERGY_DENSITY
+      IF (IFEDNS .EQ. 1) CALL ENERGY_DENSITY
 
       ! ---------------------------------------------------------------
       ! DOPPLER WIDTHS for all species at all depths
@@ -457,7 +450,7 @@ PROGRAM ATLAS12
 
       DO J = 1, NRHOX
         DO NELION = 1, MION - 1
-          IF (AMASSISO(1, NELION) <= 0.0D0) CYCLE
+          IF (AMASSISO(1, NELION) .LE. 0.0D0) CYCLE
           DOPPLE(J, NELION) = SQRT(2.0D0 * TK(J) / AMASSISO(1, NELION) / AMU &
                                    + VTURB(J)**2) / CLIGHT
           XNFDOP(J, NELION) = XNFP(J, NELION) / DOPPLE(J, NELION) / RHO(J)
@@ -467,8 +460,8 @@ PROGRAM ATLAS12
       ! ---------------------------------------------------------------
       ! OPACITY TABLES (first iteration of first model only)
       ! ---------------------------------------------------------------
-      IF (ITER == 1 .AND. ITEMP == 1) CALL KAPCONT
-      IF (ITER == 1 .AND. IFREADLINES == 1 .AND. ITEMP == 1) CALL SELECTLINES
+      IF (ITER .EQ. 1 .AND. ITEMP .EQ. 1) CALL KAPCONT
+      IF (ITER .EQ. 1 .AND. IFREADLINES .EQ. 1 .AND. ITEMP .EQ. 1) CALL SELECTLINES
 
       ! --- Compute line opacities ---
       CALL LINOP1
@@ -477,10 +470,10 @@ PROGRAM ATLAS12
       ! ---------------------------------------------------------------
       ! INITIALIZE FREQUENCY INTEGRALS (mode=1: erase accumulators)
       ! ---------------------------------------------------------------
-      IF (IFCORR == 1) CALL TCORR(1, 0.0D0)
+      IF (IFCORR .EQ. 1) CALL TCORR(1, 0.0D0)
       CALL ROSS(1, 0.0D0)
       CALL RADIAP(1, 0.0D0)
-      IF (NLTEON == 1) CALL STATEQ(1, 0.0D0)
+      IF (NLTEON .EQ. 1) CALL STATEQ(1, 0.0D0)
 
       ! ---------------------------------------------------------------
       ! FREQUENCY INTEGRATION — the heart of the calculation
@@ -505,11 +498,9 @@ PROGRAM ATLAS12
 
         ! Compute Planck function B_nu(T) at each depth
         FREQ15 = FREQ / 1.0D15
-        DO J = 1, NRHOX
-          EHVKT(J) = EXP(-FREQ * HKT(J))
-          STIM(J)  = 1.0D0 - EHVKT(J)
-          BNU(J)   = BNU_PREFAC * FREQ15**3 * EHVKT(J) / STIM(J)
-        END DO
+        EHVKT = EXP(-FREQ * HKT)
+        STIM  = 1.0D0 - EHVKT
+        BNU   = BNU_PREFAC * FREQ15**3 * EHVKT / STIM
 
         ! Compute continuous opacity at this frequency
         CALL KAPP
@@ -518,10 +509,8 @@ PROGRAM ATLAS12
         ! Note: this overwrites the module-level ALINES (set by KAPP from
         ! LINOP1) with the SELECTLINES contribution, and accumulates it
         ! onto ALINE.  KAPP re-zeroes both on the next frequency step.
-        DO J = 1, NRHOX
-          ALINES(J) = XLINES(J, NU) * STIM(J)
-          ALINE(J)  = ALINE(J) + ALINES(J)
-        END DO
+        ALINES = XLINES(:, NU) * STIM
+        ALINE  = ALINE + ALINES
 
         ! Solve the radiative transfer equation (Feautrier method)
         CALL JOSH(IFSCAT, IFSURF)
@@ -529,7 +518,7 @@ PROGRAM ATLAS12
         ! --- Check for unphysical negative values in the solution ---
         found_negative = .FALSE.
         DO J = 1, NRHOX
-          IF (SNU(J) < 0.0D0 .OR. JNU(J) < 0.0D0 .OR. HNU(J) < 0.0D0) THEN
+          IF (SNU(J) .LT. 0.0D0 .OR. JNU(J) .LT. 0.0D0 .OR. HNU(J) .LT. 0.0D0) THEN
             found_negative = .TRUE.
             EXIT
           END IF
@@ -537,19 +526,17 @@ PROGRAM ATLAS12
 
         IF (found_negative) THEN
            ! Floor negative values to small positive number to continue
-           DO J = 1, NRHOX
-              JNU(J) = MAX(JNU(J), 1.0D-99)
-              SNU(J) = MAX(SNU(J), 1.0D-99)
-              HNU(J) = MAX(HNU(J), 1.0D-99)
-           END DO
+            JNU = MAX(JNU, 1.0D-99)
+            SNU = MAX(SNU, 1.0D-99)
+            HNU = MAX(HNU, 1.0D-99)
         END IF
 
         ! --- Accumulate frequency integrals (mode=2) ---
-        IF (IFSURF == 0) THEN
-          IF (IFCORR == 1) CALL TCORR(2, RCOWT)
+        IF (IFSURF .EQ. 0) THEN
+          IF (IFCORR .EQ. 1) CALL TCORR(2, RCOWT)
           CALL RADIAP(2, RCOWT)
           CALL ROSS(2, RCOWT)
-          IF (NLTEON == 1) CALL STATEQ(2, RCOWT)
+          IF (NLTEON .EQ. 1) CALL STATEQ(2, RCOWT)
         END IF
 
         CALL PUTOUT(4)
@@ -557,7 +544,7 @@ PROGRAM ATLAS12
       END DO frequency_loop
 
       ! For surface-only mode, skip the iteration finishing steps
-      IF (IFSURF <= 0) THEN
+      IF (IFSURF .LE. 0) THEN
 
         ! ---------------------------------------------------------------
         ! FINISH ITERATION — Rosseland mean, convection, T-correction
@@ -566,10 +553,10 @@ PROGRAM ATLAS12
         RX = ROSSTAB(0.D0, 0.D0, 0.D0)
         CALL RADIAP(3, 0.0D0)
         CALL COMPUTE_HEIGHT
-        IF (IFPRES == 1 .AND. IFCONV == 1) CALL CONVEC
-        IF (IFCORR == 1)  CALL TCORR(3, 0.0D0)
-        IF (NLTEON == 1)  CALL STATEQ(3, 0.0D0)
-        IF (IFTURB == 1)  CALL COMPUTE_PTURB
+        IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC
+        IF (IFCORR .EQ. 1)  CALL TCORR(3, 0.0D0)
+        IF (NLTEON .EQ. 1)  CALL STATEQ(3, 0.0D0)
+        IF (IFTURB .EQ. 1)  CALL COMPUTE_PTURB
         CALL PUTOUT(5)
 
         CALL SYSTEM_CLOCK(CLOCK_END)
@@ -599,9 +586,9 @@ CONTAINS
     REAL(8), INTENT(IN) :: seconds
     INTEGER :: h, m, s
 
-    IF (seconds < 60.0D0) THEN
+    IF (seconds .LT. 60.0D0) THEN
       WRITE(6,'(/A,F6.2,A)') ' Elapsed: ', seconds, 's'
-    ELSE IF (seconds < 3600.0D0) THEN
+    ELSE IF (seconds .LT. 3600.0D0) THEN
       m = INT(seconds / 60.0D0)
       s = NINT(seconds - 60.0D0 * m)
       WRITE(6,'(/A,I0,A,I2.2,A)') ' Elapsed: ', m, 'm ', s, 's'

@@ -459,7 +459,7 @@ CONTAINS
     y = DBLE(a)
     s = x + y
 
-    IF (s > 15.0D0) THEN
+    IF (s .GT. 15.0D0) THEN
       ! ----------------------------------------------------------------
       !  Humlíček (1982) R_{1,2} asymptotic approximation
       !  w(z) ≈ iz / [sqrt(pi) * (z^2 - 1/2)]
@@ -604,7 +604,7 @@ CONTAINS
     b(n) = (f(n) - f(n1)) / (x(n) - x(n1))
     a(n) = f(n) - x(n) * b(n)
 
-    IF (n == 2) RETURN
+    IF (n .EQ. 2) RETURN
 
     ! Interior points: quadratic fit through each triplet
     DO j = 2, n1
@@ -627,7 +627,7 @@ CONTAINS
 
     ! Blend adjacent quadratics to suppress oscillations
     DO j = 2, n1
-      IF (ABS(c(j)) < TINY(c(j))) CYCLE
+      IF (ABS(c(j)) .LT. TINY(c(j))) CYCLE
       j1 = j + 1
       wt   = ABS(c(j1)) / (ABS(c(j1)) + ABS(c(j)))
       a(j) = a(j1) + wt * (a(j) - a(j1))
@@ -669,9 +669,9 @@ CONTAINS
     REAL(4) :: xn, xm, xmn, xmn12, fk, wt
 
     result = 0.0
-    IF (m <= n) RETURN
+    IF (m .LE. n) RETURN
 
-    IF (n /= nstr) THEN
+    IF (n .NE. nstr) THEN
       xn   = REAL(n)
       ginf = 0.2027 / xn**0.71
       gca  = 0.124  / xn
@@ -680,7 +680,7 @@ CONTAINS
       nstr = n
     END IF
 
-    IF (m /= mstr) THEN
+    IF (m .NE. mstr) THEN
       xm    = REAL(m)
       xmn   = REAL(m - n)
       fk    = fkn * (xm / (xmn * (xm + REAL(n))))**3
@@ -715,9 +715,9 @@ CONTAINS
     REAL(4)             :: result
 
     result = 0.0
-    IF (x <= 0.0) RETURN
+    IF (x .LE. 0.0) RETURN
 
-    IF (x <= 1.0) THEN
+    IF (x .LE. 1.0) THEN
       ! A&S 5.1.56: E_1(x) = -ln(x) + a0 + a1*x + a2*x^2 + ... + a5*x^5
       ! Accurate to 2e-7 absolute; equivalent to the series -ln(x) - gamma + sum_n
       result = -LOG(x) - 0.57721566 + x * (0.99999193 + x * (-0.24991055 + x * &
@@ -725,7 +725,7 @@ CONTAINS
       RETURN
     END IF
 
-    IF (x <= 30.0) THEN
+    IF (x .LE. 30.0) THEN
       ! Pade approximant for e^x * x * E_1(x), from Abramowitz & Stegun 5.1.56
       result = (x*(x + 2.334733) + 0.25062) / (x*(x + 3.330657) + 1.681534) &
                / x * EXP(-x)
@@ -867,14 +867,14 @@ CONTAINS
     ! 0.8 (top of the PP grid) are silently clamped by the MIN below but
     ! still yield a well-defined (extrapolated) result.  A negative p
     ! indicates a caller bug, so abort loudly.
-    IF (p < 0.0) THEN
+    IF (p .LT. 0.0) THEN
       WRITE(*,'(A,E12.5,A,2I4)') &
         ' stark_quasistatic_profile: negative plasma parameter p=', p, &
         ' for transition (n,m)=', n, m
       STOP 1
     END IF
 
-    IF (b > 500.0) THEN
+    IF (b .GT. 500.0) THEN
       ! Pure asymptotic
       result = (1.5/sb + 27.0/b2) / b2
       RETURN
@@ -883,7 +883,7 @@ CONTAINS
     ! Select which line profile table to use
     mmn  = m - n
     indx = 7   ! default: Balmer-18
-    IF (n <= 3 .AND. mmn <= 2) indx = 2*(n-1) + mmn
+    IF (n .LE. 3 .AND. mmn .LE. 2) indx = 2*(n-1) + mmn
 
     ! Plasma parameter interpolation weights
     im   = MIN(INT(5.0*p) + 1, 4)
@@ -891,7 +891,7 @@ CONTAINS
     wtpp = 5.0 * (p - PP(im))
     wtpm = 1.0 - wtpp
 
-    IF (b > 25.12) THEN
+    IF (b .GT. 25.12) THEN
       ! Asymptotic regime with correction
       c_val  = CC(ip,indx)*wtpp + CC(im,indx)*wtpm
       d_val  = DD(ip,indx)*wtpp + DD(im,indx)*wtpm
@@ -904,7 +904,7 @@ CONTAINS
     jp = 2
     DO j = 2, 15
       jp = j
-      IF (b <= BETA(j)) EXIT
+      IF (b .LE. BETA(j)) EXIT
     END DO
     jm   = jp - 1
     wtbp = (b - BETA(jm)) / (BETA(jp) - BETA(jm))
@@ -925,8 +925,8 @@ CONTAINS
     pr1 = 0.0
     pr2 = 0.0
     wt  = MAX(MIN(0.5*(10.0 - b), 1.0), 0.0)
-    IF (b <= 10.0) pr1 = 8.0 / (83.0 + (2.0 + 0.95*b2)*b)
-    IF (b >= 8.0)  pr2 = (1.5/sb + 27.0/b2) / b2
+    IF (b .LE. 10.0) pr1 = 8.0 / (83.0 + (2.0 + 0.95*b2)*b)
+    IF (b .GE. 8.0)  pr2 = (1.5/sb + 27.0/b2) / b2
     result = (pr1*wt + pr2*(1.0 - wt)) * corr
 
   END FUNCTION stark_quasistatic_profile
@@ -1183,7 +1183,7 @@ CONTAINS
     ! These quantities depend on Ne and T at each depth point but
     ! not on the specific hydrogen transition (n, m).
     ! =================================================================
-    IF (itemp /= itemp1) THEN
+    IF (itemp .NE. itemp1) THEN
       itemp1 = itemp
       conv_valid = .false.
       DO k = 1, NRHOX
@@ -1231,7 +1231,7 @@ CONTAINS
     ! Recompute line-dependent quantities when N or M changes.
     ! These depend on the specific transition but not on depth.
     ! =================================================================
-    IF (n /= n1 .OR. m /= m1) THEN
+    IF (n .NE. n1 .OR. m .NE. m1) THEN
       n1 = n
       m1 = m
       conv_valid = .false.
@@ -1251,7 +1251,7 @@ CONTAINS
       ! This single number maps frequency offset to reduced field
       ! strength beta via: beta = |del| / F0 * dbeta, where
       ! dbeta = c / freq_nm^2 / xknm.
-      IF (mmn <= 3 .AND. n <= 4) THEN
+      IF (mmn .LE. 3 .AND. n .LE. 4) THEN
         xknm = XKNMTB(n, mmn)
       ELSE
         xknm = 5.5E-5 / gnm * xmn2 / (1.0 + 0.13/REAL(mmn))
@@ -1263,18 +1263,18 @@ CONTAINS
       ! Different values for different transitions reflect the varying
       ! importance of lower-state interactions.
       y1num = 320.0
-      IF (m == 2) y1num = 550.0
-      IF (m == 3) y1num = 380.0
+      IF (m .EQ. 2) y1num = 550.0
+      IF (m .EQ. 3) y1num = 380.0
       y1wht = 1.E13
-      IF (mmn <= 3) y1wht = 1.E14
-      IF (mmn <= 2 .AND. n <= 2) THEN
-        IF      (n == 1 .AND. mmn == 1) THEN
+      IF (mmn .LE. 3) y1wht = 1.E14
+      IF (mmn .LE. 2 .AND. n .LE. 2) THEN
+        IF      (n .EQ. 1 .AND. mmn .EQ. 1) THEN
           y1wht = 1.E18
-        ELSE IF (n == 1 .AND. mmn == 2) THEN
+        ELSE IF (n .EQ. 1 .AND. mmn .EQ. 2) THEN
           y1wht = 1.E17
-        ELSE IF (n == 2 .AND. mmn == 1) THEN
+        ELSE IF (n .EQ. 2 .AND. mmn .EQ. 1) THEN
           y1wht = 1.E16
-        ELSE IF (n == 2 .AND. mmn == 2) THEN
+        ELSE IF (n .EQ. 2 .AND. mmn .EQ. 2) THEN
           y1wht = 1.E14
         END IF
       END IF
@@ -1294,13 +1294,13 @@ CONTAINS
       ! For Lyman series, uses cumulative A-values (ASUMLYMAN) that
       ! include cascade contributions.
       radamp = ASUM(n) + ASUM(m)
-      IF (n == 1) radamp = ASUMLYMAN(m)
+      IF (n .EQ. 1) radamp = ASUMLYMAN(m)
       radamp = REAL(radamp / FOURPI / freqnm)
 
       ! Resonance broadening by ground-state hydrogen (Ali-Griem).
       ! Both upper and lower level oscillator strengths contribute.
       resont = hydrogen_oscillator_strength(1,m)/xm/(1.0-1.0/xm2)
-      IF (n /= 1) resont = resont + hydrogen_oscillator_strength(1,n)/xn/(1.0-1.0/xn2)
+      IF (n .NE. 1) resont = resont + hydrogen_oscillator_strength(1,n)/xn/(1.0-1.0/xn2)
       resont = resont * 3.579E-24 / gnm
 
       ! Van der Waals broadening (Unsold approximation).
@@ -1317,11 +1317,11 @@ CONTAINS
       ! from the STALPH/STCOMP tables with separate positions and
       ! weights.  Note: the Stehle path does not use fine structure
       ! (the MMM profiles already average over Stark substates).
-      IF (n > 4 .OR. m > 10) THEN
+      IF (n .GT. 4 .OR. m .GT. 10) THEN
         ifins = 1
         finest(1) = 0.0
         finswt(1) = 1.0
-      ELSE IF (mmn == 1) THEN
+      ELSE IF (mmn .EQ. 1) THEN
         ifins = LNGHAL(n)
         ipos = ISTAL(n)
         DO i = 1, ifins
@@ -1365,9 +1365,9 @@ CONTAINS
 
     use_stehle = .false.
     IF (.NOT. USE_KP_HYDROGEN .AND. STEHLE_TABLES_LOADED &
-        .AND. n >= 1 .AND. n <= 4) THEN
-      IF (STEHLE_DATA(n)%loaded .AND. m >= STEHLE_DATA(n)%n_upper_min &
-          .AND. m <= STEHLE_DATA(n)%n_upper_max) THEN
+        .AND. n .GE. 1 .AND. n .LE. 4) THEN
+      IF (STEHLE_DATA(n)%loaded .AND. m .GE. STEHLE_DATA(n)%n_upper_min &
+          .AND. m .LE. STEHLE_DATA(n)%n_upper_max) THEN
         ! Use tables when Ne is within or below the grid.
         ! Below the grid, frac_d clamps to 0.0 so the lowest density
         ! grid point (ne=1e10) is used — at ne < 1e10 Stark broadening
@@ -1376,7 +1376,7 @@ CONTAINS
         ! avoids falling back to K-P for the 8 shallowest solar layers
         ! which caused a discontinuity in the emergent profile at the
         ! K-P nwid/hfwid boundary (~0.12 A from line center for H18).
-        IF (XNE(j) <= STEHLE_DATA(n)%density_grid(STEHLE_DATA(n)%n_dens)) THEN
+        IF (XNE(j) .LE. STEHLE_DATA(n)%density_grid(STEHLE_DATA(n)%n_dens)) THEN
           use_stehle = .true.
           ! Per-transition Inglis-Teller cutoff: the Stehle table is only
           ! tabulated up to the transition's own I-T density.  Beyond
@@ -1407,8 +1407,8 @@ CONTAINS
       ! ===============================================================
 
       ! --- Build convolved profile if not cached for this (n,m,j) ---
-      IF (.NOT. conv_valid .OR. conv_n /= n .OR. conv_m /= m &
-          .OR. conv_j /= j .OR. conv_itemp /= itemp) THEN
+      IF (.NOT. conv_valid .OR. conv_n .NE. n .OR. conv_m .NE. m &
+          .OR. conv_j .NE. j .OR. conv_itemp .NE. itemp) THEN
 
         xn8 = DBLE(n)
         xm8 = DBLE(m)
@@ -1437,7 +1437,7 @@ CONTAINS
         log_ne = LOG10(ne_cap)
         id1 = 1
         DO id1 = 1, nd-1
-          IF (ne_cap <= S%density_grid(id1+1)) EXIT
+          IF (ne_cap .LE. S%density_grid(id1+1)) EXIT
         END DO
         id1 = MAX(1, MIN(nd-1, id1))
         id2 = id1 + 1
@@ -1448,7 +1448,7 @@ CONTAINS
 
         it1 = 1
         DO it1 = 1, nt-1
-          IF (T(j) <= S%temp_grid(it1+1)) EXIT
+          IF (T(j) .LE. S%temp_grid(it1+1)) EXIT
         END DO
         it1 = MAX(1, MIN(nt-1, it1))
         it2 = it1 + 1
@@ -1460,7 +1460,7 @@ CONTAINS
           v01 = S%profiles(ia,it2,id1,itrans)
           v10 = S%profiles(ia,it1,id2,itrans)
           v11 = S%profiles(ia,it2,id2,itrans)
-          IF (v00 > 0 .AND. v01 > 0 .AND. v10 > 0 .AND. v11 > 0) THEN
+          IF (v00 .GT. 0 .AND. v01 .GT. 0 .AND. v10 .GT. 0 .AND. v11 .GT. 0) THEN
             stark_prof(ia) = EXP( &
               LOG(v00)*(1-frac_d)*(1-frac_t) + &
               LOG(v01)*(1-frac_d)*frac_t + &
@@ -1480,7 +1480,7 @@ CONTAINS
 
         ! Lorentz width in Δα units.
         ! For Lyα (n=1, m=2), resonance broadening is enhanced ×4.
-        IF (n == 1 .AND. m == 2) THEN
+        IF (n .EQ. 1 .AND. m .EQ. 2) THEN
           hwlor_conv = hwres * 4.0 + hwvdw + hwrad
         ELSE
           hwlor_conv = hwlor
@@ -1520,7 +1520,7 @@ CONTAINS
         ! Find where log grid spacing exceeds σ/3
         n_log_use = NSTARK_DALPHA
         DO ia = 1, NSTARK_DALPHA
-          IF (dalpha_grid(ia) * d_log * LOG(10.0D0) > dx_wing) THEN
+          IF (dalpha_grid(ia) * d_log * LOG(10.0D0) .GT. dx_wing) THEN
             n_log_use = ia - 1
             EXIT
           END IF
@@ -1531,14 +1531,14 @@ CONTAINS
         ! Wing extends as far as NWING_MAX points at σ/3 allows
         n_wing = NWING_MAX
         da_wing_max = da_trans + DBLE(n_wing) * dx_wing
-        IF (da_wing_max > dalpha_grid(NSTARK_DALPHA)) THEN
+        IF (da_wing_max .GT. dalpha_grid(NSTARK_DALPHA)) THEN
           da_wing_max = dalpha_grid(NSTARK_DALPHA)
           n_wing = INT((da_wing_max - da_trans) / dx_wing)
-          IF (n_wing < 0) n_wing = 0
+          IF (n_wing .LT. 0) n_wing = 0
         END IF
 
         ! Ensure total grid fits in NCONV_MAX
-        IF (2*n_wing + 2*n_log_use + 1 > NCONV_MAX) THEN
+        IF (2*n_wing + 2*n_log_use + 1 .GT. NCONV_MAX) THEN
           n_wing = (NCONV_MAX - 2*n_log_use - 1) / 2
           da_wing_max = da_trans + DBLE(n_wing) * dx_wing
         END IF
@@ -1593,7 +1593,7 @@ CONTAINS
         DO ia = 1, NSTARK_DALPHA
           da_i = dalpha_grid(ia)
 
-          IF (da_i > da_wing_max .AND. da_wing_max > 0.0D0) THEN
+          IF (da_i .GT. da_wing_max .AND. da_wing_max .GT. 0.0D0) THEN
             ! Beyond convolution grid: Stark wing + Lorentz tail
             conv_profile(ia) = stark_prof(ia) &
                  + DBLE(voigt_a) * dop_dalpha / (PI * da_i**2)
@@ -1623,10 +1623,10 @@ CONTAINS
       ! --- Evaluate convolved profile at current frequency ---
       dalpha_cur = conv_lambda0**2 / DBLE(CLIGHT_ANGS) * DBLE(del) / conv_F0
 
-      IF (dalpha_cur <= 10.0D0**STEHLE_DATA(n)%log_dalpha_grid(1)) THEN
+      IF (dalpha_cur .LE. 10.0D0**STEHLE_DATA(n)%log_dalpha_grid(1)) THEN
         ! At or below first grid point (includes exact line centre)
         I_conv = conv_profile(1)
-      ELSE IF (dalpha_cur >= 10.0D0**STEHLE_DATA(n)%log_dalpha_grid(NSTARK_DALPHA)) THEN
+      ELSE IF (dalpha_cur .GE. 10.0D0**STEHLE_DATA(n)%log_dalpha_grid(NSTARK_DALPHA)) THEN
         ! Beyond table: Stark wing + Lorentzian tail
         I_conv = STEHLE_DATA(n)%k_alpha(m - STEHLE_DATA(n)%n_upper_min + 1) &
                / dalpha_cur**2.5D0 &
@@ -1636,13 +1636,13 @@ CONTAINS
         log_da_cur = LOG10(dalpha_cur)
         ia1 = 1
         DO ia1 = 1, NSTARK_DALPHA-1
-          IF (log_da_cur <= STEHLE_DATA(n)%log_dalpha_grid(ia1+1)) EXIT
+          IF (log_da_cur .LE. STEHLE_DATA(n)%log_dalpha_grid(ia1+1)) EXIT
         END DO
         ia1 = MAX(1, MIN(NSTARK_DALPHA-1, ia1))
         ia2 = ia1 + 1
         frac_a = (log_da_cur - STEHLE_DATA(n)%log_dalpha_grid(ia1)) / &
                  (STEHLE_DATA(n)%log_dalpha_grid(ia2) - STEHLE_DATA(n)%log_dalpha_grid(ia1))
-        IF (conv_profile(ia1) > 0.0D0 .AND. conv_profile(ia2) > 0.0D0) THEN
+        IF (conv_profile(ia1) .GT. 0.0D0 .AND. conv_profile(ia2) .GT. 0.0D0) THEN
           I_conv = EXP(LOG(conv_profile(ia1))*(1.0D0-frac_a) &
                      + LOG(conv_profile(ia2))*frac_a)
         ELSE
@@ -1658,16 +1658,16 @@ CONTAINS
       ! These are separate opacity sources (transient H₂ and H₂⁺
       ! molecules), not broadening of the H line, so they add to
       ! the convolved profile.
-      IF (n == 1 .AND. m == 2) THEN
+      IF (n .EQ. 1 .AND. m .EQ. 2) THEN
         ! H₂ quasi-molecular satellite (blue wing of Lyα)
-        IF (freq <= (82259.10 - 4000.0) * REAL(CLIGHT,4)) THEN
+        IF (freq .LE. (82259.10 - 4000.0) * REAL(CLIGHT,4)) THEN
           result = result + lya_h2_blue_cutoff(freq, REAL(XNFPH(j,1))) &
                           * REAL(SQRTPI * dop)
         END IF
 
         ! H₂⁺ quasi-molecular satellite (red wing of Lyα)
-        IF (freq >= (82259.10 - 20000.0) * REAL(CLIGHT,4) .AND. &
-            freq <= (82259.10 -  4000.0) * REAL(CLIGHT,4)) THEN
+        IF (freq .GE. (82259.10 - 20000.0) * REAL(CLIGHT,4) .AND. &
+            freq .LE. (82259.10 -  4000.0) * REAL(CLIGHT,4)) THEN
           result = result + lya_h2plus_red_cutoff(freq, REAL(XNFPH(j,2))) &
                           * REAL(SQRTPI * dop)
         END IF
@@ -1701,26 +1701,26 @@ CONTAINS
 
       ! Determine which mechanism has the widest half-width
       nwid = 1                                       ! Doppler (default)
-      IF (hwdop < hwstk .OR. hwdop < hwlor) THEN
+      IF (hwdop .LT. hwstk .OR. hwdop .LT. hwlor) THEN
       nwid = 2                                       ! Lorentz
-      IF (hwlor < hwstk) nwid = 3                   ! Stark
+      IF (hwlor .LT. hwstk) nwid = 3                   ! Stark
       END IF
       hfwid = freqnm * MAX(hwdop, hwlor, hwstk)     ! core boundary [Hz]
       result = 0.0
       ifcore = 0
-      IF (del <= hfwid) ifcore = 1  ! 1 = inside core, 0 = wing
+      IF (del .LE. hfwid) ifcore = 1  ! 1 = inside core, 0 = wing
 
       ! --- Doppler block ---
       ! Evaluated in the wing (always) or the core (only if nwid=1).
       ! Sum of Gaussians at each fine-structure component position.
       ! For m > 10: single component with weight 1.0, so this is
       ! just exp(-d^2).  Truncated at 7 Doppler widths.
-      IF (ifcore == 0 .OR. (ifcore == 1 .AND. nwid == 1)) THEN
+      IF (ifcore .EQ. 0 .OR. (ifcore .EQ. 1 .AND. nwid .EQ. 1)) THEN
         DO i = 1, ifins
           d = REAL(ABS(freq - freqnm - finest(i)) / dop)
-          IF (d <= 7.0) result = result + EXP(-d*d) * finswt(i)
+          IF (d .LE. 7.0) result = result + EXP(-d*d) * finswt(i)
         END DO
-        IF (ifcore == 1) RETURN   ! core handled by Doppler alone
+        IF (ifcore .EQ. 1) RETURN   ! core handled by Doppler alone
       END IF
 
       ! --- Lorentz block ---
@@ -1729,13 +1729,13 @@ CONTAINS
       ! Special treatment for Lyman alpha (n=1, m=2): uses enhanced
       ! resonance broadening (hwres * 4) and H2 quasi-molecular
       ! satellite opacity from the CUTOFFH2 table in the blue wing.
-      IF (ifcore == 0 .OR. (ifcore == 1 .AND. nwid == 2)) THEN
-        IF (n == 1 .AND. m == 2) THEN
+      IF (ifcore .EQ. 0 .OR. (ifcore .EQ. 1 .AND. nwid .EQ. 2)) THEN
+        IF (n .EQ. 1 .AND. m .EQ. 2) THEN
           ! Lyman alpha: enhanced resonance + quasi-molecular satellites
           ASSOCIATE(hwres4 => hwres * 4.0)
             hwlor = hwres4 + hwvdw + hwrad
             hhw = freqnm * hwlor
-            IF (freq > (82259.10-4000.0)*REAL(CLIGHT,4)) THEN
+            IF (freq .GT. (82259.10-4000.0)*REAL(CLIGHT,4)) THEN
               ! Near line centre: standard Lorentzian with enhanced hwres
               hprofres = REAL(hwres4*freqnm/PI/(del**2+hhw**2)*SQRTPI*dop)
             ELSE
@@ -1749,25 +1749,25 @@ CONTAINS
           END ASSOCIATE
           ! Radiation and vdW damping (separate from resonance for Lya)
           hprofrad = 0.0
-          IF (freq > 2.4190611E15 .AND. freq < 0.77*FREQ_RYDH) &
+          IF (freq .GT. 2.4190611E15 .AND. freq .LT. 0.77*FREQ_RYDH) &
             hprofrad = REAL(hwrad*freqnm/PI/(del**2+hhw**2)*SQRTPI*dop)
           hprofvdw = REAL(hwvdw*freqnm/PI/(del**2+hhw**2)*SQRTPI*dop)
-          IF (freq < 1.8E15) hprofvdw = 0.0
+          IF (freq .LT. 1.8E15) hprofvdw = 0.0
           result = result + hprofres + hprofrad + hprofvdw
-          IF (ifcore == 1) RETURN   ! core handled by Lorentz alone
+          IF (ifcore .EQ. 1) RETURN   ! core handled by Lorentz alone
         ELSE
           ! Non-Lya lines: standard Lorentzian damping
           hhw = freqnm*hwlor
           top = REAL(hhw)
           ! Near Lyman series limits (m=3,4,5): subtract radiation
           ! damping to avoid double-counting with bound-free opacity
-          IF (n == 1 .AND. m <= 5) THEN
-            IF (m == 3 .AND. freq > 0.885*FREQ_RYDH .AND. freq < 0.890*FREQ_RYDH) top = REAL(hhw-freqnm*hwrad)
-            IF (m == 4 .AND. freq > 0.936*FREQ_RYDH .AND. freq < 0.938*FREQ_RYDH) top = REAL(hhw-freqnm*hwrad)
-            IF (m == 5 .AND. freq > 0.959*FREQ_RYDH .AND. freq < 0.961*FREQ_RYDH) top = REAL(hhw-freqnm*hwrad)
+          IF (n .EQ. 1 .AND. m .LE. 5) THEN
+            IF (m .EQ. 3 .AND. freq .GT. 0.885*FREQ_RYDH .AND. freq .LT. 0.890*FREQ_RYDH) top = REAL(hhw-freqnm*hwrad)
+            IF (m .EQ. 4 .AND. freq .GT. 0.936*FREQ_RYDH .AND. freq .LT. 0.938*FREQ_RYDH) top = REAL(hhw-freqnm*hwrad)
+            IF (m .EQ. 5 .AND. freq .GT. 0.959*FREQ_RYDH .AND. freq .LT. 0.961*FREQ_RYDH) top = REAL(hhw-freqnm*hwrad)
           END IF
           result = result + REAL(top/PI/(del**2+hhw**2)*SQRTPI*dop)
-          IF (ifcore == 1) RETURN   ! core handled by Lorentz alone
+          IF (ifcore .EQ. 1) RETURN   ! core handled by Lorentz alone
         END IF
       END IF
 
@@ -1808,10 +1808,10 @@ CONTAINS
       ! corrections damp the impact contribution at high density
       ! where it would exceed the static limit.
       gam = gnot
-      IF (.NOT. (y2 <= 1.E-4 .AND. y1 <= 1.E-5)) THEN
+      IF (.NOT. (y2 .LE. 1.E-4 .AND. y1 .LE. 1.E-5)) THEN
         gam = g1*(0.5*EXP(-MIN(80.0,y1)) + expint1(y1) - 0.5*expint1(y2)) &
               *(1.0 - gcon1(j)/(1.0+(90.0*y1)**3) - gcon2(j)/(1.0+2000.0*y1))
-        IF (gam <= 1.E-20) gam = 0.0
+        IF (gam .LE. 1.E-20) gam = 0.0
       END IF
 
       ! Quasistatic ion field profile S(beta, p).
@@ -1826,14 +1826,14 @@ CONTAINS
       ! Factor 0.5 accounts for the equal splitting of Lya into
       ! two Stark components.  Also adds H2+ quasi-molecular
       ! satellite opacity in the red wing.
-      IF (m == 2) THEN
+      IF (m .EQ. 2) THEN
         prqs = prqs*0.5
-        IF (freq >= (82259.10-20000.0)*REAL(CLIGHT,4) &
-            .AND. freq <= (82259.10-4000.0)*REAL(CLIGHT,4)) THEN
+        IF (freq .GE. (82259.10-20000.0)*REAL(CLIGHT,4) &
+            .AND. freq .LE. (82259.10-4000.0)*REAL(CLIGHT,4)) THEN
           ! H2+ satellite from table (red wing of Lya)
           result = result + lya_h2plus_red_cutoff(freq, REAL(XNFPH(j,2))) &
                           * REAL(SQRTPI * dop)
-        ELSE IF (freq > (82259.10-4000.0)*REAL(CLIGHT,4)) THEN
+        ELSE IF (freq .GT. (82259.10-4000.0)*REAL(CLIGHT,4)) THEN
           ! Near line centre: scale H2+ contribution by Stark profile ratio.
           ! The cutoff value at -4000 cm^-1 (CUTOFFH2PLUS(end) = -11.07) is
           ! used as an anchor; the local opacity is rescaled by the ratio
@@ -1848,7 +1848,7 @@ CONTAINS
       ! Impact electron profile: Lorentzian in beta-space with
       ! half-width gam.  Represents fast-electron collisions.
       f = 0.0
-      IF (gam > 0.0) f = REAL(gam/PI/(gam**2+beta_val**2))
+      IF (gam .GT. 0.0) f = REAL(gam/PI/(gam**2+beta_val**2))
 
       ! Electron correction to quasistatic profile (VCS Eq. 37):
       ! fns -> 0 at small y1 (no correction)
@@ -1893,9 +1893,9 @@ CONTAINS
       opacity = 0.0
       spc    = 200.0 * REAL(CLIGHT,4)
       freq22 = (82259.10 - 22000.0) * REAL(CLIGHT,4)
-      IF (freq_in < 50000.0 * REAL(CLIGHT,4)) RETURN
+      IF (freq_in .LT. 50000.0 * REAL(CLIGHT,4)) RETURN
 
-      IF (freq_in < freq22) THEN
+      IF (freq_in .LT. freq22) THEN
         cval = REAL((CUTOFFH2(2) - CUTOFFH2(1)) / spc &
                     * (freq_in - freq22) + CUTOFFH2(1))
       ELSE
@@ -1933,7 +1933,7 @@ CONTAINS
       spc    = 100.0 * REAL(CLIGHT,4)
       freq15 = (82259.10 - 15000.0) * REAL(CLIGHT,4)
 
-      IF (freq_in < freq15) THEN
+      IF (freq_in .LT. freq15) THEN
         cval = REAL((CUTOFFH2PLUS(2) - CUTOFFH2PLUS(1)) / spc &
                     * (freq_in - freq15) + CUTOFFH2PLUS(1))
       ELSE
@@ -1983,20 +1983,20 @@ CONTAINS
     INTEGER :: idx
 
     ! Past the tabulated range: return the far-wing asymptotic value
-    IF (da_pt >= 10.0D0**S%log_dalpha_grid(NSTARK_DALPHA)) THEN
+    IF (da_pt .GE. 10.0D0**S%log_dalpha_grid(NSTARK_DALPHA)) THEN
       result = stark_prof(NSTARK_DALPHA)
       RETURN
     END IF
 
     log_da_pt = LOG10(da_pt)
     DO idx = 1, NSTARK_DALPHA - 1
-      IF (log_da_pt <= S%log_dalpha_grid(idx + 1)) EXIT
+      IF (log_da_pt .LE. S%log_dalpha_grid(idx + 1)) EXIT
     END DO
     idx = MIN(NSTARK_DALPHA - 1, idx)
     frac = (log_da_pt - S%log_dalpha_grid(idx)) / &
            (S%log_dalpha_grid(idx+1) - S%log_dalpha_grid(idx))
 
-    IF (stark_prof(idx) > 0.0D0 .AND. stark_prof(idx+1) > 0.0D0) THEN
+    IF (stark_prof(idx) .GT. 0.0D0 .AND. stark_prof(idx+1) .GT. 0.0D0) THEN
       result = EXP(LOG(stark_prof(idx)) * (1.0D0 - frac) &
                  + LOG(stark_prof(idx+1)) * frac)
     ELSE
@@ -2080,7 +2080,7 @@ CONTAINS
         RETURN
       CASE (403)
         ! Distinguish 402.6 from 402.3 nm
-        IF (INT(wl + 0.4) == 402) THEN
+        IF (INT(wl + 0.4) .EQ. 402) THEN
           ! 402.3 nm: falls through to he1_griem_profile check below
         ELSE
           result = he1_4026_profile(j, wave, wl, dopwl)
@@ -2095,8 +2095,8 @@ CONTAINS
     END SELECT
 
     ! Other listed He I lines with he1_dimitri_profile broadening
-    IF (line == 382 .OR. line == 387 .OR. line == 393 .OR. &
-        line == 401 .OR. line == 403 .OR. line == 415 .OR. line == 417) THEN
+    IF (line .EQ. 382 .OR. line .EQ. 387 .OR. line .EQ. 393 .OR. &
+        line .EQ. 401 .OR. line .EQ. 403 .OR. line .EQ. 415 .OR. line .EQ. 417) THEN
       result = he1_dimitri_profile(j, wave, wl, dopwl, gammar, gammas)
       RETURN
     END IF
@@ -2164,7 +2164,7 @@ CONTAINS
     sentinel = 0.0
     CALL he1_isolated_profile(j, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
                              TS, DEN, 1.0E13, sentinel)
-    IF (sentinel < 0.0) THEN
+    IF (sentinel .LT. 0.0) THEN
       CALL read_he1_stark_tables(1, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
       result = REAL(SQRTPI * phihe * dopwl * 10.0)
       RETURN
@@ -2180,7 +2180,7 @@ CONTAINS
     ! Forbidden-component placeholder (see comment above on FORB1/FORB2).
     ! Currently dead because FORB1(1) = 0; preserved as a hook for future
     ! implementation of the He I 4471 forbidden satellite at ~4470 Å.
-    IF (FORB1(1) > 0.0) THEN
+    IF (FORB1(1) .GT. 0.0) THEN
       v      = ABS((wave - wl) - DLF1) / dopwl
       result = result + FORB1(1) * voigt_profile(v, a_damp)
     END IF
@@ -2235,14 +2235,14 @@ CONTAINS
     temp   = MAX(temp, 5.0E3)
     temp   = MIN(temp, 4.0E4)
 
-    IF (e > denhi) THEN
+    IF (e .GT. denhi) THEN
       result = -1.0   ! sentinel: use read_he1_stark_tables
       RETURN
     END IF
 
     ! Temperature interpolation index
     it = 2
-    DO WHILE (it < 4 .AND. ts(it) <= temp)
+    DO WHILE (it .LT. 4 .AND. ts(it) .LE. temp)
       it = it + 1
     END DO
     x  = (temp - ts(it-1)) / (ts(it) - ts(it-1))
@@ -2301,7 +2301,7 @@ CONTAINS
     temp   = MAX(MIN(REAL(T(j)), 4.0E4), 5.0E3)
     xnfhp  = REAL(XNFPH(j,2))
     it = 2
-    DO WHILE (it < 4 .AND. ts(it) <= temp)
+    DO WHILE (it .LT. 4 .AND. ts(it) .LE. temp)
       it = it + 1
     END DO
     x     = (temp - ts(it-1)) / (ts(it) - ts(it-1))
@@ -2356,7 +2356,7 @@ CONTAINS
     result = 0.0
     CALL he1_isolated_profile(j, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
                              TS, DEN, 1.0E14, sentinel)
-    IF (sentinel < 0.0) THEN
+    IF (sentinel .LT. 0.0) THEN
       CALL read_he1_stark_tables(2, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
       result = REAL(SQRTPI * phihe * dopwl * 10.0)
       RETURN
@@ -2386,7 +2386,7 @@ CONTAINS
     result = 0.0
     CALL he1_isolated_profile(j, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
                              TS, DEN, 1.0E14, sentinel)
-    IF (sentinel < 0.0) THEN
+    IF (sentinel .LT. 0.0) THEN
       CALL read_he1_stark_tables(3, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
       result = REAL(SQRTPI * phihe * dopwl * 10.0)
       RETURN
@@ -2411,7 +2411,7 @@ CONTAINS
     result = 0.0
     CALL he1_isolated_profile(j, wl, dopwl, WS, DS, ALFS, FORB1, FORB2, &
                              TS, DEN, 1.0E13, sentinel)
-    IF (sentinel < 0.0) THEN
+    IF (sentinel .LT. 0.0) THEN
       CALL read_he1_stark_tables(4, j, T(j), XNFPH(j,2), XNFHE(j,2), XNE(j), wave-wl, phihe)
       result = REAL(SQRTPI * phihe * dopwl * 10.0)
       RETURN
@@ -2675,7 +2675,7 @@ CONTAINS
     CHARACTER(LEN=55) :: cbuf  ! scratch for internal READ from PARAMETER array
 
     ! --- Parse table on first call ---
-    IF (iread == 0) THEN
+    IF (iread .EQ. 0) THEN
       DO il = 1, NLINE
         cbuf = GRIEM0200(il*5-4)
         READ(cbuf, '(F5.2,F10.4,A10,F5.1)') &
@@ -2693,14 +2693,14 @@ CONTAINS
     ! --- Search for matching line ---
     il = 0
     DO i = 1, NLINE
-      IF (ABS(wl - wave_t(i)) < 0.1) THEN
+      IF (ABS(wl - wave_t(i)) .LT. 0.1) THEN
         il = i
         EXIT
       END IF
     END DO
 
     ! Not in table: plain voigt_profile with GAMMAR + GAMMAS
-    IF (il == 0) THEN
+    IF (il .EQ. 0) THEN
       v      = ABS(wavesyn - wl) / dopwl
       a_damp = REAL((gammar + gammas*XNE(j)) / (dopwl/wl))
       result = voigt_profile(v, a_damp)
@@ -2714,7 +2714,7 @@ CONTAINS
     xnfhep = REAL(XNFHE(j,2))
 
     it = 2
-    DO WHILE (it < 4 .AND. ttab_t(it,il) <= temp)
+    DO WHILE (it .LT. 4 .AND. ttab_t(it,il) .LE. temp)
       it = it + 1
     END DO
     x  = (temp - ttab_t(it-1,il)) / (ttab_t(it,il) - ttab_t(it-1,il))
@@ -2816,7 +2816,7 @@ CONTAINS
     CHARACTER(LEN=61) :: cbuf  ! scratch for internal READ from PARAMETER array
 
     ! Parse table on first call
-    IF (iread == 0) THEN
+    IF (iread .EQ. 0) THEN
       DO il = 1, NLINE
         cbuf = HE1DATTAB(il*5-4)
         READ(cbuf, '(F5.2,F10.4,A10,F5.1)') &
@@ -2827,8 +2827,8 @@ CONTAINS
                ttab_t(i,il), width_t(i,il), shift_t(i,il), &
                widthp_t(i,il), shiftp_t(i,il), widthhe_t(i,il), shifthe_t(i,il)
           shift_t(i,il)  = shift_t(i,il)  / width_t(i,il)
-          IF (widthp_t(i,il)  > 0.0) shiftp_t(i,il)  = shiftp_t(i,il)  / widthp_t(i,il)
-          IF (widthhe_t(i,il) > 0.0) shifthe_t(i,il) = shifthe_t(i,il) / widthhe_t(i,il)
+          IF (widthp_t(i,il)  .GT. 0.0) shiftp_t(i,il)  = shiftp_t(i,il)  / widthp_t(i,il)
+          IF (widthhe_t(i,il) .GT. 0.0) shifthe_t(i,il) = shifthe_t(i,il) / widthhe_t(i,il)
         END DO
       END DO
       iread = 1
@@ -2837,13 +2837,13 @@ CONTAINS
     ! Search for matching line
     il = 0
     DO i = 1, NLINE
-      IF (ABS(wl - wave_t(i)) < 0.1) THEN
+      IF (ABS(wl - wave_t(i)) .LT. 0.1) THEN
         il = i
         EXIT
       END IF
     END DO
 
-    IF (il == 0) THEN
+    IF (il .EQ. 0) THEN
       v      = ABS(wavesyn - wl) / dopwl
       a_damp = REAL((gammar + gammas*XNE(j)) / (dopwl/wl))
       result = voigt_profile(v, a_damp)
@@ -2856,7 +2856,7 @@ CONTAINS
     xnfhep = REAL(XNFHE(j,2))
 
     it = 2
-    DO WHILE (it < 4 .AND. ttab_t(it,il) <= temp)
+    DO WHILE (it .LT. 4 .AND. ttab_t(it,il) .LE. temp)
       it = it + 1
     END DO
     x   = (temp - ttab_t(it-1,il)) / (ttab_t(it,il) - ttab_t(it-1,il))
@@ -2986,7 +2986,7 @@ CONTAINS
     END IF
 
     ! --- Interpolate in T and Ne if depth point changed ---
-    IF (j * line /= jsave) THEN
+    IF (j * line .NE. jsave) THEN
       ! Temperature interpolation (4 points: log T = 3.699, 4.000, 4.301, 4.602)
       at   = REAL(LOG10(temp))
       bt   = (at - 3.698970) / 0.3010300 + 1.0
@@ -3060,7 +3060,7 @@ CONTAINS
     dl = dlnm * 10.0   ! nm -> Angstrom
     phihe = 0.0
     DO i = 2, NDLAM(line)
-      IF (dl <= dlam(i,line) .OR. i == NDLAM(line)) THEN
+      IF (dl .LE. dlam(i,line) .OR. i .EQ. NDLAM(line)) THEN
         a     = (dlam(i,line) - dl) / (dlam(i,line) - dlam(i-1,line))
         b     = (dl - dlam(i-1,line)) / (dlam(i,line) - dlam(i-1,line))
         phihe = 10.0**(a*philam(i-1) + b*philam(i))
@@ -3259,7 +3259,7 @@ CONTAINS
     !  One-time initialisation: EHYD, ALPHAHYD, EMERGE, EMERGEH
     !  Triggered whenever ITEMP changes (new temperature structure).
     ! ------------------------------------------------------------------
-    IF (itemp /= itemp1) THEN
+    IF (itemp .NE. itemp1) THEN
       ! Hydrogen energy levels (cm^{-1}) -- n=1..8 tabulated with full
       ! fine-structure correction; n=9..100 computed from the simple
       ! Rydberg formula since fine structure is negligible at high n.
@@ -3372,42 +3372,42 @@ CONTAINS
           ! ==============================================================
           kappa0 = REAL(gf_loc * xnfdop(nelion))   ! xnfdop R8, kappa0 R4
           kapmin = continuum(MIN(MAX(nbuff,1),length)) * cutoff
-          IF (kappa0 < kapmin) CYCLE line_loop
+          IF (kappa0 .LT. kapmin) CYCLE line_loop
           ! Boltzmann-factor memoization: recompute only when the lower
           ! level energy changes (common across consecutive line-list
           ! entries for the same ion).  have_bolt guards the first call
           ! per compute_line_opacity invocation.
-          IF (.NOT. have_bolt .OR. ABS(elo_loc - oldelo) > 0.0) THEN
+          IF (.NOT. have_bolt .OR. ABS(elo_loc - oldelo) .GT. 0.0) THEN
             bolt      = REAL(EXP(-elo_loc * hckt(j)))
             oldelo    = elo_loc
             have_bolt = .TRUE.
           END IF
           kappa0 = kappa0 * bolt
-          IF (kappa0 < kapmin) CYCLE line_loop
+          IF (kappa0 .LT. kapmin) CYCLE line_loop
           wcon  = 0.0D0
           wtail = 0.0D0
-          IF (ncon > 0) THEN
+          IF (ncon .GT. 0) THEN
             wcon  = 1.0D7 / (contx(ncon,nelionx) - emerge(j)) * dopratio
             wtail = 1.0D7 / (contx(ncon,nelionx) - emerge(j) - 500.0D0) * dopratio
           END IF
           adamp  = REAL((gammar_loc + gammas_loc*xne(j) + gammaw_loc*txnxn(j)) / dopple(nelion))
           dopwl  = REAL(dopple(nelion)) * REAL(wl_loc)
           ! Red wing
-          IF (wl_loc <= wlend) THEN
+          IF (wl_loc .LE. wlend) THEN
             minred = MAX(1, nbuff)
             wave   = wbegin * ratio**(minred-1)
             DO ibuff = minred, length
-              IF (wave >= wcon) THEN
+              IF (wave .GE. wcon) THEN
                 vvoigt = ABS(REAL(wave - wl_loc)) / dopwl
                 kappa  = kappa0 * voigt_profile(vvoigt, adamp)
-                IF (wave < wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
-                IF (kappa < continuum(ibuff)*cutoff) EXIT
+                IF (wave .LT. wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
+                IF (kappa .LT. continuum(ibuff)*cutoff) EXIT
                 buffer(ibuff) = buffer(ibuff) + kappa
               END IF
               wave = wave * ratio
             END DO
-            IF (minred == 1) CYCLE line_loop
-            IF (wl_loc < wbegin) CYCLE line_loop
+            IF (minred .EQ. 1) CYCLE line_loop
+            IF (wl_loc .LT. wbegin) CYCLE line_loop
           END IF
           ! Blue wing
           ibuff    = MIN(length+1, nbuff)
@@ -3416,12 +3416,12 @@ CONTAINS
           DO i = 1, maxblue
             ibuff  = ibuff - 1
             wave   = wave / ratio
-            IF (wave < wcon) CYCLE
+            IF (wave .LT. wcon) CYCLE
             vvoigt = ABS(REAL(wave - wl_loc)) / dopwl
             kappa  = kappa0 * voigt_profile(vvoigt, adamp)
-            IF (wave < wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
+            IF (wave .LT. wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
             buffer(ibuff) = buffer(ibuff) + kappa
-            IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
+            IF (kappa .LT. continuum(ibuff)*cutoff) CYCLE line_loop
           END DO
 
         CASE (-1, -2)
@@ -3431,7 +3431,7 @@ CONTAINS
           ! Bounds check: nblo/nbup index into ehyd(100) and alphahyd(99).
           ! Anything beyond these limits means a corrupt line list; abort
           ! loudly rather than silently overwrite adjacent memory.
-          IF (nblo < 1 .OR. nblo > 99 .OR. nbup < 2 .OR. nbup > 100) THEN
+          IF (nblo .LT. 1 .OR. nblo .GT. 99 .OR. nbup .LT. 2 .OR. nbup .GT. 100) THEN
             WRITE(*,'(A,I0,A,I0,A,F10.4)') &
               ' compute_line_opacity: hydrogen line list has out-of-range ', &
               'principal quantum numbers nblo=', nblo, ', nbup=', nbup
@@ -3440,28 +3440,28 @@ CONTAINS
           END IF
           kappa0 = REAL(gf_loc * xnfdop(1))
           kapmin = continuum(MIN(MAX(nbuff,1),length)) * cutoff
-          IF (nbup == 2) kapmin = continuum(length) * cutoff
-          IF (kappa0 < kapmin) CYCLE line_loop
+          IF (nbup .EQ. 2) kapmin = continuum(length) * cutoff
+          IF (kappa0 .LT. kapmin) CYCLE line_loop
           bolth    = REAL(EXP(-elo_loc * hckt(j)))
           dopph(j) = REAL(dopple(1))
-          IF (itype == -2) dopph(j) = dopph(j) / 1.4142    ! deuterium
+          IF (itype .EQ. -2) dopph(j) = dopph(j) / 1.4142    ! deuterium
           kappa0 = kappa0 * bolth
-          IF (kappa0 < kapmin) CYCLE line_loop
+          IF (kappa0 .LT. kapmin) CYCLE line_loop
           ! Alpha (Nbup=Nblo+1) and beta-blue (Nbup=Nblo+2) treated as isolated
-          IF (ncon == 0 .OR. nbup == nblo+1) THEN
+          IF (ncon .EQ. 0 .OR. nbup .EQ. nblo+1) THEN
 
             ! === ALPHA / ISOLATED LINE (red wing + blue wing) ===
-            IF (wl_loc <= wlend) THEN
+            IF (wl_loc .LE. wlend) THEN
               minred = MAX(1, nbuff)
               wave   = wbegin * ratio**(minred-1)
               DO ibuff = minred, length
                 kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
                 buffer(ibuff) = buffer(ibuff) + kappa
-                IF (kappa < continuum(ibuff)*cutoff) EXIT
+                IF (kappa .LT. continuum(ibuff)*cutoff) EXIT
                 wave = wave * ratio
               END DO
-              IF (minred == 1) CYCLE line_loop
-              IF (wl_loc < wbegin) CYCLE line_loop
+              IF (minred .EQ. 1) CYCLE line_loop
+              IF (wl_loc .LT. wbegin) CYCLE line_loop
             END IF
             ! Blue wing
             ibuff   = MIN(length+1, nbuff)
@@ -3472,27 +3472,27 @@ CONTAINS
               wave  = wave / ratio
               kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
               buffer(ibuff) = buffer(ibuff) + kappa
-              IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
+              IF (kappa .LT. continuum(ibuff)*cutoff) CYCLE line_loop
             END DO
 
-          ELSE IF (nbup == nblo+2) THEN
+          ELSE IF (nbup .EQ. nblo+2) THEN
 
             ! === BETA LINE (red wing with alpha limit, then blue wing) ===
             beta_redwing: DO   ! single-pass block for structured exit
-              IF (wl_loc <= wlend) THEN
+              IF (wl_loc .LE. wlend) THEN
                 minred = MAX(1, nbuff)
                 wave   = wbegin * ratio**(minred-1)
                 DO ibuff = minred, length
-                  IF (wave > alphahyd(nblo)) EXIT beta_redwing
+                  IF (wave .GT. alphahyd(nblo)) EXIT beta_redwing
                   kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
                   buffer(ibuff) = buffer(ibuff) + kappa
-                  IF (kappa < continuum(ibuff)*cutoff) EXIT beta_redwing
+                  IF (kappa .LT. continuum(ibuff)*cutoff) EXIT beta_redwing
                   wave = wave * ratio
                 END DO
-                IF (minred == 1) CYCLE line_loop
-                IF (wl_loc < wbegin) CYCLE line_loop
+                IF (minred .EQ. 1) CYCLE line_loop
+                IF (wl_loc .LT. wbegin) CYCLE line_loop
               END IF
-              IF (nbuff < 1) CYCLE line_loop
+              IF (nbuff .LT. 1) CYCLE line_loop
               EXIT beta_redwing   ! prevent infinite loop when wl_loc > wlend and nbuff >= 1
             END DO beta_redwing
             ! Blue wing (same as alpha path)
@@ -3504,29 +3504,29 @@ CONTAINS
               wave  = wave / ratio
               kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
               buffer(ibuff) = buffer(ibuff) + kappa
-              IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
+              IF (kappa .LT. continuum(ibuff)*cutoff) CYCLE line_loop
             END DO
 
           ELSE
             ! === General Balmer/Paschen/... with merged continuum ===
             wshift = 1.0D7 / (conth(ncon) - RYDBERG_H/81.0D0**2)
             wmerge = 1.0D7 / (conth(ncon) - emergeh_loc(j))
-            IF (wmerge < 0.0D0) wmerge = wshift + wshift
+            IF (wmerge .LT. 0.0D0) wmerge = wshift + wshift
             wcon   = MAX(wshift, wmerge)
             wtail  = 1.0D7 / (1.0D7/wcon - 500.0D0)
             wcon   = MIN(wshift + wshift, wcon)
-            IF (wtail < 0.0D0) wtail = wcon + wcon
+            IF (wtail .LT. 0.0D0) wtail = wcon + wcon
             wtail  = MIN(wcon + wcon, wtail)
-            IF (ifvac == 0) THEN
+            IF (ifvac .EQ. 0) THEN
               wcon  = vac_to_air(wcon)
               wtail = vac_to_air(wtail)
             END IF
             wcon = wcon * dopratio
-            IF (ifvac == 0) wl_loc = vac_to_air(1.0D7/(ehyd(nbup)-ehyd(nblo))) * dopratio
+            IF (ifvac .EQ. 0) wl_loc = vac_to_air(1.0D7/(ehyd(nbup)-ehyd(nblo))) * dopratio
             ! Red wing
-            IF (wl_loc <= wlend) THEN
-              IF (wcon > wlend) CYCLE line_loop   ! merge point beyond window -- no contribution
-              IF (wbegin <= alphahyd(nblo)) THEN
+            IF (wl_loc .LE. wlend) THEN
+              IF (wcon .GT. wlend) CYCLE line_loop   ! merge point beyond window -- no contribution
+              IF (wbegin .LE. alphahyd(nblo)) THEN
                 minred = MAX(1, nbuff)
                 wave   = wbegin * ratio**(minred-1)
                 ! Pre-check: evaluate opacity at the first grid point (nearest
@@ -3535,18 +3535,18 @@ CONTAINS
                 ! This avoids hundreds of thousands of expensive
                 ! hydrogen_line_profile calls for high-n Balmer lines whose
                 ! Stark wings have decayed to negligible levels by wbegin.
-                IF (wave >= wcon) THEN
+                IF (wave .GE. wcon) THEN
                   kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
-                  IF (kappa >= continuum(MIN(minred,length))*cutoff) THEN
-                    IF (wave < wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
+                  IF (kappa .GE. continuum(MIN(minred,length))*cutoff) THEN
+                    IF (wave .LT. wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
                     buffer(minred) = buffer(minred) + kappa
                     wave = wave * ratio
                     DO ibuff = minred+1, length
-                      IF (wave >= wcon) THEN
+                      IF (wave .GE. wcon) THEN
                         kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
-                        IF (wave < wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
+                        IF (wave .LT. wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
                         buffer(ibuff) = buffer(ibuff) + kappa
-                        IF (kappa < continuum(ibuff)*cutoff) EXIT
+                        IF (kappa .LT. continuum(ibuff)*cutoff) EXIT
                       END IF
                       wave = wave * ratio
                     END DO
@@ -3554,9 +3554,9 @@ CONTAINS
                 END IF
                 ! If the red wing covered the entire buffer (nbuff clamped to 1),
                 ! there is no blueward region to process.
-                IF (minred == 1) CYCLE line_loop
+                IF (minred .EQ. 1) CYCLE line_loop
               END IF
-              IF (wl_loc < wbegin) CYCLE line_loop
+              IF (wl_loc .LT. wbegin) CYCLE line_loop
             END IF
             ! Blue wing
             ibuff   = MIN(length+1, nbuff)
@@ -3565,11 +3565,11 @@ CONTAINS
             DO i = 1, maxblue
               ibuff = ibuff - 1
               wave  = wave / ratio
-              IF (wave < wcon) CYCLE line_loop
+              IF (wave .LT. wcon) CYCLE line_loop
               kappa = kappa0 * hydrogen_line_profile(nblo, nbup, j, wave-wl_loc, dopph)
-              IF (wave < wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
+              IF (wave .LT. wtail) kappa = kappa * REAL((wave-wcon)/(wtail-wcon))
               buffer(ibuff) = buffer(ibuff) + kappa
-              IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
+              IF (kappa .LT. continuum(ibuff)*cutoff) CYCLE line_loop
             END DO
           END IF
 
@@ -3585,23 +3585,23 @@ CONTAINS
           ! ==============================================================
           kappa0 = gammaw_loc * gf_loc * REAL(xnfpel(nelion))
           kapmin = continuum(MIN(MAX(nbuff,1),length)) * cutoff
-          IF (kappa0 < kapmin) CYCLE line_loop
+          IF (kappa0 .LT. kapmin) CYCLE line_loop
           kappa0 = kappa0 * REAL(EXP(-elo_loc * hckt(j)))
-          IF (kappa0 < kapmin) CYCLE line_loop
+          IF (kappa0 .LT. kapmin) CYCLE line_loop
           frelin = REAL(CLIGHT_NMS / wl_loc)
           ! Red wing
-          IF (wl_loc <= wlend) THEN
+          IF (wl_loc .LE. wlend) THEN
             minred = MAX(1, nbuff)
             freq   = REAL(CLIGHT_NMS / (wbegin * ratio**(minred-1)))
             DO ibuff = minred, length
               epsil = 2.0 * (freq - frelin) / gammar_loc
               kappa = kappa0 * (gammas_loc*epsil + gammaw_loc) / (epsil**2 + 1.0) / gammaw_loc
               buffer(ibuff) = buffer(ibuff) + kappa
-              IF (kappa < continuum(ibuff)*cutoff) EXIT
+              IF (kappa .LT. continuum(ibuff)*cutoff) EXIT
               freq = freq / REAL(ratio)
             END DO
-            IF (nbuff == 1) CYCLE line_loop
-            IF (wl_loc < wbegin) CYCLE line_loop
+            IF (nbuff .EQ. 1) CYCLE line_loop
+            IF (wl_loc .LT. wbegin) CYCLE line_loop
           END IF
           ! Blue wing
           ibuff   = MIN(length+1, nbuff)
@@ -3613,7 +3613,7 @@ CONTAINS
             epsil = 2.0 * (freq - frelin) / gammar_loc
             kappa = kappa0 * (gammas_loc*epsil + gammaw_loc) / (epsil**2 + 1.0) / gammaw_loc
             buffer(ibuff) = buffer(ibuff) + kappa
-            IF (kappa < continuum(ibuff)*cutoff) CYCLE line_loop
+            IF (kappa .LT. continuum(ibuff)*cutoff) CYCLE line_loop
           END DO
 
         CASE DEFAULT
@@ -3629,36 +3629,36 @@ CONTAINS
           ! ==============================================================
           wshift = 1.0D7 / (1.0D7/wl_loc - RYDBERG_INF/DBLE(itype)**2)
           wmerge = 1.0D7 / (1.0D7/wl_loc - emerge(j))
-          IF (nelion == 1) THEN
+          IF (nelion .EQ. 1) THEN
             wshift = 1.0D7 / (1.0D7/wl_loc - RYDBERG_H/DBLE(itype)**2)
             wmerge = 1.0D7 / (1.0D7/wl_loc - emergeh_loc(j))
           END IF
-          IF (wmerge < 0.0D0) wmerge = wshift + wshift
+          IF (wmerge .LT. 0.0D0) wmerge = wshift + wshift
           wmerge = MAX(wmerge, wshift)
           wmerge = MIN(wshift + wshift, wmerge)
           wtail  = 1.0D7 / (1.0D7/wmerge - 500.0D0)
-          IF (wtail < 0.0D0) wtail = wmerge + wmerge
+          IF (wtail .LT. 0.0D0) wtail = wmerge + wmerge
           wtail  = MIN(wmerge + wmerge, wtail)
-          IF (ifvac == 0) THEN
+          IF (ifvac .EQ. 0) THEN
             wmerge = vac_to_air(wmerge) * dopratio
             wtail  = vac_to_air(wtail)  * dopratio
           END IF
           ixwl   = INT(LOG(wl_loc)  / ratiolg)
           edgeblue = EXP(REAL(ixwl) * REAL(ratiolg))
-          IF (edgeblue > REAL(wl_loc)) ixwl = ixwl - 1
+          IF (edgeblue .GT. REAL(wl_loc)) ixwl = ixwl - 1
           nbuff1 = ixwl + 1 - ixwlbeg + 1
           ixwl   = INT(LOG(wmerge) / ratiolg + 0.5D0)
           nbuff2 = ixwl - ixwlbeg + 1
           ixwl   = INT(LOG(wtail)  / ratiolg + 0.5D0)
           nbuff3 = ixwl - ixwlbeg + 1
-          IF (nbuff1 > length) CYCLE line_loop
-          IF (nbuff3 < 1)      CYCLE line_loop
+          IF (nbuff1 .GT. length) CYCLE line_loop
+          IF (nbuff3 .LT. 1)      CYCLE line_loop
           dnbuff = REAL(nbuff3 - nbuff2)
           nbuff1 = MAX(nbuff1, 1)
           kappa  = gf_loc * REAL(xnfpel(nelion)) * REAL(EXP(-elo_loc * hckt(j)))
           tail   = 1.0
           DO ibuff = nbuff1, MIN(nbuff3, length)
-            IF (ibuff > nbuff2) tail = REAL(nbuff3 - ibuff) / dnbuff
+            IF (ibuff .GT. nbuff2) tail = REAL(nbuff3 - ibuff) / dnbuff
             buffer(ibuff) = buffer(ibuff) + kappa * tail
           END DO
 
@@ -3793,19 +3793,19 @@ CONTAINS
     !    value >= 1e25    -> wavenumber in cm^{-1} (divided by 1e25)
     !  All values in CONT_EDGE_DATA are positive.
     ! ------------------------------------------------------------------
-    IF (NCONT_EDGE_DATA > me) THEN
+    IF (NCONT_EDGE_DATA .GT. me) THEN
       WRITE(6,'(A,I5,A,I5)') ' run_xnfpelsyn: CONT_EDGE_DATA size ', &
         NCONT_EDGE_DATA, ' exceeds max edge count me=', me
       STOP 1
     END IF
     DO in_e = 1, NCONT_EDGE_DATA
       edge = CONT_EDGE_DATA(in_e)
-      IF (edge >= 1.0D25) THEN
+      IF (edge .GE. 1.0D25) THEN
         ! Wavenumber (cm^{-1}): convert to nm and Hz
         cmedge_m(in_e) = edge / 1.0D25
         wledge_m(in_e) = 1.0D7 / cmedge_m(in_e)
         frqedg_m(in_e) = CLIGHT_NMS / wledge_m(in_e)
-      ELSE IF (edge < 1.0D6) THEN
+      ELSE IF (edge .LT. 1.0D6) THEN
         ! Wavelength in nm
         wledge_m(in_e) = edge
         cmedge_m(in_e) = 1.0D7 / edge
@@ -3824,7 +3824,7 @@ CONTAINS
     DO i = 2, in_e
       last1 = in_e - i + 2
       DO j = 2, last1
-        IF (a_sort(j) >= a_sort(j-1)) CYCLE
+        IF (a_sort(j) .GE. a_sort(j-1)) CYCLE
         ! Swap all four parallel arrays between positions j-1 and j
         sav = a_sort(j-1)
         a_sort(j-1) = a_sort(j)
@@ -3874,7 +3874,7 @@ CONTAINS
     ! equilibrium.  The result is self-consistent but can differ slightly
     ! (<1%) from the converged XNE stored in the model atmosphere.  We
     ! save and restore XNE to keep the model's converged values.
-    IF (IFMOL == 1) THEN
+    IF (IFMOL .EQ. 1) THEN
       xne_save(1:nrhox_a) = xne_a(1:nrhox_a)
       CALL NMOLEC(1)
       MOLEC_IREAD = 1
@@ -3945,7 +3945,7 @@ CONTAINS
     xnfph2_lc = 0.0D0
     xnfpco_lc = 0.0D0
     DO j = 1, nrhox_a
-      IF (t_a(j) > 9000.0D0) CYCLE
+      IF (t_a(j) .GT. 9000.0D0) CYCLE
       eq = EXP(4.478D0/tkev_a(j) - 4.64584D1 + &
           (1.63660D-3 + (-4.93992D-7 + (1.11822D-10 + (-1.49567D-14 + &
           (1.06206D-18 - 3.08720D-23*t_a(j))*t_a(j))*t_a(j))*t_a(j))*t_a(j))*t_a(j) - &
@@ -4073,7 +4073,7 @@ CONTAINS
     END DO
 
     ! Molecules (NELEM=40..mw)
-    IF (IFMOL == 1) THEN
+    IF (IFMOL .EQ. 1) THEN
       DO nelem = 40, mw
         CALL COMPUTE_ONE_POP(idmol_data(nelem-39), 1, xnfp_lc(1,6,nelem))
       END DO

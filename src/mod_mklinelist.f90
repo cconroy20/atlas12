@@ -125,7 +125,7 @@ CONTAINS
     ratiolg = LOG(ratio)
     ixwlbeg = INT(LOG(wlbeg) / ratiolg)
     wbegin  = EXP(ixwlbeg * ratiolg)
-    IF (wbegin < wlbeg) THEN
+    IF (wbegin .LT. wlbeg) THEN
       ixwlbeg = ixwlbeg + 1
       wbegin  = EXP(ixwlbeg * ratiolg)
     END IF
@@ -150,30 +150,30 @@ CONTAINS
     ALLOCATE(lte_h2o(0))
     ALLOCATE(nlte_gfall(0))
 
-    IF (VERBOSE == 1) THEN
+    IF (VERBOSE .EQ. 1) THEN
       WRITE(6,'(/a)') '=== mklinelist ==='
       WRITE(6,'(a4,2x,a12,2x,a12,2x,a)') 'src', 'n_lte', 'n_nlte', 'file'
     END IF
 
     ! --- Canonical reader order: gfall -> predict -> mol(s) -> h2o -------
 
-    IF (gfall_file /= '') THEN
+    IF (gfall_file .NE. '') THEN
       CALL read_gfall(gfall_file, wlbeg, wlend, ratiolg, ixwlbeg, &
                       lte_gfall, n_lte_gfall, nlte_gfall, n_nlte_gfall)
-      IF (VERBOSE == 1) &
+      IF (VERBOSE .EQ. 1) &
         WRITE(6,ROW_FMT) 'gf', n_lte_gfall, n_nlte_gfall, TRIM(basename(gfall_file))
     END IF
 
-    IF (predict_file /= '') THEN
+    IF (predict_file .NE. '') THEN
       CALL read_predict(predict_file, wlbeg, wlend, ratiolg, ixwlbeg, &
                         lte_predict, n_lte_predict)
-      IF (VERBOSE == 1) &
+      IF (VERBOSE .EQ. 1) &
         WRITE(6,ROW_FMT) 'pr', n_lte_predict, 0, TRIM(basename(predict_file))
     END IF
 
     DO imol = 1, nmol
-      IF (is_tio_file(mol_files(imol)) .AND. teff > TEFF_COOL_LIMIT) THEN
-        IF (VERBOSE == 1) &
+      IF (is_tio_file(mol_files(imol)) .AND. teff .GT. TEFF_COOL_LIMIT) THEN
+        IF (VERBOSE .EQ. 1) &
           WRITE(6,SKIP_FMT) 'mol', 'skip', '', &
             'Teff > 5000 K: ', TRIM(basename(mol_files(imol)))
         CYCLE
@@ -181,20 +181,20 @@ CONTAINS
       n_lte_mol_before = n_lte_mol
       CALL read_molec(mol_files(imol), wlbeg, wlend, ratiolg, ixwlbeg, &
                       lte_mol, n_lte_mol)
-      IF (VERBOSE == 1) &
+      IF (VERBOSE .EQ. 1) &
         WRITE(6,ROW_FMT) 'mol', n_lte_mol - n_lte_mol_before, 0, &
           TRIM(basename(mol_files(imol)))
     END DO
 
-    IF (h2o_file /= '') THEN
-      IF (teff > TEFF_COOL_LIMIT) THEN
-        IF (VERBOSE == 1) &
+    IF (h2o_file .NE. '') THEN
+      IF (teff .GT. TEFF_COOL_LIMIT) THEN
+        IF (VERBOSE .EQ. 1) &
           WRITE(6,SKIP_FMT) 'h2o', 'skip', '', &
             'Teff > 5000 K: ', TRIM(basename(h2o_file))
       ELSE
         CALL read_h2o(h2o_file, wlbeg, wlend, ratiolg, ixwlbeg, &
                       lte_h2o, n_lte_h2o)
-        IF (VERBOSE == 1) &
+        IF (VERBOSE .EQ. 1) &
           WRITE(6,ROW_FMT) 'h2o', n_lte_h2o, 0, TRIM(basename(h2o_file))
       END IF
     END IF
@@ -204,30 +204,30 @@ CONTAINS
     nlines_lte  = n_lte_gfall + n_lte_predict + n_lte_mol + n_lte_h2o
 
     ALLOCATE(nlte_lines(nlines_nlte))
-    IF (nlines_nlte > 0) &
+    IF (nlines_nlte .GT. 0) &
       nlte_lines(1:nlines_nlte) = nlte_gfall(1:nlines_nlte)
 
     ALLOCATE(lte_lines(nlines_lte))
     ioff = 0
-    IF (n_lte_gfall > 0) THEN
+    IF (n_lte_gfall .GT. 0) THEN
       lte_lines(ioff+1 : ioff+n_lte_gfall) = lte_gfall(1:n_lte_gfall)
       ioff = ioff + n_lte_gfall
     END IF
-    IF (n_lte_predict > 0) THEN
+    IF (n_lte_predict .GT. 0) THEN
       lte_lines(ioff+1 : ioff+n_lte_predict) = lte_predict(1:n_lte_predict)
       ioff = ioff + n_lte_predict
     END IF
-    IF (n_lte_mol > 0) THEN
+    IF (n_lte_mol .GT. 0) THEN
       lte_lines(ioff+1 : ioff+n_lte_mol) = lte_mol(1:n_lte_mol)
       ioff = ioff + n_lte_mol
     END IF
-    IF (n_lte_h2o > 0) THEN
+    IF (n_lte_h2o .GT. 0) THEN
       lte_lines(ioff+1 : ioff+n_lte_h2o) = lte_h2o(1:n_lte_h2o)
     END IF
 
     DEALLOCATE(lte_gfall, lte_predict, lte_mol, lte_h2o, nlte_gfall)
 
-    IF (VERBOSE == 1) THEN
+    IF (VERBOSE .EQ. 1) THEN
       WRITE(6,'(a4,2x,a12,2x,a12)') '---', '------------', '------------'
       WRITE(6,'(a4,2x,i12,2x,i12)') 'tot', nlines_lte, nlines_nlte
       WRITE(6,'(a)') ''
@@ -259,23 +259,23 @@ CONTAINS
     nmol         = 0
 
     OPEN(UNIT=LU, FILE=listfile, STATUS='old', ACTION='read', IOSTAT=ios)
-    IF (ios /= 0) THEN
+    IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: lines.list not found: ', TRIM(listfile)
       STOP 1
     END IF
 
     DO
       READ(LU, '(a)', IOSTAT=ios) line
-      IF (ios /= 0) EXIT
+      IF (ios .NE. 0) EXIT
       line = ADJUSTL(line)
-      IF (line == '')            CYCLE
-      IF (line(1:1) == '#')      CYCLE
+      IF (line .EQ. '')            CYCLE
+      IF (line(1:1) .EQ. '#')      CYCLE
 
       ! Read keyword only via list-directed (stops at first whitespace).
       ! List-directed read of the full line would truncate filepath at '/'
       ! since Fortran treats '/' as a record terminator in list-directed I/O.
       READ(line, *, IOSTAT=ios) keyword
-      IF (ios /= 0) THEN
+      IF (ios .NE. 0) THEN
         WRITE(6,'(a,a)') 'WARNING: ignoring malformed line in lines.list: ', TRIM(line)
         CYCLE
       END IF
@@ -286,8 +286,8 @@ CONTAINS
         INTEGER :: i, klen
         klen = LEN_TRIM(keyword)
         i    = klen + 1
-        DO WHILE (i <= LEN_TRIM(line))
-          IF (line(i:i) == ' ' .OR. line(i:i) == CHAR(9)) THEN
+        DO WHILE (i .LE. LEN_TRIM(line))
+          IF (line(i:i) .EQ. ' ' .OR. line(i:i) .EQ. CHAR(9)) THEN
             i = i + 1
           ELSE
             EXIT
@@ -302,7 +302,7 @@ CONTAINS
       CASE ('predict')
         predict_file = TRIM(filepath)
       CASE ('mol')
-        IF (nmol < 256) THEN
+        IF (nmol .LT. 256) THEN
           nmol = nmol + 1
           mol_files(nmol) = TRIM(filepath)
         ELSE
@@ -388,13 +388,13 @@ CONTAINS
 
     OPEN(UNIT=11, FILE=filename, STATUS='old', ACTION='read', &
          FORM='formatted', IOSTAT=ios)
-    IF (ios /= 0) THEN
+    IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open gfall file: ', TRIM(filename)
       STOP 1
     END IF
 
     delfactor = 1.0D0
-    IF (wlbeg > 500.0D0) delfactor = wlbeg / 500.0D0
+    IF (wlbeg .GT. 500.0D0) delfactor = wlbeg / 500.0D0
 
     dwl       = 0.0
     dgflog    = 0.0
@@ -414,19 +414,19 @@ CONTAINS
         wl, gflog, code, e, xj, label, ep, xjp, labelp, &
         gr, gs, gw, ref, nblo, nbup, iso1, x1, iso2, x2, &
         other1, other2, lim, lim, isoshift
-      IF (ios < 0) EXIT
-      IF (ios > 0) THEN
+      IF (ios .LT. 0) EXIT
+      IF (ios .GT. 0) THEN
         WRITE(6,'(a)') ' WARNING: read_gfall: read error, stopping line read'
         EXIT
       END IF
 
       READ(cother1, '(2I5)', IOSTAT=ios) ishift, ishiftp
-      IF (ios /= 0) THEN
+      IF (ios .NE. 0) THEN
         ishift  = 0
         ishiftp = 0
       END IF
       READ(cother2, '(A6,I1,A3)', IOSTAT=ios) ixfixfp, linesize, auto_flag
-      IF (ios /= 0) THEN
+      IF (ios .NE. 0) THEN
         linesize  = 0
         auto_flag = '   '
       END IF
@@ -436,14 +436,14 @@ CONTAINS
       dwliso  = REAL(isoshift, 4) * 0.0001     ! milli-Angstrom -> nm
 
       wlvac = ABS(wl) + dwl
-      IF (TRANSFER(labelp(1), ' ') == 'CONTINUU') &
+      IF (TRANSFER(labelp(1), ' ') .EQ. 'CONTINUU') &
         wlvac = 1.D7 / ABS(ABS(ep) + eshiftp - (ABS(e) + eshift)) + dwl + dwliso
 
       ! Guard: skip any record with non-physical wlvac (e.g. continuum edge
       ! where the energy level difference is zero giving wlvac=Inf or NaN)
-      IF (.NOT. (wlvac > 0.0D0 .AND. wlvac < 1.0D8)) CYCLE
+      IF (.NOT. (wlvac .GT. 0.0D0 .AND. wlvac .LT. 1.0D8)) CYCLE
 
-      IF (wlvac > wlend + dellim(1)) EXIT
+      IF (wlvac .GT. wlend + dellim(1)) EXIT
 
       ixwl  = INT(LOG(wlvac) / ratiolg + 0.5D0)
       nbuff = ixwl - ixwlbeg + 1
@@ -451,11 +451,11 @@ CONTAINS
       icode_r = NINT(code * 100.0)
 
       lim = MIN(8 - linesize, 7)
-      IF (icode_r == 100) lim = 1
+      IF (icode_r .EQ. 100) lim = 1
 
-      IF (wlvac < wlbeg - dellim(lim) * delfactor) CYCLE
-      IF (wlvac > wlend + dellim(lim) * delfactor) CYCLE
-      IF (auto_flag == 'COR') CYCLE
+      IF (wlvac .LT. wlbeg - dellim(lim) * delfactor) CYCLE
+      IF (wlvac .GT. wlend + dellim(lim) * delfactor) CYCLE
+      IF (auto_flag .EQ. 'COR') CYCLE
 
       ! --- oscillator strength and energy ---
       gf    = 10.0**(gflog + dgflog + x1 + x2)
@@ -465,22 +465,22 @@ CONTAINS
       gammar_d = 10.0D0**(gr + dgammar)
       gammas_d = 10.0D0**(gs + dgammas)
       gammaw_d = 10.0D0**(gw + dgammaw)
-      IF (auto_flag == 'AUT' .AND. gs > 0.0) &
+      IF (auto_flag .EQ. 'AUT' .AND. gs .GT. 0.0) &
         gammas_d = -10.0D0**(-gs + dgammas)
 
-      IF (ABS(gr) < 1.0e-6) gammar_d = 2.223D13 / wlvac**2
+      IF (ABS(gr) .LT. 1.0e-6) gammar_d = 2.223D13 / wlvac**2
 
       ! --- NELION ---
       nelem    = INT(code)
       icharge  = NINT((code - REAL(nelem,4)) * 100.0)
       zeff     = icharge + 1
       nelion_i = nelem*6 - 6 + INT(zeff)
-      IF (nelem > 19 .AND. nelem < 29 .AND. icharge > 5) &
+      IF (nelem .GT. 19 .AND. nelem .LT. 29 .AND. icharge .GT. 5) &
         nelion_i = 6*(nelem + icharge*10 - 30) - 1
 
       ! --- default Stark width ---
-      IF (ABS(gs) < 1.0e-6) THEN
-        IF (code < 100.0) THEN
+      IF (ABS(gs) .LT. 1.0e-6) THEN
+        IF (code .LT. 100.0) THEN
           eup    = DBLE(MAX(ABS(e), ABS(ep)))
           effnsq = 25.0D0
           CALL ionpot_index(nelem, icharge, eup, effnsq, zeff)
@@ -492,8 +492,8 @@ CONTAINS
       END IF
 
       ! --- default van der Waals width ---
-      IF (ABS(gw) < 1.0e-6) THEN
-        IF (code < 100.0) THEN
+      IF (ABS(gw) .LT. 1.0e-6) THEN
+        IF (code .LT. 100.0) THEN
           eup    = DBLE(MAX(ABS(e), ABS(ep)))
           effnsq = 25.0D0
           CALL ionpot_index(nelem, icharge, eup, effnsq, zeff)
@@ -502,16 +502,16 @@ CONTAINS
           CALL ionpot_index_lo(nelem, icharge, elo_d, effnsq, zeff)
           effnsq = MIN(effnsq, 1000.0D0)
           rsqlo  = 2.5D0 * (effnsq / zeff)**2
-          IF (code - zeff + 1.0D0 > 20.0D0 .AND. code - zeff + 1.0D0 < 29.0D0) THEN
+          IF (code - zeff + 1.0D0 .GT. 20.0D0 .AND. code - zeff + 1.0D0 .LT. 29.0D0) THEN
             rsqup = (45.0D0 - (code - zeff + 1.0D0)) / zeff
             rsqlo = 0.0D0
           END IF
           BLOCK
             CHARACTER(LEN=8) :: clabelp_vdw
             clabelp_vdw = TRANSFER(labelp(1), clabelp_vdw)
-            IF (clabelp_vdw == 'CONTINUU') rsqlo = 0.0D0
+            IF (clabelp_vdw .EQ. 'CONTINUU') rsqlo = 0.0D0
           END BLOCK
-          IF (rsqup < rsqlo) rsqup = 2.0D0 * rsqlo
+          IF (rsqup .LT. rsqlo) rsqup = 2.0D0 * rsqlo
           gammaw_d = 4.5D-9 * (rsqup - rsqlo)**0.4D0
         ELSE
           gammaw_d = 1.D-7 / zeff
@@ -520,33 +520,33 @@ CONTAINS
 
       ! --- line type dispatch ---
       itype = 0
-      IF (icode_r == 100)                     itype = -1
-      IF (icode_r == 100 .AND. iso1 == 2)    itype = -2
-      IF (icode_r == 200)                     itype = -3
-      IF (icode_r == 200 .AND. iso1 == 3)    itype = -4
-      IF (icode_r == 201)                     itype = -6
-      IF (icode_r == 201 .AND. iso1 == 3)    itype = -6
-      IF (auto_flag == 'AUT')                 itype =  1
-      IF (auto_flag == 'PRD')                 itype =  3
+      IF (icode_r .EQ. 100)                     itype = -1
+      IF (icode_r .EQ. 100 .AND. iso1 .EQ. 2)    itype = -2
+      IF (icode_r .EQ. 200)                     itype = -3
+      IF (icode_r .EQ. 200 .AND. iso1 .EQ. 3)    itype = -4
+      IF (icode_r .EQ. 201)                     itype = -6
+      IF (icode_r .EQ. 201 .AND. iso1 .EQ. 3)    itype = -6
+      IF (auto_flag .EQ. 'AUT')                 itype =  1
+      IF (auto_flag .EQ. 'PRD')                 itype =  3
 
       BLOCK
         CHARACTER(LEN=8) :: clabelp
         clabelp = TRANSFER(labelp(1), clabelp)
-        IF (clabelp == 'CONTINUU') THEN
+        IF (clabelp .EQ. 'CONTINUU') THEN
           itype = NINT(xjp)
           gf    = gf * (xj + xj + 1.0)
         END IF
       END BLOCK
 
       ncon = 0
-      IF (iso1 == 0 .AND. iso2 > 0) ncon = iso2
+      IF (iso1 .EQ. 0 .AND. iso2 .GT. 0) ncon = iso2
 
       ! --- CGF conversion and damping normalisation ---
-      IF (itype /= 1 .AND. itype <= 3) THEN
+      IF (itype .NE. 1 .AND. itype .LE. 3) THEN
         frelin   = 2.99792458D17 / wlvac
         cgf      = 0.026538D0 / 1.77245D0 * DBLE(gf) / frelin
         frq4pi   = 12.5664D0 * frelin
-        IF (itype == 2) THEN
+        IF (itype .EQ. 2) THEN
           gammar_d = DBLE(gr)
         ELSE
           gammar_d = gammar_d / frq4pi
@@ -560,23 +560,23 @@ CONTAINS
       nelionx = 0
 
       ! --- append to appropriate buffer ---
-      IF (itype /= 0) THEN
+      IF (itype .NE. 0) THEN
         ! complex-profile line -> nlte buffer
-        IF (nblo + nbup /= 0) THEN
+        IF (nblo + nbup .NE. 0) THEN
           DO ic = 1, 17
-            IF (icode_r == codex(ic)) THEN
+            IF (icode_r .EQ. codex(ic)) THEN
               nelionx = ic
               EXIT
             END IF
           END DO
-          IF (nelionx == 0) THEN
+          IF (nelionx .EQ. 0) THEN
             WRITE(6,'(a,f10.2)') ' WARNING: nlte line has unknown CODE: ', code
             CYCLE
           END IF
         END IF
-        IF (n_nlte == nlte_cap) CALL grow_nlte(nlte_buf, nlte_cap)
+        IF (n_nlte .EQ. nlte_cap) CALL grow_nlte(nlte_buf, nlte_cap)
         n_nlte = n_nlte + 1
-        IF (itype == 1 .OR. itype > 3) THEN
+        IF (itype .EQ. 1 .OR. itype .GT. 3) THEN
           nlte_buf(n_nlte) = nlte_line_t(wlvac, REAL(elo_d,4), REAL(gf,4), &
             nblo, nbup, nelion_i, itype, ncon, nelionx, &
             REAL(gammar_d,4), REAL(gammas_d,4), REAL(gammaw_d,4), nbuff, lim)
@@ -586,19 +586,19 @@ CONTAINS
             REAL(gammar_d,4), REAL(gammas_d,4), REAL(gammaw_d,4), nbuff, lim)
         END IF
 
-      ELSE IF (nblo + nbup /= 0) THEN
+      ELSE IF (nblo + nbup .NE. 0) THEN
         ! TYPE=0 with departure coefficients -> nlte buffer
         DO ic = 1, 17
-          IF (icode_r == codex(ic)) THEN
+          IF (icode_r .EQ. codex(ic)) THEN
             nelionx = ic
             EXIT
           END IF
         END DO
-        IF (nelionx == 0) THEN
+        IF (nelionx .EQ. 0) THEN
           WRITE(6,'(a,f10.2)') ' WARNING: nlte line has unknown CODE: ', code
           CYCLE
         END IF
-        IF (n_nlte == nlte_cap) CALL grow_nlte(nlte_buf, nlte_cap)
+        IF (n_nlte .EQ. nlte_cap) CALL grow_nlte(nlte_buf, nlte_cap)
         n_nlte = n_nlte + 1
         nlte_buf(n_nlte) = nlte_line_t(wlvac, REAL(elo_d,4), REAL(cgf,4), &
           nblo, nbup, nelion_i, itype, ncon, nelionx, &
@@ -606,7 +606,7 @@ CONTAINS
 
       ELSE
         ! plain Voigt line -> lte buffer
-        IF (n_lte == lte_cap) CALL grow_lte(lte_buf, lte_cap)
+        IF (n_lte .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
         n_lte = n_lte + 1
         lte_buf(n_lte) = lte_line_t(nbuff, REAL(cgf,4), nelion_i, &
           REAL(elo_d,4), REAL(gammar_d,4), REAL(gammas_d,4), REAL(gammaw_d,4))
@@ -757,14 +757,14 @@ CONTAINS
 
     OPEN(UNIT=11, FILE=filename, STATUS='old', FORM='unformatted', &
          ACCESS='direct', RECL=16, IOSTAT=ios)
-    IF (ios /= 0) THEN
+    IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open predict file: ', TRIM(filename)
       STOP 1
     END IF
 
     READ(11, REC=1) iwl1
-    IF (iwl1 > istop) THEN
-      IF (VERBOSE == 1) &
+    IF (iwl1 .GT. istop) THEN
+      IF (VERBOSE .EQ. 1) &
         WRITE(6,'(a)') '  No predicted lines in window (file starts past wlend).'
       CLOSE(11)
       IF (ALLOCATED(lte_arr)) DEALLOCATE(lte_arr)
@@ -780,8 +780,8 @@ CONTAINS
     END BLOCK
 
     READ(11, REC=lengthfile) iwl
-    IF (iwl < istart) THEN
-      IF (VERBOSE == 1) &
+    IF (iwl .LT. istart) THEN
+      IF (VERBOSE .EQ. 1) &
         WRITE(6,'(a)') '  No predicted lines in window (file ends before wlbeg).'
       CLOSE(11)
       IF (ALLOCATED(lte_arr)) DEALLOCATE(lte_arr)
@@ -793,10 +793,10 @@ CONTAINS
     ! binary search for first record >= istart
     limitblue = 1
     limitred  = lengthfile
-    DO WHILE (limitred - limitblue > 1)
+    DO WHILE (limitred - limitblue .GT. 1)
       newlimit = (limitred + limitblue) / 2
       READ(11, REC=newlimit) iwl
-      IF (iwl < istart) THEN
+      IF (iwl .LT. istart) THEN
         limitblue = newlimit
       ELSE
         limitred  = newlimit
@@ -810,17 +810,17 @@ CONTAINS
 
     DO i = nstart, lengthfile
       READ(11, REC=i, IOSTAT=ios) iiiiiii
-      IF (ios < 0) EXIT
-      IF (ios > 0) THEN
+      IF (ios .LT. 0) EXIT
+      IF (ios .GT. 0) THEN
         WRITE(6,'(a,i0)') ' ERROR: read_predict: read error at record ', i
         EXIT
       END IF
-      IF (iwl > istop) EXIT
+      IF (iwl .GT. istop) EXIT
 
       nelionnew = ABS(iwords(3)) / 10
-      IF (nelionnew < 1 .OR. nelionnew > 1005) CYCLE
+      IF (nelionnew .LT. 1 .OR. nelionnew .GT. 1005) CYCLE
       nelion_i  = nelionold(nelionnew)
-      IF (nelion_i == 0) CYCLE
+      IF (nelion_i .EQ. 0) CYCLE
 
       wlvac_d = EXP(iwl * ratiolog_r2e6)
       freq    = 2.99792458D17 / wlvac_d
@@ -835,7 +835,7 @@ CONTAINS
       ixwl  = INT(LOG(wlvac_d) / ratiolg + 0.5D0)
       nbuff = ixwl - ixwlbeg + 1
 
-      IF (n_lte == lte_cap) CALL grow_lte(lte_buf, lte_cap)
+      IF (n_lte .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_lte = n_lte + 1
       lte_buf(n_lte) = lte_line_t(nbuff, REAL(congf,4), nelion_i, &
         REAL(elo_d,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4))
@@ -868,7 +868,7 @@ CONTAINS
     ! Build sidecar path: replace extension with .bin
     binfile = TRIM(filename)
     dot     = INDEX(binfile, '.', BACK=.TRUE.)
-    IF (dot > 0) THEN
+    IF (dot .GT. 0) THEN
       binfile = binfile(:dot-1) // '.bin'
     ELSE
       binfile = TRIM(binfile) // '.bin'
@@ -917,7 +917,7 @@ CONTAINS
 
     OPEN(UNIT=21, FILE=binfile, STATUS='old', FORM='unformatted', &
          ACCESS='direct', RECL=RECBYTES, IOSTAT=ios)
-    IF (ios /= 0) THEN
+    IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') '  WARNING: cannot open binary sidecar, falling back: ', &
         TRIM(binfile)
       CALL read_molec_ascii(ascfile, wlbeg, wlend, ratiolg, ixwlbeg, &
@@ -926,7 +926,7 @@ CONTAINS
     END IF
 
     READ(21, REC=1) hdr
-    IF (hdr(1) /= MAGIC) THEN
+    IF (hdr(1) .NE. MAGIC) THEN
       WRITE(6,'(a)') '  WARNING: binary sidecar wrong magic, falling back'
       CLOSE(21)
       CALL read_molec_ascii(ascfile, wlbeg, wlend, ratiolg, ixwlbeg, &
@@ -938,16 +938,16 @@ CONTAINS
     ! Binary search: first record with wlvac >= wlbeg - 1.0
     lo = 1
     hi = nrec
-    DO WHILE (lo < hi)
+    DO WHILE (lo .LT. hi)
       mid = (lo + hi) / 2
       READ(21, REC=mid+1, IOSTAT=ios) buf
-      IF (ios /= 0) THEN
+      IF (ios .NE. 0) THEN
         WRITE(6,'(a,i0)') ' ERROR: read_molec_bin seek error at record ', mid+1
         CLOSE(21)
         RETURN
       END IF
       wlvac = TRANSFER(buf(1), wlvac)
-      IF (wlvac < REAL(wlbeg - 1.0D0, 4)) THEN
+      IF (wlvac .LT. REAL(wlbeg - 1.0D0, 4)) THEN
         lo = mid + 1
       ELSE
         hi = mid
@@ -961,8 +961,8 @@ CONTAINS
 
     DO mid = istart, nrec
       READ(21, REC=mid+1, IOSTAT=ios) buf
-      IF (ios < 0) EXIT
-      IF (ios > 0) THEN
+      IF (ios .LT. 0) EXIT
+      IF (ios .GT. 0) THEN
         WRITE(6,'(a,i0)') ' ERROR: read_molec_bin read error at record ', mid+1
         EXIT
       END IF
@@ -977,10 +977,10 @@ CONTAINS
       labelp_x = buf(8)
 
       wlvac_d = DBLE(wlvac)
-      IF (wlvac_d > wlend + 1.0D0) EXIT
+      IF (wlvac_d .GT. wlend + 1.0D0) EXIT
 
       CALL molec_dispatch(iso, icode, nelion, iso1, iso2, x1, x2, fudge)
-      IF (nelion == 0) CYCLE
+      IF (nelion .EQ. 0) CYCLE
 
       gf  = EXP((DBLE(gflog) + x1 + x2 + fudge) * 2.30258509299405D0)
       elo = MIN(ABS(DBLE(e_r4)), ABS(DBLE(ep_r4)))
@@ -991,13 +991,13 @@ CONTAINS
       congf  = 0.026538D0 / 1.77245D0 * gf / freq
       frq4pi = freq * 12.5664D0
 
-      IF (loggr == 0) THEN
+      IF (loggr .EQ. 0) THEN
         gammar = 2.223D13 / wlvac_d**2
       ELSE
         gammar = 10.0D0**(loggr * 0.01D0)
       END IF
 
-      IF (labelp_x == 1) THEN
+      IF (labelp_x .EQ. 1) THEN
         gammas = 3.0D-8
         gammaw = 1.0D-8
       ELSE
@@ -1009,7 +1009,7 @@ CONTAINS
       gamsf = gammas / frq4pi
       gamwf = gammaw / frq4pi
 
-      IF (n_new == lte_cap) CALL grow_lte(lte_buf, lte_cap)
+      IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
       lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), nelion, &
         REAL(elo,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4))
@@ -1019,14 +1019,14 @@ CONTAINS
 
     ! Append to existing lte_arr (which may already have lines from prior mol files)
     n_old = n_lte
-    IF (n_old > 0 .AND. ALLOCATED(lte_arr)) THEN
+    IF (n_old .GT. 0 .AND. ALLOCATED(lte_arr)) THEN
       ALLOCATE(lte_old(n_old), SOURCE=lte_arr(1:n_old))
     END IF
     IF (ALLOCATED(lte_arr)) DEALLOCATE(lte_arr)
     n_lte = n_old + n_new
     ALLOCATE(lte_arr(n_lte))
-    IF (n_old > 0) lte_arr(1:n_old) = lte_old(1:n_old)
-    IF (n_new > 0) lte_arr(n_old+1:n_lte) = lte_buf(1:n_new)
+    IF (n_old .GT. 0) lte_arr(1:n_old) = lte_old(1:n_old)
+    IF (n_new .GT. 0) lte_arr(n_old+1:n_lte) = lte_buf(1:n_new)
     IF (ALLOCATED(lte_old)) DEALLOCATE(lte_old)
     DEALLOCATE(lte_buf)
 
@@ -1058,7 +1058,7 @@ CONTAINS
 
     OPEN(UNIT=11, FILE=filename, STATUS='old', ACTION='read', &
          FORM='formatted', IOSTAT=ios)
-    IF (ios /= 0) THEN
+    IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open molecule file: ', TRIM(filename)
       STOP 1
     END IF
@@ -1070,20 +1070,20 @@ CONTAINS
     DO
       READ(11, '(F10.4,F7.3,F5.1,F10.3,F5.1,F11.3,I4,A8,A8,I2,I4)', &
            IOSTAT=ios) wl, gflog, xj, e, xjp, ep, icode, clabel, clabelp, iso, loggr
-      IF (ios < 0) EXIT
-      IF (ios > 0) THEN
+      IF (ios .LT. 0) EXIT
+      IF (ios .GT. 0) THEN
         WRITE(6,'(a,i0)') ' ERROR: read_molec_ascii: read error near line ', n_new
         EXIT
       END IF
 
-      IF (ABS(wl) > wlend + 2.0D0) EXIT
+      IF (ABS(wl) .GT. wlend + 2.0D0) EXIT
 
       wlvac = 1.0D7 / ABS(ABS(ep) - ABS(e))
-      IF (wlvac < wlbeg - 1.0D0) CYCLE
-      IF (wlvac > wlend + 1.0D0) CYCLE
+      IF (wlvac .LT. wlbeg - 1.0D0) CYCLE
+      IF (wlvac .GT. wlend + 1.0D0) CYCLE
 
       CALL molec_dispatch(iso, icode, nelion, iso1, iso2, x1, x2, fudge)
-      IF (nelion == 0) CYCLE
+      IF (nelion .EQ. 0) CYCLE
 
       gf  = EXP((gflog + x1 + x2 + fudge) * 2.30258509299405D0)
       elo = MIN(ABS(e), ABS(ep))
@@ -1094,13 +1094,13 @@ CONTAINS
       congf  = 0.026538D0 / 1.77245D0 * gf / freq
       frq4pi = freq * 12.5664D0
 
-      IF (loggr == 0) THEN
+      IF (loggr .EQ. 0) THEN
         gammar = 2.223D13 / wlvac**2
       ELSE
         gammar = 10.0D0**(loggr * 0.01D0)
       END IF
 
-      IF (clabelp(1:1) == 'X') THEN
+      IF (clabelp(1:1) .EQ. 'X') THEN
         gammas = 3.0D-8
         gammaw = 1.0D-8
       ELSE
@@ -1112,7 +1112,7 @@ CONTAINS
       gamsf = gammas / frq4pi
       gamwf = gammaw / frq4pi
 
-      IF (n_new == lte_cap) CALL grow_lte(lte_buf, lte_cap)
+      IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
       lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), nelion, &
         REAL(elo,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4))
@@ -1121,14 +1121,14 @@ CONTAINS
     CLOSE(11)
 
     n_old = n_lte
-    IF (n_old > 0 .AND. ALLOCATED(lte_arr)) THEN
+    IF (n_old .GT. 0 .AND. ALLOCATED(lte_arr)) THEN
       ALLOCATE(lte_old(n_old), SOURCE=lte_arr(1:n_old))
     END IF
     IF (ALLOCATED(lte_arr)) DEALLOCATE(lte_arr)
     n_lte = n_old + n_new
     ALLOCATE(lte_arr(n_lte))
-    IF (n_old > 0) lte_arr(1:n_old) = lte_old(1:n_old)
-    IF (n_new > 0) lte_arr(n_old+1:n_lte) = lte_buf(1:n_new)
+    IF (n_old .GT. 0) lte_arr(1:n_old) = lte_old(1:n_old)
+    IF (n_new .GT. 0) lte_arr(n_old+1:n_lte) = lte_buf(1:n_new)
     IF (ALLOCATED(lte_old)) DEALLOCATE(lte_old)
     DEALLOCATE(lte_buf)
 
@@ -1174,14 +1174,14 @@ CONTAINS
 
     OPEN(UNIT=11, FILE=filename, STATUS='old', FORM='unformatted', &
          ACCESS='direct', RECL=8, IOSTAT=ios)
-    IF (ios /= 0) THEN
+    IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open H2O file: ', TRIM(filename)
       STOP 1
     END IF
 
     READ(11, REC=1) irec
     wlvac = EXP(iwl * ratiolog_r2e6)
-    IF (wlvac > wlend + 1.0D0) THEN
+    IF (wlvac .GT. wlend + 1.0D0) THEN
       CLOSE(11)
       IF (.NOT. ALLOCATED(lte_arr)) ALLOCATE(lte_arr(0))
       RETURN
@@ -1195,7 +1195,7 @@ CONTAINS
 
     READ(11, REC=lengthfile) irec
     wlvac1 = EXP(iwl * ratiolog_r2e6)
-    IF (wlbeg - 1.0D0 > wlvac1) THEN
+    IF (wlbeg - 1.0D0 .GT. wlvac1) THEN
       CLOSE(11)
       IF (.NOT. ALLOCATED(lte_arr)) ALLOCATE(lte_arr(0))
       RETURN
@@ -1203,11 +1203,11 @@ CONTAINS
 
     limitblue = 1
     limitred  = lengthfile
-    DO WHILE (limitred - limitblue > 1)
+    DO WHILE (limitred - limitblue .GT. 1)
       newlimit = (limitred + limitblue) / 2
       READ(11, REC=newlimit) irec
       wlvac = EXP(iwl * ratiolog_r2e6)
-      IF (wlvac < wlbeg - 1.0D0) THEN
+      IF (wlvac .LT. wlbeg - 1.0D0) THEN
         limitblue = newlimit
       ELSE
         limitred  = newlimit
@@ -1221,8 +1221,8 @@ CONTAINS
 
     DO i = istart, lengthfile
       READ(11, REC=i, IOSTAT=ios) irec
-      IF (ios < 0) EXIT
-      IF (ios > 0) THEN
+      IF (ios .LT. 0) EXIT
+      IF (ios .GT. 0) THEN
         WRITE(6,'(a,i0)') ' ERROR: read_h2o: read error at record ', i
         EXIT
       END IF
@@ -1231,17 +1231,17 @@ CONTAINS
       igflog_loc = INT(IBITS(irec(2), 16, 16), 2)
 
       wlvac = EXP(iwl * ratiolog_r2e6)
-      IF (wlvac > wlend + 1.0D0) EXIT
+      IF (wlvac .GT. wlend + 1.0D0) EXIT
 
       freq  = 2.99792458D17 / wlvac
       ixwl  = INT(LOG(wlvac) / ratiolg + 0.5D0)
       nbuff = ixwl - ixwlbeg + 1
 
-      IF      (ielo_loc > 0 .AND. igflog_loc > 0)  THEN
+      IF      (ielo_loc .GT. 0 .AND. igflog_loc .GT. 0)  THEN
         iso = 1
-      ELSE IF (ielo_loc > 0 .AND. igflog_loc <= 0) THEN
+      ELSE IF (ielo_loc .GT. 0 .AND. igflog_loc .LE. 0) THEN
         iso = 2
-      ELSE IF (ielo_loc <= 0 .AND. igflog_loc > 0) THEN
+      ELSE IF (ielo_loc .LE. 0 .AND. igflog_loc .GT. 0) THEN
         iso = 3
       ELSE
         iso = 4
@@ -1254,7 +1254,7 @@ CONTAINS
       gamsf  = tablog(1)    / frq4pi
       gamwf  = tablog(9384) / frq4pi
 
-      IF (n_new == lte_cap) CALL grow_lte(lte_buf, lte_cap)
+      IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
       lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), 534, &
         REAL(ABS(ielo_loc),4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4))
@@ -1301,17 +1301,17 @@ CONTAINS
       END SELECT
     CASE (14);  nelion=252; iso1=1;  iso2=14; x1= 0.0;   x2=-.002
     CASE (15)
-      IF (icode == 607) THEN
+      IF (icode .EQ. 607) THEN
                   nelion=270; iso1=12; iso2=15; x1=-.005; x2=-2.444
       ELSE;       nelion=252; iso1=1;  iso2=15; x1= 0.0;  x2=-2.444
       END IF
     CASE (16)
-      IF (icode == 813) THEN
+      IF (icode .EQ. 813) THEN
                   nelion=324; iso1=27; iso2=16; x1= 0.0;  x2=-.001
       ELSE;       nelion=258; iso1=1;  iso2=16; x1= 0.0;  x2=-.001
       END IF
     CASE (17)
-      IF (icode == 813) THEN
+      IF (icode .EQ. 813) THEN
                   nelion=324; iso1=27; iso2=17; x1= 0.0;  x2=-3.398
       ELSE;       nelion=276; iso1=12; iso2=17; x1=-.005; x2=-3.398
       END IF
@@ -1325,39 +1325,39 @@ CONTAINS
       END SELECT
     CASE (23);  nelion=492; iso1=1;  iso2=23; x1= 0.0;   x2= 0.0
     CASE (24)
-      IF (icode == 812) THEN
+      IF (icode .EQ. 812) THEN
                   nelion=318; iso1=16; iso2=24; x1=-.001; x2=-.102
       ELSE;       nelion=300; iso1=1;  iso2=24; x1= 0.0;  x2=-.105
       END IF
     CASE (25)
-      IF (icode == 812) THEN
+      IF (icode .EQ. 812) THEN
                   nelion=318; iso1=16; iso2=25; x1=-.001; x2=-1.000
       ELSE;       nelion=300; iso1=1;  iso2=25; x1= 0.0;  x2=-.996
       END IF
     CASE (26)
-      IF (icode == 812) THEN
+      IF (icode .EQ. 812) THEN
                   nelion=318; iso1=16; iso2=26; x1=-.001; x2=-.958
       ELSE;       nelion=300; iso1=1;  iso2=26; x1= 0.0;  x2=-.947
       END IF
     CASE (28)
-      IF (icode == 814) THEN
+      IF (icode .EQ. 814) THEN
                   nelion=330; iso1=28; iso2=16; x1=-.035; x2=-.001
       ELSE;       nelion=312; iso1=1;  iso2=28; x1= 0.0;  x2=-.035
       END IF
     CASE (29)
-      IF (icode == 814) THEN
+      IF (icode .EQ. 814) THEN
                   nelion=330; iso1=29; iso2=16; x1=-1.328; x2=-.001
       ELSE;       nelion=312; iso1=1;  iso2=29; x1= 0.0;   x2=-1.331
       END IF
     CASE (30)
-      IF (icode == 814) THEN
+      IF (icode .EQ. 814) THEN
                   nelion=330; iso1=30; iso2=16; x1=-1.510; x2=-.001
       ELSE;       nelion=312; iso1=1;  iso2=30; x1= 0.0;   x2=-1.516
       END IF
     CASE (33);  nelion=264; iso1=13; iso2=13; x1=-1.955; x2=-1.955
     CASE (39);  nelion=498; iso1=39; iso2=1;  x1=-.030;  x2= 0.0
     CASE (40)
-      IF (icode == 820) THEN
+      IF (icode .EQ. 820) THEN
                   nelion=354; iso1=40; iso2=16; x1=-.013; x2=-.001
       ELSE;       nelion=342; iso1=40; iso2=1;  x1=-.013; x2= 0.0
       END IF
@@ -1366,19 +1366,19 @@ CONTAINS
     CASE (43);  nelion=342; iso1=43; iso2=1;  x1=-2.870; x2= 0.0
     CASE (44);  nelion=342; iso1=44; iso2=1;  x1=-1.681; x2= 0.0
     CASE (46)
-      IF (icode == 120) THEN
+      IF (icode .EQ. 120) THEN
                   nelion=342; iso1=46; iso2=1;  x1=-4.398; x2= 0.0
       ELSE;       nelion=366; iso1=16; iso2=46; x1= 0.0;   x2=-1.101
       END IF
     CASE (47);  nelion=366; iso1=16; iso2=47; x1= 0.0;   x2=-1.138
     CASE (48)
-      IF (icode == 120) THEN
+      IF (icode .EQ. 120) THEN
                   nelion=342; iso1=48; iso2=1;  x1=-2.728; x2= 0.0
       ELSE;       nelion=366; iso1=16; iso2=48; x1= 0.0;   x2=-.131
       END IF
     CASE (49);  nelion=366; iso1=16; iso2=49; x1= 0.0;   x2=-1.259
     CASE (50)
-      IF (icode == 124) THEN
+      IF (icode .EQ. 124) THEN
                   nelion=432; iso1=50; iso2=1;  x1=-1.362; x2= 0.0
       ELSE;       nelion=366; iso1=16; iso2=50; x1= 0.0;   x2=-1.272
       END IF
@@ -1386,7 +1386,7 @@ CONTAINS
     CASE (52);  nelion=432; iso1=52; iso2=1;  x1=-.077;  x2= 0.0
     CASE (53);  nelion=432; iso1=53; iso2=1;  x1=-1.022; x2= 0.0
     CASE (54)
-      IF (icode == 124) THEN
+      IF (icode .EQ. 124) THEN
                   nelion=432; iso1=54; iso2=1;  x1=-1.626; x2= 0.0
       ELSE;       nelion=444; iso1=54; iso2=1;  x1=-1.237; x2= 0.0
       END IF
@@ -1433,13 +1433,13 @@ CONTAINS
     INTEGER :: idx
     REAL(8) :: deleup
 
-    IF (nelem <= 30) THEN
+    IF (nelem .LE. 30) THEN
       idx = nelem*(nelem+1)/2 + icharge
     ELSE
       idx = nelem*5 + 341 + icharge
     END IF
     deleup = potion(idx) - eup
-    IF (deleup > 0.0D0) THEN
+    IF (deleup .GT. 0.0D0) THEN
       effnsq = 109737.31D0 * zeff**2 / deleup
     END IF
     ! else: retain the caller-supplied safety default (25.0)
@@ -1456,7 +1456,7 @@ CONTAINS
     INTEGER :: idx
     REAL(8) :: delelo
 
-    IF (nelem <= 30) THEN
+    IF (nelem .LE. 30) THEN
       idx = nelem*(nelem+1)/2 + icharge
     ELSE
       idx = nelem*5 + 341 + icharge
@@ -1476,7 +1476,7 @@ CONTAINS
     CHARACTER(LEN=512)           :: name
     INTEGER :: i
     i = INDEX(path, '/', BACK=.TRUE.)
-    IF (i > 0) THEN
+    IF (i .GT. 0) THEN
       name = path(i+1:)
     ELSE
       name = path
@@ -1503,11 +1503,11 @@ CONTAINS
     ! Lowercase in place (ASCII only; Kurucz filenames are ASCII).
     DO k = 1, 3
       c = IACHAR(prefix(k:k))
-      IF (c >= IACHAR('A') .AND. c <= IACHAR('Z')) THEN
+      IF (c .GE. IACHAR('A') .AND. c .LE. IACHAR('Z')) THEN
         prefix(k:k) = ACHAR(c + 32)
       END IF
     END DO
-    isTiO = (prefix == 'tio')
+    isTiO = (prefix .EQ. 'tio')
   END FUNCTION is_tio_file
 
 
