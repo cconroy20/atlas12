@@ -4687,11 +4687,21 @@ END FUNCTION NEXTWORD
 !   Variable NEQUA1: inverse electron density (1/XNE)
 !
 ! File format (unit 2):
-!   Each line: F18.2, F7.3, 5E11.4
-!     Column 1-18:  species code (e.g. 60808.00)
-!     Column 19-25: first equilibrium constant
-!     Column 26-80: five more equilibrium constants
-!   Terminated by a line with code = 0.0
+!   Each data line: A10, F12.2, 1X, F7.3, 5E12.4  (cols 1-90)
+!     Column 1-10:  human-readable label  (e.g. 'OH', 'H2O', 'CaOH')
+!                   This is for human readability only; the species code
+!                   below is the source of truth for chemistry.
+!     Column 11-22: species code (e.g. 60808.00)
+!     Column 23:    space gap
+!     Column 24-30: E1 (eV)
+!     Column 31-90: E2 .. E6
+!     Column 91+:   free-form trailing comment (ignored on read)
+!   Lines starting with `!` (after optional leading whitespace) are
+!     skipped as Fortran-style comments.
+!   Blank lines are skipped.
+!   End-of-file ends the molecule list. A legacy `0.0` terminator is
+!     also still recognized for backward compatibility.
+!   See the header at the top of molecules.dat for full file documentation.
 !=========================================================================
 
 SUBROUTINE READMOL
@@ -4714,8 +4724,9 @@ SUBROUTINE READMOL
   INTEGER :: ID                  ! atomic number extracted from code
   INTEGER :: ION                 ! ionization state from decimal part
   INTEGER :: II                  ! starting position in XCODE for decoding
-  INTEGER :: I, IEQUA, IOS
-  LOGICAL :: saw_terminator       ! true if file had a code=0 terminator
+  INTEGER :: I, IEQUA, IOS, J
+  CHARACTER(LEN=256) :: BUFFER  ! one input line, before parsing
+  CHARACTER(LEN=10)  :: SPECIES_LABEL  ! human-readable label (cols 1-10)
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING READMOL'
 
@@ -4731,16 +4742,44 @@ SUBROUTINE READMOL
   ! --- Read molecules and build component table ---
   KLOC    = 1
   LOCJ(1) = 1
-  saw_terminator = .FALSE.
 
-  DO JMOL = 1, maxmol
+  JMOL = 0
+  DO
 
-    READ(2, '(F18.2, F7.3, 5E11.4)') C, E1, E2, E3, E4, E5, E6
+    ! Read one line into a buffer; bail on EOF
+    READ(2, '(A)', IOSTAT=IOS) BUFFER
+    IF (IOS .NE. 0) EXIT
 
-    ! Code = 0 terminates the list
-    IF (C .EQ. 0.0D0) THEN
-      saw_terminator = .TRUE.
-      EXIT
+    ! Skip blank lines: find first non-space character
+    J = 1
+    DO WHILE (J .LE. LEN_TRIM(BUFFER) .AND. BUFFER(J:J) .EQ. ' ')
+      J = J + 1
+    END DO
+    IF (J .GT. LEN_TRIM(BUFFER)) CYCLE
+
+    ! Skip comment lines (Fortran-style `!`)
+    IF (BUFFER(J:J) .EQ. '!') CYCLE
+
+    ! Parse the data fields from the buffer using the fixed-width format.
+    ! Layout: A10 label (skipped), F12.2 species code, 1-char gap, F7.3 E1,
+    ! 5*E12.4 E2..E6
+    READ(BUFFER, '(A10, F12.2, 1X, F7.3, 5E12.4)', IOSTAT=IOS) &
+         SPECIES_LABEL, C, E1, E2, E3, E4, E5, E6
+    IF (IOS .NE. 0) THEN
+      WRITE(6, '(A)') ' READMOL ERROR: malformed data line:'
+      WRITE(6, '(A,A)') '   ', trim(BUFFER)
+      CLOSE(UNIT=2)
+      STOP 1
+    END IF
+
+    ! Legacy `0.0` terminator (now optional): treat as end-of-list
+    IF (C .EQ. 0.0D0) EXIT
+
+    JMOL = JMOL + 1
+    IF (JMOL .GT. maxmol) THEN
+      WRITE(6, '(A,I5)') ' READMOL ERROR: molecule count exceeds maxmol =', maxmol
+      CLOSE(UNIT=2)
+      STOP 1
     END IF
 
     IF (IDEBUG .EQ. 1) WRITE(6, '(I5, F18.2, F7.3, 1P5E11.4)') &
@@ -4807,12 +4846,7 @@ SUBROUTINE READMOL
 
   END DO
 
-  NUMMOL = JMOL - 1
-  IF (.NOT. saw_terminator) THEN
-    WRITE(6, '(A,I5)') ' READMOL ERROR: molecule count exceeds maxmol =', maxmol
-    CLOSE(UNIT=2)
-    STOP 1
-  END IF
+  NUMMOL = JMOL
   NLOC   = KLOC - 1
 
   ! --- Assign equation numbers to each element ---
