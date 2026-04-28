@@ -298,7 +298,11 @@ Key changes in the modernization:
 
 - Atmosphere state arrays (T, P, ρ, χ, populations) promoted from REAL(4) to REAL(8)
 - Physical constants consolidated into `mod_constants` with CODATA 2018 values, replacing ~130 scattered literals
+- Atomic partition functions replaced with the Barklem & Collet (2016) tabulated U(T) calculated by direct NIST level summation, covering Z = 1..92 in ionization stages I–III; the legacy Kurucz hand-selected few-term sums used by `PFGROUND` (the low-T floor in `PFSAHA`) and the generic `NNN` interpolation table are retained as an internal safety net but are no longer the production data source.  Iron-group partition functions (Z = 20..28) still flow through `PFIRON` for its pressure-lowering correction, but the unperturbed POTLOW = 0 baseline is now anchored to B&C
+- Metal continuum bound-free opacity overhauled: a new `CONT_METAL_OPACITY_TOPBASE` dispatcher replaces the legacy collection of analytic Seaton/Peach fits (Li1OP, C1OP, MG1OP, AL1OP, SI1OP, FE1OP, …).  `MBF_TOPBASE` supplies 30 species (neutrals and first ions of Li, Be, B, C, N, O, F, Ne, Na, Mg, Al, Si, S, Ar, Ca) from R-matrix Opacity Project cross sections processed by Allende Prieto, Hubeny & Lambert (2003, ApJS 147, 363) into resonance-averaged 3%-log-spaced grids; `MBF_HIGH_ION` supplies higher ionization stages and Coulomb free-free from a filtered subset of `hotop.dat`; `FELO_OPACITY` supplies Fe I and Fe II from Iron Project / Opacity Project R-matrix calculations (Bautista 1997 for Fe I, Nahar & Pradhan 1994 for Fe II, sourced from the TLUSTY model atoms).  Toggleable via `USE_TOPBASE_MBF`; the legacy path is preserved for reference.  Known limitation: TOPbase identifies levels by LS term without resolving J, so per-species opacity carries a U_TB/U_BC factor of a few percent for most species (≲13% for the worst case, Ar II)
+- Default solar abundance scale updated from Anders & Grevesse (1989) to Asplund, Grevesse, Sauval & Scott (2009).  The CNO abundances change significantly (ε(O): 8.93 → 8.69; ε(C): 8.56 → 8.43; ε(N): 8.05 → 7.83), affecting the electron-donor budget and molecular equilibrium in cool-star atmospheres.  Defined once in `mod_atlas_data` and shared by ATLAS12 and SYNTHE; user overrides via `abund=file` and `zscale=` work as before
 - Hydrogen line profiles now use the Stehlé & Hutcheon (1999) MMM tabulated Stark broadening profiles via `hydrogen_line_profile`, replacing the Kurucz–Peterson (1982) analytic approximation; the K–P path is retained as a fallback for atmospheric layers exceeding the Inglis–Teller density limit, controlled by the `USE_KP_HYDROGEN` flag
+- Voigt function evaluated via Weideman (1994) N=32 rational approximation of w(z) plus Humlíček (1982) R₁,₂ asymptotic, replacing the Kurucz three-regime table approximation that had ~4% error at the a = 0.2 regime boundary.  Accuracy is now ~10⁻⁵ relative across the full (a, v) plane with no regime boundaries
 - H₂ partition function read from an external data file rather than hardcoded
 - Convergence improvements for cool dwarf models (~2800 K): adiabatic sweep in `DTCONV`, iteration damping in convective layers, gap-filling in `CONVEC`
 
@@ -318,3 +322,11 @@ Key changes in the modernization:
 - Sbordone, L., Bonifacio, P., Castelli, F., & Kurucz, R. L. 2004, MSAIS, 5, 93
 - Castelli, F., & Kurucz, R. L. 2004, astro-ph/0405087 (new grids of ATLAS9 model atmospheres)
 - Castelli, F. 2005, MSAIS, 8, 25 (ATLAS12: how to use it)
+- Allende Prieto, C., Hubeny, I., & Lambert, D. L. 2003, ApJS, 147, 363 (TOPbase metal photoionization grids)
+- Asplund, M., Grevesse, N., Sauval, A. J., & Scott, P. 2009, ARA&A, 47, 481 (solar abundance scale)
+- Barklem, P. S., & Collet, R. 2016, A&A, 588, A96 (atomic and molecular partition functions)
+- Bautista, M. A. 1997, A&AS, 122, 167 (Fe I R-matrix bound-free)
+- Humlíček, J. 1982, JQSRT, 27, 437 (Voigt function asymptotic)
+- Nahar, S. N., & Pradhan, A. K. 1994, J. Phys. B, 27, 429 (Fe II R-matrix bound-free)
+- Stehlé, C., & Hutcheon, R. 1999, A&AS, 140, 93 (hydrogen Stark profiles)
+- Weideman, J. A. C. 1994, SIAM J. Numer. Anal., 31, 1497 (Voigt function rational approximation)
