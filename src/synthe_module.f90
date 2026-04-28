@@ -1679,6 +1679,19 @@ CONTAINS
           result = result + lya_h2plus_red_cutoff(freq, REAL(XNFPH(j,2))) &
                           * REAL(SQRTPI * dop)
         END IF
+
+        ! Far-wing truncation: the Voigt-kernel Lorentzian tail in the
+        ! Stehlé convolution extrapolates the impact-broadening
+        ! Lorentzian (4·hwres + hwrad + hwvdw) into the deep red wing
+        ! where the impact approximation breaks down.  In a solar
+        ! atmosphere this produces ~50% spurious wing opacity at 1 μm.
+        ! The K-P path handles this implicitly by gating its resonance,
+        ! radiation, and vdW Lorentzian contributions to within a few
+        ! tens of nm of line centre, with everything else handed off
+        ! to the lya_h2_blue_cutoff table (which itself returns zero
+        ! for λ > 200 nm).  Mirror that here with a hard truncation
+        ! at the same 50000·c threshold.
+        IF (freq .LT. 50000.0 * REAL(CLIGHT,4)) result = 0.0
       END IF
 
     ELSE
