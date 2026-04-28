@@ -99,12 +99,12 @@ PROGRAM SYNTHE
 
   ! --- Model atmosphere header ------------------------------------------
   INTEGER   :: nedge
-  REAL(8)   :: wledge(377), deledge(377), halfedge(377)
+  REAL(8)   :: wledge(me), deledge(me), halfedge(me)
 
   ! --- Per-depth atmosphere read buffers --------------------------------
   REAL(8)   :: qdopple(mw6), qxnfpel(mw6)
-  REAL(8)   :: qablog(1131)
-  REAL(8)   :: ablog(3, 377)
+  REAL(8)   :: qablog(nf)
+  REAL(8)   :: ablog(3, me)
 
   ! --- In-memory opacity matrix, (length, nrhox) ------------------------
   REAL(4), ALLOCATABLE :: opacity_matrix(:,:)
@@ -376,6 +376,15 @@ PROGRAM SYNTHE
          (wledge(iedge) - wave8)*(wave8 - wledge(iedge+1))*2.0D0*ablog(2,iedge) + &
          (wave8 - wledge(iedge))*(wave8 - halfedge(iedge))*ablog(3,iedge)) / &
         deledge(iedge) )
+      ! Defensive floor on the LOG10 interpolation: a quadratic over
+      ! tightly-spaced edges can extrapolate the log-opacity to
+      ! arbitrarily large negative values within an interval, which
+      ! would crater kapmin_s in the line loop below.  Floor at
+      ! log10 = -15 is far below any physically reasonable continuum
+      ! opacity (~1e-10 cm^2/g at worst) yet large enough to keep
+      ! kapmin_s well above the integer-overflow regime in the
+      ! Voigt-wing extent calculation maxstep = SQRT(x_wing/kapmin_s).
+      IF (continuum(nbuff_i) .LT. -15.0) continuum(nbuff_i) = -15.0
     END DO
     DO nbuff_i = 1, length
       continuum(nbuff_i) = 10.0**continuum(nbuff_i)

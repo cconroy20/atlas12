@@ -228,16 +228,23 @@ MODULE synthe_module
   !  consumed by synthe_spectrv without any intermediate I/O.
   !
   !  Dimensions:
-  !    kw   = 99   (max depth points)
-  !    mw   = 139  (max elements + molecules)
-  !    mm   = 100  (mw - 39; molecule count for IDMOL/MOMASS)
-  !    nf   = 1131 (max continuum frequency points = 3*(nedge_max-1))
-  !    me   = 377  (max continuum edge points)
+  !    kw   = 99    (max depth points)
+  !    mw   = 139   (max elements + molecules)
+  !    mm   = 100   (mw - 39; molecule count for IDMOL/MOMASS)
+  !    nf   = 6000  (max continuum frequency points = 3*(me-1))
+  !    me   = 2001  (max continuum edge points)
+  !
+  !  me/nf were originally sized for the historical Kurucz continua.dat
+  !  edge list (341 entries).  Augmented at startup in run_xnfpelsyn
+  !  with Boltzmann-filtered photoionization thresholds from
+  !  MBF_TOPBASE / FELO / MBF_HIGH_ION (see Section 1b), so the
+  !  continuum-interpolation polynomial in setup_opacity_sv has
+  !  interval boundaries at the actual photoionization thresholds.
   ! ====================================================================
 
   INTEGER, PARAMETER :: mm  = mw - 39   ! number of molecule entries
-  INTEGER, PARAMETER :: nf  = 1131      ! max continuum frequency points
-  INTEGER, PARAMETER :: me  = 377       ! max continuum edge points
+  INTEGER, PARAMETER :: nf  = 6000      ! max continuum frequency points
+  INTEGER, PARAMETER :: me  = 2001      ! max continuum edge points
 
   ! --- Edge frequency grid (written once; used by both SYNTHE and SPECTRV) ---
   REAL(8), SAVE :: frqedg_m(me)         ! frequency at each edge (Hz)
@@ -251,7 +258,7 @@ MODULE synthe_module
   ! downstream code took ABS()).  The magnitude dispatch in Section 1
   ! of run_xnfpelsyn interprets the values as wavenumbers*1e25,
   ! frequency (Hz), or wavelength (nm) based on magnitude.
-  INTEGER, PARAMETER :: NCONT_EDGE_DATA = 341
+  INTEGER, PARAMETER :: NCONT_EDGE_DATA = 343
   REAL(8), PARAMETER :: CONT_EDGE_DATA(NCONT_EDGE_DATA) = [ &
     ! -- H: H I bound-free edges: Lyman, Balmer, Paschen, ... series limits
     !    Units: wavenumbers * 1e25 (cm^{-1} scale)
@@ -323,6 +330,7 @@ MODULE synthe_module
     6.6D15, 6.8D15, 7.0D15, 7.5D15, 8.0D15, &
     9.0D15, 9.5D15, 1.D0, 2.D0, 3.D0, &
     4.D0, 5.D0, 6.D0, 7.D0, &
+    286.1D0, 295.1D0, &  ! Two extra UV fillers for post-edge structure
     ! -- IRFILLER: IR filler grid points (~900 nm out to 500 um)
     !    Units: wavenumbers * 1e25
     10000.D25, 9800.D25, 9600.D25, 9400.D25, 9200.D25, &
@@ -392,7 +400,7 @@ MODULE synthe_module
   !                   point (set by first JOSH call, used in residual computation)
   ! ====================================================================
 
-  INTEGER, PARAMETER :: medge = 377   ! max continuum edge points (matches spectrv)
+  INTEGER, PARAMETER :: medge = me   ! max continuum edge points (matches frqedg_m sizing)
 
   REAL(8), SAVE :: contabs_sv(3, medge, kw)
   REAL(8), SAVE :: contscat_sv(3, medge, kw)
@@ -3722,8 +3730,10 @@ CONTAINS
     !  Local variables
     ! ------------------------------------------------------------------
     INTEGER  :: i, j, nu, in_e, last1, nelem, ion
+    INTEGER  :: is_iter, il_iter, ion_iter, n_kept, n_dropped
     REAL(8)  :: edge, sav, freq15_x
     REAL(8)  :: eq
+    REAL(8)  :: wl_new, frq_new, kT_REF_RY, w_lev, w_ground, min_dwl
     REAL(8)  :: a_sort(me)       ! sortable wavelength absolute values
     REAL(8)  :: xnfh2_lc(kw)     ! local H2 number density
     REAL(8)  :: xnfph2_lc(kw)    ! local H2 proton-fraction density
@@ -3732,6 +3742,31 @@ CONTAINS
     REAL(8)  :: xnfpel_lc(6, mw) ! per-depth slice for writing
     REAL(8)  :: dopple_lc(6, mw) ! per-depth Doppler widths
     REAL(8)  :: xne_save(kw)     ! save/restore XNE across NMOLEC call
+
+    ! ------------------------------------------------------------------
+    !  Edge augmentation parameters (compile-time toggles)
+    !
+    !  Each AUGMENT_* flag turns on a separate source.  Default rollout
+    !  is staged: enable AUGMENT_TOPBASE first, verify the spectrum,
+    !  then enable AUGMENT_FELO, then AUGMENT_HIGH_ION.
+    !
+    !  T_REF_AUG sets the reference temperature for the Boltzmann filter
+    !  applied to TOPbase levels (8000 K ~ solar + early F + late A).
+    !  TRUNC_FRAC is the threshold; a level is added only if
+    !    g * exp(-E_exc / kT_REF) >= TRUNC_FRAC * g_ground
+    !
+    !  EDGE_DEDUP_NM is the wavelength tolerance for collapsing
+    !  near-coincident edges (fine-structure components etc.).  0.05 nm
+    !  is wide enough to kill numerically dangerous deledge values
+    !  without losing physically distinct edges.
+    ! ------------------------------------------------------------------
+    LOGICAL, PARAMETER :: AUGMENT_TOPBASE  = .TRUE.
+    LOGICAL, PARAMETER :: AUGMENT_FELO     = .TRUE.
+    LOGICAL, PARAMETER :: AUGMENT_HIGH_ION = .TRUE.
+    REAL(8), PARAMETER :: T_REF_AUG     = 8000.0D0
+    REAL(8), PARAMETER :: TRUNC_FRAC    = 1.0D-3
+    REAL(8), PARAMETER :: EDGE_DEDUP_NM = 0.05D0
+    REAL(8), PARAMETER :: RY_HZ_LOCAL   = 3.289842D15  ! 1 Ry in Hz
 
     ! ------------------------------------------------------------------
     !  IDMOL and MOMASS data (molecule codes and masses)
@@ -3793,6 +3828,18 @@ CONTAINS
     !    value >= 1e25    -> wavenumber in cm^{-1} (divided by 1e25)
     !  All values in CONT_EDGE_DATA are positive.
     ! ------------------------------------------------------------------
+    ! ------------------------------------------------------------------
+    !  SECTION 1a.  EARLY INITIALIZATION of bound-free data sources.
+    !
+    !  These calls are normally triggered lazily on first opacity
+    !  evaluation, but we run them up front so their thresholds are
+    !  available for edge augmentation in Section 1b below.  Each
+    !  routine is idempotent (gated by its own *_INITIALIZED flag).
+    ! ------------------------------------------------------------------
+    IF (.NOT. TB_INITIALIZED)       CALL INIT_MBF_TOPBASE
+    IF (.NOT. FELO_INITIALIZED)     CALL INIT_FELO
+    IF (.NOT. HIGH_ION_INITIALIZED) CALL INIT_MBF_HIGH_ION
+
     IF (NCONT_EDGE_DATA .GT. me) THEN
       WRITE(6,'(A,I5,A,I5)') ' run_xnfpelsyn: CONT_EDGE_DATA size ', &
         NCONT_EDGE_DATA, ' exceeds max edge count me=', me
@@ -3820,6 +3867,108 @@ CONTAINS
     END DO
     in_e = NCONT_EDGE_DATA
 
+    ! ------------------------------------------------------------------
+    !  SECTION 1b.  AUGMENT EDGE LIST with photoionization thresholds
+    !
+    !  CONT_EDGE_DATA covers only Kurucz's historical edge list (H, He,
+    !  C, Mg, Al, Si, plus UV/IR fillers).  When MBF_TOPBASE / FELO /
+    !  MBF_HIGH_ION supply opacity, their thresholds need to appear in
+    !  the edge list too, otherwise the quadratic interpolation in
+    !  setup_opacity_sv smears bound-free edges across the ~10 nm gaps
+    !  between adjacent CONT_EDGE_DATA entries.
+    !
+    !  Each source is gated by its own AUGMENT_* compile-time flag, so
+    !  rollout can be staged.  TOPbase levels are filtered by
+    !  Boltzmann weight at T_REF_AUG: a level's threshold is added only
+    !  if its population at T_REF_AUG is at least TRUNC_FRAC times the
+    !  ground-term weight.  This drops thousands of high-excitation
+    !  levels whose edges contribute negligibly to opacity at relevant
+    !  stellar temperatures.
+    ! ------------------------------------------------------------------
+    kT_REF_RY = T_REF_AUG * 8.617333D-5 / 13.6056923D0    ! kT in Rydberg
+
+    IF (AUGMENT_TOPBASE) THEN
+      n_kept    = 0
+      n_dropped = 0
+      DO is_iter = 1, N_TB_SPECIES
+        ! Reference weight: ground-state level (most negative E_BIND)
+        ! always has E_EXC = 0, so its Boltzmann factor is just g_ground.
+        w_ground = dble(TB_SPECIES(is_iter)%LEVELS(1)%G_STAT)
+        DO il_iter = 1, TB_SPECIES(is_iter)%NLEVELS
+          w_lev = dble(TB_SPECIES(is_iter)%LEVELS(il_iter)%G_STAT) &
+                * exp(-TB_SPECIES(is_iter)%LEVELS(il_iter)%E_EXC_RY / kT_REF_RY)
+          IF (w_lev .LT. TRUNC_FRAC * w_ground) THEN
+            n_dropped = n_dropped + 1
+            CYCLE
+          END IF
+          frq_new = abs(TB_SPECIES(is_iter)%LEVELS(il_iter)%E_BIND_RY) * RY_HZ_LOCAL
+          IF (frq_new .LE. 0.0D0) CYCLE
+          wl_new = CLIGHT_NMS / frq_new
+          IF (in_e .GE. me) THEN
+            WRITE(6,'(A,I6,A)') ' run_xnfpelsyn: edge count exceeded me=', &
+              me, ' while appending MBF_TOPBASE thresholds'
+            STOP 1
+          END IF
+          in_e = in_e + 1
+          wledge_m(in_e) = wl_new
+          frqedg_m(in_e) = frq_new
+          cmedge_m(in_e) = 1.0D7 / wl_new
+          a_sort(in_e)   = wl_new
+          n_kept = n_kept + 1
+        END DO
+      END DO
+      IF (IDEBUG .EQ. 1) THEN
+        WRITE(6,'(A,I5,A,I5,A,F6.0,A)') ' run_xnfpelsyn: TOPbase added ', &
+          n_kept, ' edges, dropped ', n_dropped, ' below T=', T_REF_AUG, ' K'
+      END IF
+    END IF
+
+    IF (AUGMENT_FELO) THEN
+      n_kept = 0
+      DO ion_iter = 1, FELO_N_ION
+        DO il_iter = 1, FELO_NLEV(ion_iter)
+          frq_new = FELO_NUTH(il_iter, ion_iter)
+          IF (frq_new .LE. 0.0D0) CYCLE
+          wl_new = CLIGHT_NMS / frq_new
+          IF (in_e .GE. me) THEN
+            WRITE(6,'(A,I6,A)') ' run_xnfpelsyn: edge count exceeded me=', &
+              me, ' while appending FELO thresholds'
+            STOP 1
+          END IF
+          in_e = in_e + 1
+          wledge_m(in_e) = wl_new
+          frqedg_m(in_e) = frq_new
+          cmedge_m(in_e) = 1.0D7 / wl_new
+          a_sort(in_e)   = wl_new
+          n_kept = n_kept + 1
+        END DO
+      END DO
+      IF (IDEBUG .EQ. 1) WRITE(6,'(A,I5,A)') &
+        ' run_xnfpelsyn: FELO added ', n_kept, ' Fe I + Fe II edges'
+    END IF
+
+    IF (AUGMENT_HIGH_ION) THEN
+      n_kept = 0
+      DO il_iter = 1, N_HIGH_ION_EDGES
+        frq_new = HI_EDGE_DATA(1, il_iter)
+        IF (frq_new .LE. 0.0D0) CYCLE
+        wl_new = CLIGHT_NMS / frq_new
+        IF (in_e .GE. me) THEN
+          WRITE(6,'(A,I6,A)') ' run_xnfpelsyn: edge count exceeded me=', &
+            me, ' while appending MBF_HIGH_ION thresholds'
+          STOP 1
+        END IF
+        in_e = in_e + 1
+        wledge_m(in_e) = wl_new
+        frqedg_m(in_e) = frq_new
+        cmedge_m(in_e) = 1.0D7 / wl_new
+        a_sort(in_e)   = wl_new
+        n_kept = n_kept + 1
+      END DO
+      IF (IDEBUG .EQ. 1) WRITE(6,'(A,I5,A)') &
+        ' run_xnfpelsyn: HIGH_ION added ', n_kept, ' filtered hotop edges'
+    END IF
+
     ! Sort edges by ascending wavelength (bubble sort; list is short)
     DO i = 2, in_e
       last1 = in_e - i + 2
@@ -3841,6 +3990,50 @@ CONTAINS
       END DO
     END DO
     nedge_m = in_e
+
+    ! ------------------------------------------------------------------
+    !  SECTION 1c.  DEDUPLICATE coincident edges
+    !
+    !  Edges within EDGE_DEDUP_NM of each other would produce vanishing
+    !  deledge values and ill-conditioned interpolation polynomials.
+    !  Collapse them by squeezing the array; this preserves the first
+    !  occurrence and removes subsequent near-duplicates.
+    ! ------------------------------------------------------------------
+    IF (AUGMENT_TOPBASE .OR. AUGMENT_FELO .OR. AUGMENT_HIGH_ION) THEN
+      j = 1
+      DO i = 2, nedge_m
+        IF (wledge_m(i) - wledge_m(j) .GT. EDGE_DEDUP_NM) THEN
+          j = j + 1
+          IF (j .NE. i) THEN
+            wledge_m(j) = wledge_m(i)
+            frqedg_m(j) = frqedg_m(i)
+            cmedge_m(j) = cmedge_m(i)
+          END IF
+        END IF
+      END DO
+      IF (IDEBUG .EQ. 1 .AND. j .LT. nedge_m) THEN
+        WRITE(6,'(A,I5,A,I5,A)') ' run_xnfpelsyn: dedup ', nedge_m, &
+          ' -> ', j, ' edges'
+      END IF
+      nedge_m = j
+
+      ! Diagnostic: smallest interval after dedup.  An interval below
+      ! ~0.001 nm is a numerical danger sign for the polynomial weights.
+      IF (IDEBUG .EQ. 1 .AND. nedge_m .GE. 2) THEN
+        min_dwl = wledge_m(2) - wledge_m(1)
+        DO i = 2, nedge_m - 1
+          min_dwl = min(min_dwl, wledge_m(i+1) - wledge_m(i))
+        END DO
+        WRITE(6,'(A,F10.5,A)') ' run_xnfpelsyn: min interval width = ', &
+          min_dwl, ' nm'
+      END IF
+
+      IF (3 * (nedge_m - 1) .GT. nf) THEN
+        WRITE(6,'(A,I6,A,I6)') ' run_xnfpelsyn: 3*(nedge_m-1) = ', &
+          3 * (nedge_m - 1), ' exceeds nf = ', nf
+        STOP 1
+      END IF
+    END IF
 
     ! Build the 3-point continuum frequency grid between edges
     numnu_m = 0
@@ -3987,9 +4180,22 @@ CONTAINS
       END DO
       CALL KAPP()
       DO j = 1, nrhox_a
-        continall_m(nu,j) = LOG10(ACONT(j) + SIGMAC(j))
-        contabs_m  (nu,j) = LOG10(ACONT(j))
-        contscat_m (nu,j) = LOG10(SIGMAC(j))
+        ! Defensive floor: prevent LOG10(0) or LOG10(negative) from
+        ! producing -Inf / NaN that would propagate through the
+        ! polynomial interpolation in setup_opacity_sv and downstream
+        ! line-rejection logic.  1e-99 cm^2/g is far below any
+        ! physically meaningful opacity but well above the smallest
+        ! REAL(8) representable.
+        continall_m(nu,j) = LOG10(MAX(ACONT(j) + SIGMAC(j), 1.0D-99))
+        contabs_m  (nu,j) = LOG10(MAX(ACONT(j),             1.0D-99))
+        contscat_m (nu,j) = LOG10(MAX(SIGMAC(j),            1.0D-99))
+        ! Diagnostic: report any frequencies where opacity dropped to
+        ! the floor.  Useful to identify pathological sample points.
+        IF (IDEBUG .EQ. 1 .AND. (ACONT(j) + SIGMAC(j)) .LE. 0.0D0) THEN
+          WRITE(6,'(A,I5,A,I5,A,1P3E12.4)') &
+            ' WARNING: nu=', nu, ' j=', j, &
+            ' ACONT/SIGMAC/sum=', ACONT(j), SIGMAC(j), ACONT(j)+SIGMAC(j)
+        END IF
       END DO
     END DO
 

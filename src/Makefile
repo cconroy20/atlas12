@@ -51,6 +51,6 @@ synthe: clean
 	rm -f *.o *.mod
 
 clean:
-	rm -f *.o *.mod
+	rm -f *.o *.mod $(BINDIR)/*exe
 
 .PHONY: all atlas synthe clean

@@ -4666,7 +4666,14 @@ END FUNCTION NEXTWORD
 ! Outputs (via module variables):
 !   NUMMOL              — number of molecules read
 !   XNMOLCODE(JMOL)    — species code for molecule JMOL
-!   EQUIL(1:6, JMOL)    — equilibrium constants for molecule JMOL
+!   EQUIL(1:6, JMOL)    — physical-form coefficients for molecule JMOL:
+!                          EQUIL(1) = D0 (atomization energy, eV)
+!                          EQUIL(2) = a0  (constant in ln K basis)
+!                          EQUIL(3) = a1  (coefficient of 1/T)
+!                          EQUIL(4) = a2  (coefficient of ln T)
+!                          EQUIL(5) = a3  (coefficient of T)
+!                          EQUIL(6) = a4  (coefficient of 1/T^2)
+!                          See nmolec evaluator below for the form.
 !   KCOMPS(KLOC)        — component list: equation indices for each atom
 !                          in each molecule, stored contiguously
 !   LOCJ(JMOL)          — index into KCOMPS where molecule JMOL starts
@@ -4693,15 +4700,20 @@ END FUNCTION NEXTWORD
 !                   below is the source of truth for chemistry.
 !     Column 11-22: species code (e.g. 60808.00)
 !     Column 23:    space gap
-!     Column 24-30: E1 (eV)
-!     Column 31-90: E2 .. E6
-!     Column 91+:   free-form trailing comment (ignored on read)
+!     Column 24-30: D0 (eV)  -- atomization energy
+!     Column 31-90: a0, a1, a2, a3, a4  (physical-form coefficients;
+!                   meanings as above in EQUIL doc)
+!     Column 91+:   free-form trailing comment with provenance (ignored
+!                   on read) -- typically "BC16 fit", "ExoMol fit", or
+!                   "Kurucz poly fit" indicating which reference dataset
+!                   was used to fit the coefficients.
 !   Lines starting with `!` (after optional leading whitespace) are
 !     skipped as Fortran-style comments.
 !   Blank lines are skipped.
 !   End-of-file ends the molecule list. A legacy `0.0` terminator is
 !     also still recognized for backward compatibility.
-!   See the header at the top of molecules.dat for full file documentation.
+!   See the header at the top of molecules.dat for full
+!     documentation including coefficient sources and fit methodology.
 !=========================================================================
 
 SUBROUTINE READMOL
@@ -4717,7 +4729,19 @@ SUBROUTINE READMOL
 
   ! --- Local variables ---
   REAL(8)  :: C                   ! species code read from file
-  REAL(8)  :: E1, E2, E3, E4, E5, E6  ! equilibrium constants
+  ! New physical-form coefficients (replacing Kurucz's polynomial form):
+  !   ln K_eq(T) = D0/(k_B T) - 1.5*n_trans*ln T
+  !              + a0 + a1/T + a2 ln T + a3 T + a4/T^2
+  ! D0 is in eV; a0..a4 are dimensionless when T is in K. The basis
+  ! {1, 1/T, ln T, T, 1/T^2} replaces Kurucz's earlier polynomial basis
+  ! {1, T, T^2, T^3, T^4} with the same number of free parameters but
+  ! with physically motivated terms (constant + electronic excitation +
+  ! rotational/vibrational growth + vibrational equipartition + electronic
+  ! correction). See molecules.dat header for full discussion.
+  ! Throughout the rest of this module these are stored in EQUIL(1:6,JMOL)
+  ! as (D0, a0, a1, a2, a3, a4); we keep the variable names E1..E6 here
+  ! for compatibility with the existing READ format.
+  REAL(8)  :: E1, E2, E3, E4, E5, E6  ! D0, a0, a1, a2, a3, a4 (physical form)
   REAL(8)  :: X                   ! remaining code after extracting components
   INTEGER :: JMOL               ! molecule counter
   INTEGER :: KLOC               ! position in KCOMPS array
@@ -6171,7 +6195,14 @@ SUBROUTINE NMOLEC(MODE)
       NCOMP = LOCJ(JMOL + 1) - LOCJ(JMOL)
 
       IF (EQUIL(1, JMOL) .NE. 0.0D0) THEN
-        ! True molecule: has equilibrium constant polynomial
+        ! True molecule: compute K_eq via the physical functional form
+        !   ln K_eq = D0/(k_B T) - 1.5 * n_trans * ln T
+        !           + a0 + a1/T + a2 ln T + a3 T + a4/T^2
+        ! where EQUIL(1) = D0 [eV], EQUIL(2:6) = a0..a4, and n_trans is
+        ! determined from the molecule's atom/ion bookkeeping below.
+        ! This basis replaces Kurucz's earlier polynomial in T (1, T, T^2,
+        ! T^3, T^4) and is well-behaved at all temperatures (no T^4 blowup),
+        ! so the previous T<=10000 K guard is no longer needed.
         ION = int((XNMOLCODE(JMOL) - aint(XNMOLCODE(JMOL))) * 100.0D0 + 0.5D0)
         EQUILJ(JMOL) = 0.0D0
 
@@ -6179,13 +6210,16 @@ SUBROUTINE NMOLEC(MODE)
           ! H2: special equilibrium function (Lester 2005 update)
           IF (T(J) .LE. 20000.0D0) EQUILJ(JMOL) = EQUILH2(T(J))
         ELSE
-          ! General molecule: polynomial equilibrium constant
-          IF (T(J) .LE. 10000.0D0) THEN
-            EQUILJ(JMOL) = exp(EQUIL(1, JMOL) / TKEV(J) - EQUIL(2, JMOL) &
-              + (EQUIL(3, JMOL) + (-EQUIL(4, JMOL) + (EQUIL(5, JMOL) &
-              - EQUIL(6, JMOL) * T(J)) * T(J)) * T(J)) * T(J) &
-              - 1.5D0 * (NCOMP - ION - ION - 1) * TLOG(J))
-          END IF
+          ! General molecule: physical-form equilibrium constant.
+          ! Sackur-Tetrode kinematic factor uses n_trans = NCOMP-2*ION-1,
+          ! the number of free molecular -> atomic translation channels.
+          EQUILJ(JMOL) = exp( EQUIL(1, JMOL) / TKEV(J)                    &
+                            - 1.5D0 * (NCOMP - ION - ION - 1) * TLOG(J)  &
+                            + EQUIL(2, JMOL)                              &
+                            + EQUIL(3, JMOL) / T(J)                       &
+                            + EQUIL(4, JMOL) * TLOG(J)                    &
+                            + EQUIL(5, JMOL) * T(J)                       &
+                            + EQUIL(6, JMOL) / (T(J) * T(J)) )
         END IF
 
       ELSE IF (NCOMP .EQ. 1) THEN
@@ -6522,17 +6556,26 @@ CONTAINS
             PFMIN(J_e)  = PARTFNH2(TMINUS_e)
             PFPLUS(J_e) = PARTFNH2(TPLUS_e)
           ELSE
-            ! General molecule: PF from equilibrium constant polynomial
-            IF (T(J_e) .LE. 10000.0D0) THEN
-              PFPLUS(J_e) = exp(-EQUIL(2, JMOL_e) &
-                + (EQUIL(3, JMOL_e) + (-EQUIL(4, JMOL_e) &
-                + (EQUIL(5, JMOL_e) - EQUIL(6, JMOL_e) * TPLUS_e) &
-                * TPLUS_e) * TPLUS_e) * TPLUS_e) + 1.0D-30
-              PFMIN(J_e) = exp(-EQUIL(2, JMOL_e) &
-                + (EQUIL(3, JMOL_e) + (-EQUIL(4, JMOL_e) &
-                + (EQUIL(5, JMOL_e) - EQUIL(6, JMOL_e) * TMINUS_e) &
-                * TMINUS_e) * TMINUS_e) * TMINUS_e) + 1.0D-30
-            END IF
+            ! General molecule: PF derivative from the physical-form K_eq.
+            ! We evaluate the partition-function-ratio part only (the
+            ! D0/kT Boltzmann factor and the Sackur-Tetrode -1.5*n_trans*ln T
+            ! kinematic term are handled separately below in the energy-
+            ! density accumulation), so this is just
+            !   ln Q_ratio(T) = a0 + a1/T + a2 ln T + a3 T + a4/T^2
+            ! The 1e-30 floors mirror the previous polynomial code.
+            ! No T-range guard: physical form is well-behaved at all T.
+            PFPLUS(J_e) = exp( EQUIL(2, JMOL_e)                       &
+                             + EQUIL(3, JMOL_e) / TPLUS_e             &
+                             + EQUIL(4, JMOL_e) * log(TPLUS_e)        &
+                             + EQUIL(5, JMOL_e) * TPLUS_e             &
+                             + EQUIL(6, JMOL_e) / (TPLUS_e*TPLUS_e) ) &
+                          + 1.0D-30
+            PFMIN(J_e)  = exp( EQUIL(2, JMOL_e)                        &
+                             + EQUIL(3, JMOL_e) / TMINUS_e             &
+                             + EQUIL(4, JMOL_e) * log(TMINUS_e)        &
+                             + EQUIL(5, JMOL_e) * TMINUS_e             &
+                             + EQUIL(6, JMOL_e) / (TMINUS_e*TMINUS_e) )&
+                          + 1.0D-30
           END IF
         END DO
 
@@ -10263,69 +10306,13 @@ SUBROUTINE MBF_HIGH_ION
 
   IMPLICIT NONE
   INTEGER, PARAMETER :: NPAR = 7
-  INTEGER, PARAMETER :: N_TB_COV = 5
-  INTEGER, PARAMETER :: TB_COVERED(N_TB_COV) = (/22, 29, 37, 55, 56/)
 
   REAL(8) :: AHOT_TMP(kw)
   REAL(8) :: FREE, XSECT, XX, FRATIO
-  REAL(8) :: ROW(NPAR)
-  INTEGER :: I, J, ID, IREAD, IKEEP
-  CHARACTER(256) :: LINE
-  LOGICAL :: SKIP
+  INTEGER :: I, J, ID
 
   !--- First-call initialization of filtered hotop.dat ---
-  IF (.NOT. HIGH_ION_INITIALIZED) THEN
-    OPEN(UNIT=89, FILE=trim(DATADIR)//'hotop.dat', STATUS='OLD', ACTION='READ')
-    DO
-      READ(89, '(A)') LINE
-      IF (LINE(1:1) .NE. '#') THEN
-        BACKSPACE(89)
-        EXIT
-      END IF
-    END DO
-    ! First pass: count how many edges we keep
-    IKEEP = 0
-    DO IREAD = 1, 60
-      READ(89, *) ROW
-      ID = int(ROW(7))
-      SKIP = .FALSE.
-      DO I = 1, N_TB_COV
-        IF (ID .EQ. TB_COVERED(I)) SKIP = .TRUE.
-      END DO
-      IF (.NOT. SKIP) IKEEP = IKEEP + 1
-    END DO
-    N_HIGH_ION_EDGES = IKEEP
-    ALLOCATE(HI_EDGE_DATA(NPAR, N_HIGH_ION_EDGES))
-
-    ! Second pass: actually store them
-    REWIND(89)
-    DO
-      READ(89, '(A)') LINE
-      IF (LINE(1:1) .NE. '#') THEN
-        BACKSPACE(89)
-        EXIT
-      END IF
-    END DO
-    IKEEP = 0
-    DO IREAD = 1, 60
-      READ(89, *) ROW
-      ID = int(ROW(7))
-      SKIP = .FALSE.
-      DO I = 1, N_TB_COV
-        IF (ID .EQ. TB_COVERED(I)) SKIP = .TRUE.
-      END DO
-      IF (.NOT. SKIP) THEN
-        IKEEP = IKEEP + 1
-        HI_EDGE_DATA(:, IKEEP) = ROW
-      END IF
-    END DO
-    CLOSE(89)
-    HIGH_ION_INITIALIZED = .TRUE.
-    IF (IDEBUG .EQ. 1) THEN
-      WRITE(6,'(A,I3,A,I3,A)') ' MBF_HIGH_ION: kept ', N_HIGH_ION_EDGES, &
-        ' of 60 hotop.dat edges after filtering TOPbase-covered species'
-    END IF
-  END IF
+  IF (.NOT. HIGH_ION_INITIALIZED) CALL INIT_MBF_HIGH_ION
 
   !--- Coulomb free-free: C/N/O/Ne/Mg/Si/S/Fe ions (stages I-V) ---
   DO J = 1, NRHOX
@@ -10369,6 +10356,89 @@ SUBROUTINE MBF_HIGH_ION
   RETURN
 
 END SUBROUTINE MBF_HIGH_ION
+
+!=========================================================================
+! SUBROUTINE INIT_MBF_HIGH_ION
+!
+! Lazy loader for filtered hotop.dat.  On first call, opens
+! DATADIR/hotop.dat, drops edges for species already covered by
+! MBF_TOPBASE (C II, N II, O II, Ne I, Ne II), and stores the rest in
+! HI_EDGE_DATA.  Safe to call repeatedly; only reads on first call.
+!
+! Extracted from the MBF_HIGH_ION body so that it can also be triggered
+! at top-of-run by run_xnfpelsyn, which needs the edge thresholds early
+! to augment the continuum-interpolation grid.
+!=========================================================================
+
+SUBROUTINE INIT_MBF_HIGH_ION
+
+  IMPLICIT NONE
+  INTEGER, PARAMETER :: NPAR = 7
+  INTEGER, PARAMETER :: N_TB_COV = 5
+  INTEGER, PARAMETER :: TB_COVERED(N_TB_COV) = (/22, 29, 37, 55, 56/)
+
+  REAL(8) :: ROW(NPAR)
+  INTEGER :: I, ID, IREAD, IKEEP
+  CHARACTER(256) :: LINE
+  LOGICAL :: SKIP
+
+  IF (HIGH_ION_INITIALIZED) RETURN
+
+  OPEN(UNIT=89, FILE=trim(DATADIR)//'hotop.dat', STATUS='OLD', ACTION='READ')
+  DO
+    READ(89, '(A)') LINE
+    IF (LINE(1:1) .NE. '#') THEN
+      BACKSPACE(89)
+      EXIT
+    END IF
+  END DO
+  ! First pass: count how many edges we keep
+  IKEEP = 0
+  DO IREAD = 1, 60
+    READ(89, *) ROW
+    ID = int(ROW(7))
+    SKIP = .FALSE.
+    DO I = 1, N_TB_COV
+      IF (ID .EQ. TB_COVERED(I)) SKIP = .TRUE.
+    END DO
+    IF (.NOT. SKIP) IKEEP = IKEEP + 1
+  END DO
+  N_HIGH_ION_EDGES = IKEEP
+  ALLOCATE(HI_EDGE_DATA(NPAR, N_HIGH_ION_EDGES))
+
+  ! Second pass: actually store them
+  REWIND(89)
+  DO
+    READ(89, '(A)') LINE
+    IF (LINE(1:1) .NE. '#') THEN
+      BACKSPACE(89)
+      EXIT
+    END IF
+  END DO
+  IKEEP = 0
+  DO IREAD = 1, 60
+    READ(89, *) ROW
+    ID = int(ROW(7))
+    SKIP = .FALSE.
+    DO I = 1, N_TB_COV
+      IF (ID .EQ. TB_COVERED(I)) SKIP = .TRUE.
+    END DO
+    IF (.NOT. SKIP) THEN
+      IKEEP = IKEEP + 1
+      HI_EDGE_DATA(:, IKEEP) = ROW
+    END IF
+  END DO
+  CLOSE(89)
+  HIGH_ION_INITIALIZED = .TRUE.
+
+  IF (IDEBUG .EQ. 1) THEN
+    WRITE(6,'(A,I3,A,I3,A)') ' INIT_MBF_HIGH_ION: kept ', N_HIGH_ION_EDGES, &
+      ' of 60 hotop.dat edges after filtering TOPbase-covered species'
+  END IF
+
+  RETURN
+
+END SUBROUTINE INIT_MBF_HIGH_ION
 
 !=========================================================================
 ! SUBROUTINE INIT_FELO
@@ -17361,7 +17431,8 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE ( 25)  ! B  I
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*15.254)
   CASE ( 26)  ! B  II
-    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*37336.7)+3.*EXP(-HCK/T*37342.4)+ 5.*EXP(-HCK/T* 37358.3)+3.*EXP(-HCK/T*73396.60)
+    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*37336.7)+3.*EXP(-HCK/T*37342.4)+ &
+      5.*EXP(-HCK/T* 37358.3)+3.*EXP(-HCK/T*73396.60)
   CASE ( 27)  ! B  III
     PFGROUND_KURUCZ = 2.+2.*EXP(-HCK/T*48358.40)+4.*EXP(-HCK/T*48392.50)
   CASE ( 28); PFGROUND_KURUCZ = 1.                    ! B  IV
@@ -17370,7 +17441,8 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
 
   ! --- Z= 6  C  ---
   CASE ( 31)  ! C  I
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*16.40)+5.*EXP(-HCK/T*43.40)+ 5.*EXP(-HCK/T*10192.63)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*16.40)+5.*EXP(-HCK/T*43.40)+ &
+      5.*EXP(-HCK/T*10192.63)
   CASE ( 32)  ! C  II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*63.42)
   CASE ( 33); PFGROUND_KURUCZ = 1.                    ! C  III
@@ -17382,7 +17454,8 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   ! --- Z= 7  N  ---
   CASE ( 37); PFGROUND_KURUCZ = 4.                    ! N  I
   CASE ( 38)  ! N  II
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*48.7)+5.*EXP(-HCK/T*130.8)+ 5.*EXP(-HCK/T*15316.2)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*48.7)+5.*EXP(-HCK/T*130.8)+ &
+      5.*EXP(-HCK/T*15316.2)
   CASE ( 39)  ! N  III
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*174.4)
   CASE ( 40); PFGROUND_KURUCZ = 1.                    ! N  IV
@@ -17396,12 +17469,15 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE ( 44)  ! O  II
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*26810.55)+4.*EXP(-HCK/T*26830.57)
   CASE ( 45)  ! O  III
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*113.178)+5.*EXP(-HCK/T*306.174)+ 5.*EXP(-HCK/T*20273.27)+1.*EXP(-HCK/T*43185.74)+ &
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*113.178)+5.*EXP(-HCK/T*306.174)+ &
+      5.*EXP(-HCK/T*20273.27)+1.*EXP(-HCK/T*43185.74)+ &
       5.*EXP(-HCK/T*60324.79)
   CASE ( 46)  ! O  IV
-    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*385.9)+2.*EXP(-HCK/T*71439.8)+ 4.*EXP(-HCK/T*71570.1)+6.*EXP(-HCK/T*71755.5)
+    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*385.9)+2.*EXP(-HCK/T*71439.8)+ &
+      4.*EXP(-HCK/T*71570.1)+6.*EXP(-HCK/T*71755.5)
   CASE ( 47)  ! O  V
-    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*81942.5)+3.*EXP(-HCK/T*82078.6)+ 5.*EXP(-HCK/T*82385.3)
+    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*81942.5)+3.*EXP(-HCK/T*82078.6)+ &
+      5.*EXP(-HCK/T*82385.3)
   CASE ( 48)  ! O  VI
     PFGROUND_KURUCZ = 2.+2.*EXP(-HCK/T*96375.0)+4.*EXP(-HCK/T*96907.5)
 
@@ -17409,28 +17485,40 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE ( 49)  ! F  I
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*404.1)
   CASE ( 50)  ! F  II
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*341.0)+EXP(-HCK/T*489.9)+ 5.*EXP(-HCK/T*20873.4)+1.*EXP(-HCK/T*44918.1)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*341.0)+EXP(-HCK/T*489.9)+ &
+      5.*EXP(-HCK/T*20873.4)+1.*EXP(-HCK/T*44918.1)
   CASE ( 51)  ! F  III
-    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*34087.4)+4.*EXP(-HCK/T*34123.2)+ 4.*EXP(-HCK/T*51561.4)+2.*EXP(-HCK/T*51560.6)
+    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*34087.4)+4.*EXP(-HCK/T*34123.2)+ &
+      4.*EXP(-HCK/T*51561.4)+2.*EXP(-HCK/T*51560.6)
   CASE ( 52)  ! F  IV
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*225.2)+5.*EXP(-HCK/T*612.2)+ 5.*EXP(-HCK/T*25238.2)+1.*EXP(-HCK/T*53541.2)+ 5.*EXP(-HCK/T*74194.7)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*225.2)+5.*EXP(-HCK/T*612.2)+ &
+      5.*EXP(-HCK/T*25238.2)+1.*EXP(-HCK/T*53541.2)+ &
+      5.*EXP(-HCK/T*74194.7)
   CASE ( 53)  ! F  V
-    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*744.5)+ 2.*EXP(-HCK/T*85790.2)+4.*EXP(-HCK/T*86043.5)+ 6.*EXP(-HCK/T*86407.0)
+    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*744.5)+ 2.*EXP(-HCK/T*85790.2)+ &
+      4.*EXP(-HCK/T*86043.5)+ 6.*EXP(-HCK/T*86407.0)
   CASE ( 54)  ! F  VI
-    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*96590.)+3.*EXP(-HCK/T*96850.)+ 5.*EXP(-HCK/T*97427.)
+    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*96590.)+3.*EXP(-HCK/T*96850.)+ &
+      5.*EXP(-HCK/T*97427.)
 
   ! --- Z=10  Ne ---
   CASE ( 55); PFGROUND_KURUCZ = 1.                    ! Ne I
   CASE ( 56)  ! Ne II
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*780.45)
   CASE ( 57)  ! Ne III
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*642.9)+EXP(-HCK/T*920.4)+ 4.*EXP(-HCK/T*96907.5)+5.*EXP(-HCK/T*25840.8)+ 1.*EXP(-HCK/T*55750.6)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*642.9)+EXP(-HCK/T*920.4)+ &
+      4.*EXP(-HCK/T*96907.5)+5.*EXP(-HCK/T*25840.8)+ &
+      1.*EXP(-HCK/T*55750.6)
   CASE ( 58)  ! Ne IV
-    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*41234.6)+4.*EXP(-HCK/T*41279.5)+ 2.*EXP(-HCK/T*62434.6)+4.*EXP(-HCK/T*62441.3)
+    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*41234.6)+4.*EXP(-HCK/T*41279.5)+ &
+      2.*EXP(-HCK/T*62434.6)+4.*EXP(-HCK/T*62441.3)
   CASE ( 59)  ! Ne V
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*414.)+5.*EXP(-HCK/T*1112.)+ 5.*EXP(-HCK/T*30291.5)+1.*EXP(-HCK/T*63913.6)+ 5.*EXP(-HCK/T*88360.)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*414.)+5.*EXP(-HCK/T*1112.)+ &
+      5.*EXP(-HCK/T*30291.5)+1.*EXP(-HCK/T*63913.6)+ &
+      5.*EXP(-HCK/T*88360.)
   CASE ( 60)  ! Ne VI
-    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*1310.)+2.*EXP(-HCK/T*100261.)+ 4.*EXP(-HCK/T*100704.)+6.*EXP(-HCK/T*101347.)
+    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*1310.)+2.*EXP(-HCK/T*100261.)+ &
+      4.*EXP(-HCK/T*100704.)+6.*EXP(-HCK/T*101347.)
 
   ! --- Z=11  Na ---
   CASE ( 61); PFGROUND_KURUCZ = 2.                    ! Na I
@@ -17438,11 +17526,14 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE ( 63)  ! Na III
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*780.45)
   CASE ( 64)  ! Na IV
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*642.9)+EXP(-HCK/T*920.4)+ 5.*EXP(-HCK/T*30839.8)+1.*EXP(-HCK/T*66496.)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*642.9)+EXP(-HCK/T*920.4)+ &
+      5.*EXP(-HCK/T*30839.8)+1.*EXP(-HCK/T*66496.)
   CASE ( 65)  ! Na V
-    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*48330.)+4.*EXP(-HCK/T*48366.)+ 2.*EXP(-HCK/T*73218.)+4.*EXP(-HCK/T*73255.)
+    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*48330.)+4.*EXP(-HCK/T*48366.)+ &
+      2.*EXP(-HCK/T*73218.)+4.*EXP(-HCK/T*73255.)
   CASE ( 66)  ! Na VI
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*414.)+5.*EXP(-HCK/T*1112.)+ 5.*EXP(-HCK/T*35498.)+1.*EXP(-HCK/T*74414.)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*414.)+5.*EXP(-HCK/T*1112.)+ &
+      5.*EXP(-HCK/T*35498.)+1.*EXP(-HCK/T*74414.)
 
   ! --- Z=12  Mg ---
   CASE ( 67); PFGROUND_KURUCZ = 1.                    ! Mg I
@@ -17451,9 +17542,11 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE ( 70)  ! Mg IV
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*2238.)
   CASE ( 71)  ! Mg V
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1782.1)+EXP(-HCK/T*2521.8)+ 5.*EXP(-HCK/T*35926.)+1.*EXP(-HCK/T*77279.)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1782.1)+EXP(-HCK/T*2521.8)+ &
+      5.*EXP(-HCK/T*35926.)+1.*EXP(-HCK/T*77279.)
   CASE ( 72)  ! Mg VI
-    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*55356.)+4.*EXP(-HCK/T*55372.8)+ 2.*EXP(-HCK/T*83920.0)+4.*EXP(-HCK/T*84028.4)
+    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*55356.)+4.*EXP(-HCK/T*55372.8)+ &
+      2.*EXP(-HCK/T*83920.0)+4.*EXP(-HCK/T*84028.4)
 
   ! --- Z=13  Al ---
   CASE ( 73)  ! Al I
@@ -17464,15 +17557,19 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE ( 77)  ! Al V
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*3442.)
   CASE ( 78)  ! Al VI
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*2732.)+EXP(-HCK/T*3829.)+ 5.*EXP(-HCK/T*41167.)+1.*EXP(-HCK/T*88213.)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*2732.)+EXP(-HCK/T*3829.)+ &
+      5.*EXP(-HCK/T*41167.)+1.*EXP(-HCK/T*88213.)
 
   ! --- Z=14  Si ---
   CASE ( 79)  ! Si I
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*77.115)+5.*EXP(-HCK/T*223.157)+ 5.*EXP(-HCK/T*6298.850)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*77.115)+5.*EXP(-HCK/T*223.157)+ &
+      5.*EXP(-HCK/T*6298.850)
   CASE ( 80)  ! Si II
-    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*287.32)+2.*EXP(-HCK/T*42824.35)+ 4.*EXP(-HCK/T*42932.68)+6.*EXP(-HCK/T*43107.97)
+    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*287.32)+2.*EXP(-HCK/T*42824.35)+ &
+      4.*EXP(-HCK/T*42932.68)+6.*EXP(-HCK/T*43107.97)
   CASE ( 81)  ! Si III
-    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*52724.69)+3.*EXP(-HCK/T*52853.28)+ 5.*EXP(-HCK/T*53115.01)+3.*EXP(-HCK/T*82884.41)
+    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*52724.69)+3.*EXP(-HCK/T*52853.28)+ &
+      5.*EXP(-HCK/T*53115.01)+3.*EXP(-HCK/T*82884.41)
   CASE ( 82); PFGROUND_KURUCZ = 2.                    ! Si IV
   CASE ( 83); PFGROUND_KURUCZ = 1.                    ! Si V
   CASE ( 84)  ! Si VI
@@ -17481,54 +17578,72 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   ! --- Z=15  P  ---
   CASE ( 85); PFGROUND_KURUCZ = 4.                    ! P  I
   CASE ( 86)  ! P  II
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*164.90)+5.*EXP(-HCK/T*469.12)+ 5.*EXP(-HCK/T*8882.31)+1.*EXP(-HCK/T*21575.63)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*164.90)+5.*EXP(-HCK/T*469.12)+ &
+      5.*EXP(-HCK/T*8882.31)+1.*EXP(-HCK/T*21575.63)
   CASE ( 87)  ! P  III
-    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*559.14)+2.*EXP(-HCK/T*56021.67)+ 4.*EXP(-HCK/T*57125.98)+6.*EXP(-HCK/T*57454.00)+ &
+    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*559.14)+2.*EXP(-HCK/T*56021.67)+ &
+      4.*EXP(-HCK/T*57125.98)+6.*EXP(-HCK/T*57454.00)+ &
       4.*EXP(-HCK/T*74916.85)+6.*EXP(-HCK/T*74945.86)
   CASE ( 88)  ! P  IV
-    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*67918.03)+3.*EXP(-HCK/T*68146.48)+ 5.*EXP(-HCK/T*68615.17)
+    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*67918.03)+3.*EXP(-HCK/T*68146.48)+ &
+      5.*EXP(-HCK/T*68615.17)
   CASE ( 89)  ! P  V
     PFGROUND_KURUCZ = 2.+2.*EXP(-HCK/T*88651.87)+4.*EXP(-HCK/T*89447.25)
   CASE ( 90); PFGROUND_KURUCZ = 1.                    ! P  VI
 
   ! --- Z=16  S  ---
   CASE ( 91)  ! S  I
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*396.055)+EXP(-HCK/T*573.640)+ 5.*EXP(-HCK/T*9238.609)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*396.055)+EXP(-HCK/T*573.640)+ &
+      5.*EXP(-HCK/T*9238.609)
   CASE ( 92)  ! S  II
-    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*14852.94)+6.*EXP(-HCK/T*14884.73)+ 2.*EXP(-HCK/T*24524.83)+4.*EXP(-HCK/T*24571.54)
+    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*14852.94)+6.*EXP(-HCK/T*14884.73)+ &
+      2.*EXP(-HCK/T*24524.83)+4.*EXP(-HCK/T*24571.54)
   CASE ( 93)  ! S  III
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*298.69)+5.*EXP(-HCK/T*833.08)+ 5.*EXP(-HCK/T*11322.7)+1.*EXP(-HCK/T*27161.0)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*298.69)+5.*EXP(-HCK/T*833.08)+ &
+      5.*EXP(-HCK/T*11322.7)+1.*EXP(-HCK/T*27161.0)
   CASE ( 94)  ! S  IV
-    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*951.43)+2.*EXP(-HCK/T*71184.1)+ 4.*EXP(-HCK/T*71528.7)+6.*EXP(-HCK/T*72074.4)+ &
+    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*951.43)+2.*EXP(-HCK/T*71184.1)+ &
+      4.*EXP(-HCK/T*71528.7)+6.*EXP(-HCK/T*72074.4)+ &
       4.*EXP(-HCK/T*94103.1)+6.*EXP(-HCK/T*94150.4)
   CASE ( 95)  ! S  V
-    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*83024.0)+3.*EXP(-HCK/T*83393.5)+ 5.*EXP(-HCK/T*84155.2)
+    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*83024.0)+3.*EXP(-HCK/T*83393.5)+ &
+      5.*EXP(-HCK/T*84155.2)
   CASE ( 96); PFGROUND_KURUCZ = 2.                    ! S  VI
 
   ! --- Z=17  Cl ---
   CASE ( 97)  ! Cl I
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*882.36)
   CASE ( 98)  ! Cl II
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*696.1)+EXP(-HCK/T*996.4)+ 5.*EXP(-HCK/T*11653.58)+1.*EXP(-HCK/T*27878.02)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*696.1)+EXP(-HCK/T*996.4)+ &
+      5.*EXP(-HCK/T*11653.58)+1.*EXP(-HCK/T*27878.02)
   CASE ( 99)  ! Cl III
-    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*18053.)+6.*EXP(-HCK/T*18118.6)+ 2.*EXP(-HCK/T*29812.)+4.*EXP(-HCK/T*29907.)
+    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*18053.)+6.*EXP(-HCK/T*18118.6)+ &
+      2.*EXP(-HCK/T*29812.)+4.*EXP(-HCK/T*29907.)
   CASE (100)  ! Cl IV
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*491.)+5.*EXP(-HCK/T*1341.)+ 5.*EXP(-HCK/T*13767.6)+1.*EXP(-HCK/T*32547.8)+ 5.*EXP(-HCK/T*65000.)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*491.)+5.*EXP(-HCK/T*1341.)+ &
+      5.*EXP(-HCK/T*13767.6)+1.*EXP(-HCK/T*32547.8)+ &
+      5.*EXP(-HCK/T*65000.)
   CASE (101)  ! Cl V
-    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*1490.8)+2.*EXP(-HCK/T*86000.)+ 4.*EXP(-HCK/T*86538.)+6.*EXP(-HCK/T*87381.)
+    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*1490.8)+2.*EXP(-HCK/T*86000.)+ &
+      4.*EXP(-HCK/T*86538.)+6.*EXP(-HCK/T*87381.)
   CASE (102)  ! Cl VI
-    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*97405.)+3.*EXP(-HCK/T*97958.)+ 5.*EXP(-HCK/T*99123.)
+    PFGROUND_KURUCZ = 1.+1.*EXP(-HCK/T*97405.)+3.*EXP(-HCK/T*97958.)+ &
+      5.*EXP(-HCK/T*99123.)
 
   ! --- Z=18  Ar ---
   CASE (103); PFGROUND_KURUCZ = 1.                    ! Ar I
   CASE (104)  ! Ar II
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*1431.41)
   CASE (105)  ! Ar III
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1112.1)+EXP(-HCK/T*1570.2)+ 5.*EXP(-HCK/T*14010.004)+1.*EXP(-HCK/T*33265.724)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1112.1)+EXP(-HCK/T*1570.2)+ &
+      5.*EXP(-HCK/T*14010.004)+1.*EXP(-HCK/T*33265.724)
   CASE (106)  ! Ar IV
-    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*21090.4)+6.*EXP(-HCK/T*21219.3)+ 2.*EXP(-HCK/T*34855.5)+4.*EXP(-HCK/T*35032.6)
+    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*21090.4)+6.*EXP(-HCK/T*21219.3)+ &
+      2.*EXP(-HCK/T*34855.5)+4.*EXP(-HCK/T*35032.6)
   CASE (107)  ! Ar V
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*765.)+5.*EXP(-HCK/T*2030.)+ 5.*EXP(-HCK/T*16298.9)+1.*EXP(-HCK/T*37912.0)+ 5.*EXP(-HCK/T*84100.0)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*765.)+5.*EXP(-HCK/T*2030.)+ &
+      5.*EXP(-HCK/T*16298.9)+1.*EXP(-HCK/T*37912.0)+ &
+      5.*EXP(-HCK/T*84100.0)
   CASE (108)  ! Ar VI
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*2208.)
 
@@ -17538,11 +17653,14 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (111)  ! K  III
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*2166.)
   CASE (112)  ! K  IV
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1673.)+EXP(-HCK/T*2325.)+ 5.*EXP(-HCK/T*16384.1)+EXP(-HCK/T*38546.3)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1673.)+EXP(-HCK/T*2325.)+ &
+      5.*EXP(-HCK/T*16384.1)+EXP(-HCK/T*38546.3)
   CASE (113)  ! K  V
-    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*24012.5)+6.*EXP(-HCK/T*24249.6)+ 2.*EXP(-HCK/T*39758.1)+4.*EXP(-HCK/T*40080.2)
+    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*24012.5)+6.*EXP(-HCK/T*24249.6)+ &
+      2.*EXP(-HCK/T*39758.1)+4.*EXP(-HCK/T*40080.2)
   CASE (114)  ! K  VI
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1132.)+5.*EXP(-HCK/T*2924.)+ 5.*EXP(-HCK/T*18977.8)+1.*EXP(-HCK/T*43358.8)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1132.)+5.*EXP(-HCK/T*2924.)+ &
+      5.*EXP(-HCK/T*18977.8)+1.*EXP(-HCK/T*43358.8)
 
   ! --- Z=29  Cu ---
   CASE (169); PFGROUND_KURUCZ = 2.                    ! Cu I
@@ -17572,7 +17690,8 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
 
   ! --- Z=32  Ge ---
   CASE (187)  ! Ge I
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*557.134)+5.*EXP(-HCK/T*1409.961)+ 5.*EXP(-HCK/T*7125.299)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*557.134)+5.*EXP(-HCK/T*1409.961)+ &
+      5.*EXP(-HCK/T*7125.299)
   CASE (188)  ! Ge II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*1767.356)
   CASE (189); PFGROUND_KURUCZ = 1.                    ! Ge III
@@ -17592,11 +17711,14 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
 
   ! --- Z=34  Se ---
   CASE (199)  ! Se I
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1989.49)+EXP(-HCK/T*2534.35)+ 5.*EXP(-HCK/T*9576.149)+1.*EXP(-HCK/T*22446.202)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*1989.49)+EXP(-HCK/T*2534.35)+ &
+      5.*EXP(-HCK/T*9576.149)+1.*EXP(-HCK/T*22446.202)
   CASE (200)  ! Se II
-    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*13168.2)+6.*EXP(-HCK/T*13784.4)+ 2.*EXP(-HCK/T*23038.3)+4.*EXP(-HCK/T*23894.8)
+    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*13168.2)+6.*EXP(-HCK/T*13784.4)+ &
+      2.*EXP(-HCK/T*23038.3)+4.*EXP(-HCK/T*23894.8)
   CASE (201)  ! Se III
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1741.)+5.*EXP(-HCK/T*3937.)+ 5.*EXP(-HCK/T*13032.)+1.*EXP(-HCK/T*28430.)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1741.)+5.*EXP(-HCK/T*3937.)+ &
+      5.*EXP(-HCK/T*13032.)+1.*EXP(-HCK/T*28430.)
   CASE (202); PFGROUND_KURUCZ = 1.                    ! Se IV
   CASE (203); PFGROUND_KURUCZ = 1.                    ! Se V
   CASE (204); PFGROUND_KURUCZ = 1.                    ! Se VI
@@ -17605,9 +17727,11 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (205)  ! Br I
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*3685.24)
   CASE (206)  ! Br II
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*3136.4)+EXP(-HCK/T*3837.5)+ 5.*EXP(-HCK/T*12089.1)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*3136.4)+EXP(-HCK/T*3837.5)+ &
+      5.*EXP(-HCK/T*12089.1)
   CASE (207)  ! Br III
-    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*15042.0)+6.*EXP(-HCK/T*16301.0)+ 2.*EXP(-HCK/T*26915.0)+4.*EXP(-HCK/T*28579.0)
+    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*15042.0)+6.*EXP(-HCK/T*16301.0)+ &
+      2.*EXP(-HCK/T*26915.0)+4.*EXP(-HCK/T*28579.0)
   CASE (208); PFGROUND_KURUCZ = 1.                    ! Br IV
   CASE (209); PFGROUND_KURUCZ = 1.                    ! Br V
   CASE (210); PFGROUND_KURUCZ = 1.                    ! Br VI
@@ -17617,7 +17741,8 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (212)  ! Kr II
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*5371.)
   CASE (213)  ! Kr III
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*3136.4)+EXP(-HCK/T*3837.5)+ 5.*EXP(-HCK/T*14644.3)+1.*EXP(-HCK/T*33079.6)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*3136.4)+EXP(-HCK/T*3837.5)+ &
+      5.*EXP(-HCK/T*14644.3)+1.*EXP(-HCK/T*33079.6)
   CASE (214); PFGROUND_KURUCZ = 1.                    ! Kr IV
   CASE (215); PFGROUND_KURUCZ = 1.                    ! Kr V
   CASE (216); PFGROUND_KURUCZ = 1.                    ! Kr VI
@@ -17644,8 +17769,10 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (229)  ! Y  I
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*530.36)
   CASE (230)  ! Y  II
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*840.198)+5.*EXP(-HCK/T*1045.076)+ 7.*EXP(-HCK/T*1449.752)+5.*EXP(-HCK/T*3296.280)+ &
-      5.*EXP(-HCK/T*8003.126)+7.*EXP(-HCK/T*8328.039)+ 9.*EXP(-HCK/T*8743.322)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*840.198)+5.*EXP(-HCK/T*1045.076)+ &
+      7.*EXP(-HCK/T*1449.752)+5.*EXP(-HCK/T*3296.280)+ &
+      5.*EXP(-HCK/T*8003.126)+7.*EXP(-HCK/T*8328.039)+ &
+      9.*EXP(-HCK/T*8743.322)
   CASE (231)  ! Y  III
     PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*724.15)+2.*EXP(-HCK/T*7467.10)
   CASE (232); PFGROUND_KURUCZ = 1.                    ! Y  IV
@@ -17654,39 +17781,73 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
 
   ! --- Z=40  Zr ---
   CASE (235)  ! Zr I
-    PFGROUND_KURUCZ = 5.+7.*EXP(-HCK/T*570.41)+9.*EXP(-HCK/T*1240.84)+ 1.*EXP(-HCK/T*4196.85)+3.*EXP(-HCK/T*4376.28)+ &
-      5.*EXP(-HCK/T*4186.11)+3.*EXP(-HCK/T*4870.53)+ 5.*EXP(-HCK/T*5023.41)+7.*EXP(-HCK/T*5249.07)+ 9.*EXP(-HCK/T*5540.54)+ &
-      11.*EXP(-HCK/T*5888.93)+ 5.*EXP(-HCK/T*5101.68)+9.*EXP(-HCK/T*8057.30)
+    PFGROUND_KURUCZ = 5.+7.*EXP(-HCK/T*570.41)+9.*EXP(-HCK/T*1240.84)+ &
+      1.*EXP(-HCK/T*4196.85)+3.*EXP(-HCK/T*4376.28)+ &
+      5.*EXP(-HCK/T*4186.11)+3.*EXP(-HCK/T*4870.53)+ &
+      5.*EXP(-HCK/T*5023.41)+7.*EXP(-HCK/T*5249.07)+ &
+      9.*EXP(-HCK/T*5540.54)+ &
+      11.*EXP(-HCK/T*5888.93)+ 5.*EXP(-HCK/T*5101.68)+ &
+      9.*EXP(-HCK/T*8057.30)
   CASE (236)  ! Zr II
-    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*314.67)+8.*EXP(-HCK/T*763.44)+ 10.*EXP(-HCK/T*1322.91)+4.*EXP(-HCK/T*2572.21)+ &
-      6.*EXP(-HCK/T*2895.00)+8.*EXP(-HCK/T*3299.58)+ 10.*EXP(-HCK/T*3757.63)+4.*EXP(-HCK/T*4247.97)+ 6.*EXP(-HCK/T*4505.30)+ &
-      2.*EXP(-HCK/T*5723.78)+ 4.*EXP(-HCK/T*6111.16)+6.*EXP(-HCK/T*5752.55)+ 8.*EXP(-HCK/T*6467.10)+2.*EXP(-HCK/T*7512.61)+ &
-      4.*EXP(-HCK/T*7736.05)+6.*EXP(-HCK/T*8058.27)+ 8.*EXP(-HCK/T*7837.49)+10.*EXP(-HCK/T*8152.57)+ 2.*EXP(-HCK/T*9553.13)+ &
+    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*314.67)+8.*EXP(-HCK/T*763.44)+ &
+      10.*EXP(-HCK/T*1322.91)+4.*EXP(-HCK/T*2572.21)+ &
+      6.*EXP(-HCK/T*2895.00)+8.*EXP(-HCK/T*3299.58)+ &
+      10.*EXP(-HCK/T*3757.63)+4.*EXP(-HCK/T*4247.97)+ &
+      6.*EXP(-HCK/T*4505.30)+ &
+      2.*EXP(-HCK/T*5723.78)+ 4.*EXP(-HCK/T*6111.16)+ &
+      6.*EXP(-HCK/T*5752.55)+ 8.*EXP(-HCK/T*6467.10)+ &
+      2.*EXP(-HCK/T*7512.61)+ &
+      4.*EXP(-HCK/T*7736.05)+6.*EXP(-HCK/T*8058.27)+ &
+      8.*EXP(-HCK/T*7837.49)+10.*EXP(-HCK/T*8152.57)+ &
+      2.*EXP(-HCK/T*9553.13)+ &
       4.*EXP(-HCK/T*9742.80)+ 6.*EXP(-HCK/T*9968.75)
   CASE (237)  ! Zr III
-    PFGROUND_KURUCZ = 5.+7.*EXP(-HCK/T*681.2)+9.*EXP(-HCK/T*1485.8)+ 5.*EXP(-HCK/T*5742.8)+1.*EXP(-HCK/T*8062.7)+ &
-      3.*EXP(-HCK/T*8327.0)+5.*EXP(-HCK/T*8839.7)+ 9.*EXP(-HCK/T*11049.9)+1.*EXP(-HCK/T*23974.9)+ 3.*EXP(-HCK/T*18400.8)+ &
-      5.*EXP(-HCK/T*18804.7)+ 7.*EXP(-HCK/T*19535.3)+5.*EXP(-HCK/T*25066.9)+ 1.*EXP(-HCK/T*36473.7)
+    PFGROUND_KURUCZ = 5.+7.*EXP(-HCK/T*681.2)+9.*EXP(-HCK/T*1485.8)+ &
+      5.*EXP(-HCK/T*5742.8)+1.*EXP(-HCK/T*8062.7)+ &
+      3.*EXP(-HCK/T*8327.0)+5.*EXP(-HCK/T*8839.7)+ &
+      9.*EXP(-HCK/T*11049.9)+1.*EXP(-HCK/T*23974.9)+ &
+      3.*EXP(-HCK/T*18400.8)+ &
+      5.*EXP(-HCK/T*18804.7)+ 7.*EXP(-HCK/T*19535.3)+ &
+      5.*EXP(-HCK/T*25066.9)+ 1.*EXP(-HCK/T*36473.7)
   CASE (238); PFGROUND_KURUCZ = 1.                    ! Zr IV
   CASE (239); PFGROUND_KURUCZ = 1.                    ! Zr V
   CASE (240); PFGROUND_KURUCZ = 1.                    ! Zr VI
 
   ! --- Z=41  Nb ---
   CASE (241)  ! Nb I
-    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*154.19)+6.*EXP(-HCK/T*391.99)+ 8.*EXP(-HCK/T*695.25)+10.*EXP(-HCK/T*1050.26)+ &
-      4.*EXP(-HCK/T*1142.79)+6.*EXP(-HCK/T*1586.90)+ 8.*EXP(-HCK/T*2154.11)+10.*EXP(-HCK/T*2805.36)+ 2.*EXP(-HCK/T*4998.17)+ &
-      4.*EXP(-HCK/T*5297.92)+ 6.*EXP(-HCK/T*5965.45)+2.*EXP(-HCK/T*8410.90)+ 4.*EXP(-HCK/T*8705.32)+6.*EXP(-HCK/T*9043.14)+ &
-      8.*EXP(-HCK/T*9497.52)+8.*EXP(-HCK/T*8827.00)+ 10.*EXP(-HCK/T*9328.88)+4.*EXP(-HCK/T*9439.08)+ 6.*EXP(-HCK/T*10237.51)
+    PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*154.19)+6.*EXP(-HCK/T*391.99)+ &
+      8.*EXP(-HCK/T*695.25)+10.*EXP(-HCK/T*1050.26)+ &
+      4.*EXP(-HCK/T*1142.79)+6.*EXP(-HCK/T*1586.90)+ &
+      8.*EXP(-HCK/T*2154.11)+10.*EXP(-HCK/T*2805.36)+ &
+      2.*EXP(-HCK/T*4998.17)+ &
+      4.*EXP(-HCK/T*5297.92)+ 6.*EXP(-HCK/T*5965.45)+ &
+      2.*EXP(-HCK/T*8410.90)+ 4.*EXP(-HCK/T*8705.32)+ &
+      6.*EXP(-HCK/T*9043.14)+ &
+      8.*EXP(-HCK/T*9497.52)+8.*EXP(-HCK/T*8827.00)+ &
+      10.*EXP(-HCK/T*9328.88)+4.*EXP(-HCK/T*9439.08)+ &
+      6.*EXP(-HCK/T*10237.51)
   CASE (242)  ! Nb II
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*158.99)+5.*EXP(-HCK/T*438.38)+ 7.*EXP(-HCK/T*801.38)+9.*EXP(-HCK/T*1224.87)+ &
-      3.*EXP(-HCK/T*2356.76)+5.*EXP(-HCK/T*2629.07)+ 7.*EXP(-HCK/T*3029.57)+9.*EXP(-HCK/T*3542.50)+ 11.*EXP(-HCK/T*4146.00)+ &
-      1.*EXP(-HCK/T*5562.26)+ 3.*EXP(-HCK/T*6192.33)+5.*EXP(-HCK/T*7261.33)+ 5.*EXP(-HCK/T*7505.78)+7.*EXP(-HCK/T*7900.65)+ &
-      9.*EXP(-HCK/T*8320.40)+9.*EXP(-HCK/T*9509.67)+ 11.*EXP(-HCK/T*9812.56)+13.*EXP(-HCK/T*10186.41)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*158.99)+5.*EXP(-HCK/T*438.38)+ &
+      7.*EXP(-HCK/T*801.38)+9.*EXP(-HCK/T*1224.87)+ &
+      3.*EXP(-HCK/T*2356.76)+5.*EXP(-HCK/T*2629.07)+ &
+      7.*EXP(-HCK/T*3029.57)+9.*EXP(-HCK/T*3542.50)+ &
+      11.*EXP(-HCK/T*4146.00)+ &
+      1.*EXP(-HCK/T*5562.26)+ 3.*EXP(-HCK/T*6192.33)+ &
+      5.*EXP(-HCK/T*7261.33)+ 5.*EXP(-HCK/T*7505.78)+ &
+      7.*EXP(-HCK/T*7900.65)+ &
+      9.*EXP(-HCK/T*8320.40)+9.*EXP(-HCK/T*9509.67)+ &
+      11.*EXP(-HCK/T*9812.56)+13.*EXP(-HCK/T*10186.41)
   CASE (243)  ! Nb III
-    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*515.8)+8.*EXP(-HCK/T*1176.6)+ 10.*EXP(-HCK/T*1939.0)+ 2.*EXP(-HCK/T*8664.3)+ &
-      4.*EXP(-HCK/T*8607.5)+ 6.*EXP(-HCK/T*9593.7)+8.*EXP(-HCK/T*9236.1)+ 10.*EXP(-HCK/T*9804.5)+4.*EXP(-HCK/T*10912.2)+ &
-      6.*EXP(-HCK/T*13094.0)+10.*EXP(-HCK/T*12916.0)+ 12.*EXP(-HCK/T*13263.8)+6.*EXP(-HCK/T*19975.0)+ 8.*EXP(-HCK/T*19861.0)+ &
-      4.*EXP(-HCK/T*25220.2)+ 6.*EXP(-HCK/T*25735.2)+8.*EXP(-HCK/T*26463.7)+ 10.*EXP(-HCK/T*27373.5)
+    PFGROUND_KURUCZ = 4.+6.*EXP(-HCK/T*515.8)+8.*EXP(-HCK/T*1176.6)+ &
+      10.*EXP(-HCK/T*1939.0)+ 2.*EXP(-HCK/T*8664.3)+ &
+      4.*EXP(-HCK/T*8607.5)+ 6.*EXP(-HCK/T*9593.7)+ &
+      8.*EXP(-HCK/T*9236.1)+ 10.*EXP(-HCK/T*9804.5)+ &
+      4.*EXP(-HCK/T*10912.2)+ &
+      6.*EXP(-HCK/T*13094.0)+10.*EXP(-HCK/T*12916.0)+ &
+      12.*EXP(-HCK/T*13263.8)+6.*EXP(-HCK/T*19975.0)+ &
+      8.*EXP(-HCK/T*19861.0)+ &
+      4.*EXP(-HCK/T*25220.2)+ 6.*EXP(-HCK/T*25735.2)+ &
+      8.*EXP(-HCK/T*26463.7)+ 10.*EXP(-HCK/T*27373.5)
   CASE (244); PFGROUND_KURUCZ = 1.                    ! Nb IV
   CASE (245); PFGROUND_KURUCZ = 1.                    ! Nb V
   CASE (246); PFGROUND_KURUCZ = 1.                    ! Nb VI
@@ -17695,17 +17856,20 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (247); PFGROUND_KURUCZ = 7.                    ! Mo I
   CASE (248); PFGROUND_KURUCZ = 6.                    ! Mo II
   CASE (249)  ! Mo III
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*243.10)+5.*EXP(-HCK/T*669.60)+ 7.*EXP(-HCK/T*1225.20)+9.*EXP(-HCK/T*1873.80)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*243.10)+5.*EXP(-HCK/T*669.60)+ &
+      7.*EXP(-HCK/T*1225.20)+9.*EXP(-HCK/T*1873.80)
   CASE (250); PFGROUND_KURUCZ = 1.                    ! Mo IV
   CASE (251); PFGROUND_KURUCZ = 1.                    ! Mo V
   CASE (252); PFGROUND_KURUCZ = 1.                    ! Mo VI
 
   ! --- Z=43  Tc ---
   CASE (253)  ! Tc I
-    PFGROUND_KURUCZ = 6.   +10.*EXP(-HCK/T*2572.89)+8.*EXP(-HCK/T*3250.91)+ 6.*EXP(-HCK/T*3700.54)+4.*EXP(-HCK/T*4002.57)+ &
+    PFGROUND_KURUCZ = 6.   +10.*EXP(-HCK/T*2572.89)+8.*EXP(-HCK/T*3250.91)+ &
+      6.*EXP(-HCK/T*3700.54)+4.*EXP(-HCK/T*4002.57)+ &
       2.*EXP(-HCK/T*4178.75)
   CASE (254)  ! Tc II
-    PFGROUND_KURUCZ = 7.  +9.*EXP(-HCK/T*3461.27)+7.*EXP(-HCK/T*4217.17)+ 5.*EXP(-HCK/T*4669.22)+3.*EXP(-HCK/T*4961.14)+ &
+    PFGROUND_KURUCZ = 7.  +9.*EXP(-HCK/T*3461.27)+7.*EXP(-HCK/T*4217.17)+ &
+      5.*EXP(-HCK/T*4669.22)+3.*EXP(-HCK/T*4961.14)+ &
       1.*EXP(-HCK/T*5100.98)
   CASE (255); PFGROUND_KURUCZ = 6.                    ! Tc III
   CASE (256); PFGROUND_KURUCZ = 1.                    ! Tc IV
@@ -17714,15 +17878,24 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
 
   ! --- Z=44  Ru ---
   CASE (259)  ! Ru I
-    PFGROUND_KURUCZ = 11.+9.*EXP(-HCK/T*1190.64)+7.*EXP(-HCK/T*2091.54)+ 5.*EXP(-HCK/T*2713.24)+3.*EXP(-HCK/T*3105.49)+ &
-      9.*EXP(-HCK/T*6545.03)+7.*EXP(-HCK/T*8084.12)+ 5.*EXP(-HCK/T*9183.66)+9.*EXP(-HCK/T*7483.07)+ 7.*EXP(-HCK/T*8575.42)+ &
-      5.*EXP(-HCK/T*9057.64)+ 3.*EXP(-HCK/T*9072.98)+1.*EXP(-HCK/T*8492.37)+ 7.*EXP(-HCK/T*8770.93)+5.*EXP(-HCK/T*8043.69)+ &
+    PFGROUND_KURUCZ = 11.+9.*EXP(-HCK/T*1190.64)+7.*EXP(-HCK/T*2091.54)+ &
+      5.*EXP(-HCK/T*2713.24)+3.*EXP(-HCK/T*3105.49)+ &
+      9.*EXP(-HCK/T*6545.03)+7.*EXP(-HCK/T*8084.12)+ &
+      5.*EXP(-HCK/T*9183.66)+9.*EXP(-HCK/T*7483.07)+ &
+      7.*EXP(-HCK/T*8575.42)+ &
+      5.*EXP(-HCK/T*9057.64)+ 3.*EXP(-HCK/T*9072.98)+ &
+      1.*EXP(-HCK/T*8492.37)+ 7.*EXP(-HCK/T*8770.93)+ &
+      5.*EXP(-HCK/T*8043.69)+ &
       3.*EXP(-HCK/T*9620.29)+9.*EXP(-HCK/T*9120.63)
   CASE (260)  ! Ru II
-    PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*1523.1)+6.*EXP(-HCK/T*2493.9)+ 4.*EXP(-HCK/T*3104.2)+6.*EXP(-HCK/T*8256.7)+ &
-      4.*EXP(-HCK/T*8477.4)+2.*EXP(-HCK/T*9373.4)+ 10.*EXP(-HCK/T*9151.6)
+    PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*1523.1)+6.*EXP(-HCK/T*2493.9)+ &
+      4.*EXP(-HCK/T*3104.2)+6.*EXP(-HCK/T*8256.7)+ &
+      4.*EXP(-HCK/T*8477.4)+2.*EXP(-HCK/T*9373.4)+ &
+      10.*EXP(-HCK/T*9151.6)
   CASE (261)  ! Ru III
-    PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*1158.8)+5.*EXP(-HCK/T*1826.3)+ 3.*EXP(-HCK/T*2266.3)+EXP(-HCK/T*2476.0)+ 7.*EXP(-HCK/T*27162.8)+ &
+    PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*1158.8)+5.*EXP(-HCK/T*1826.3)+ &
+      3.*EXP(-HCK/T*2266.3)+EXP(-HCK/T*2476.0)+ &
+      7.*EXP(-HCK/T*27162.8)+ &
       5.*EXP(-HCK/T*41111.7)
   CASE (262); PFGROUND_KURUCZ = 1.                    ! Ru IV
   CASE (263); PFGROUND_KURUCZ = 1.                    ! Ru V
@@ -17730,16 +17903,25 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
 
   ! --- Z=45  Rh ---
   CASE (265)  ! Rh I
-    PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*1529.97)+6.*EXP(-HCK/T*2598.03)+ 4.*EXP(-HCK/T*3472.68)+6.*EXP(-HCK/T*3309.86)+ &
-      4.*EXP(-HCK/T*5657.97)+8.*EXP(-HCK/T*5690.97)+ 6.*EXP(-HCK/T*7791.23)+6.*EXP(-HCK/T*9221.22)
+    PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*1529.97)+6.*EXP(-HCK/T*2598.03)+ &
+      4.*EXP(-HCK/T*3472.68)+6.*EXP(-HCK/T*3309.86)+ &
+      4.*EXP(-HCK/T*5657.97)+8.*EXP(-HCK/T*5690.97)+ &
+      6.*EXP(-HCK/T*7791.23)+6.*EXP(-HCK/T*9221.22)
   CASE (266)  ! Rh II
-    PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*2401.3)+5.*EXP(-HCK/T*3580.7)+ 5.*EXP(-HCK/T*8164.4)+1.*EXP(-HCK/T*10760.8)+ &
-      3.*EXP(-HCK/T*10515.0)+5.*EXP(-HCK/T*11643.7)+ 9.*EXP(-HCK/T*14855.4)+11.*EXP(-HCK/T*16884.8)+ 9.*EXP(-HCK/T*18540.4)+ &
+    PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*2401.3)+5.*EXP(-HCK/T*3580.7)+ &
+      5.*EXP(-HCK/T*8164.4)+1.*EXP(-HCK/T*10760.8)+ &
+      3.*EXP(-HCK/T*10515.0)+5.*EXP(-HCK/T*11643.7)+ &
+      9.*EXP(-HCK/T*14855.4)+11.*EXP(-HCK/T*16884.8)+ &
+      9.*EXP(-HCK/T*18540.4)+ &
       7.*EXP(-HCK/T*19792.4)
   CASE (267)  ! Rh III
-    PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*2147.8)+6.*EXP(-HCK/T*3485.7)+ 4.*EXP(-HCK/T*4322.0)+6.*EXP(-HCK/T*11062.3)+ &
-      4.*EXP(-HCK/T*10997.1)+2.*EXP(-HCK/T*12469.8)+ 10.*EXP(-HCK/T*14044.0)+8.*EXP(-HCK/T*15256.8)+ 4.*EXP(-HCK/T*16870.7)+ &
-      2.*EXP(-HCK/T*18303.7)+ 12.*EXP(-HCK/T*19490.2)+6.*EXP(-HCK/T*19528.5)
+    PFGROUND_KURUCZ = 10.+8.*EXP(-HCK/T*2147.8)+6.*EXP(-HCK/T*3485.7)+ &
+      4.*EXP(-HCK/T*4322.0)+6.*EXP(-HCK/T*11062.3)+ &
+      4.*EXP(-HCK/T*10997.1)+2.*EXP(-HCK/T*12469.8)+ &
+      10.*EXP(-HCK/T*14044.0)+8.*EXP(-HCK/T*15256.8)+ &
+      4.*EXP(-HCK/T*16870.7)+ &
+      2.*EXP(-HCK/T*18303.7)+ 12.*EXP(-HCK/T*19490.2)+ &
+      6.*EXP(-HCK/T*19528.5)
   CASE (268); PFGROUND_KURUCZ = 1.                    ! Rh IV
   CASE (269); PFGROUND_KURUCZ = 1.                    ! Rh V
   CASE (270); PFGROUND_KURUCZ = 1.                    ! Rh VI
@@ -17750,8 +17932,10 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (272)  ! Pd II
     PFGROUND_KURUCZ = 6.+4.*EXP(-HCK/T*3539.2)
   CASE (273)  ! Pd III
-    PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*3229.3)+5.*EXP(-HCK/T*4687.5)+ 5.*EXP(-HCK/T*10229.3)+3.*EXP(-HCK/T*13468.9)+ &
-      1.*EXP(-HCK/T*13697.5)+5.*EXP(-HCK/T*14634.4)+ 9.*EXP(-HCK/T*17879.3)
+    PFGROUND_KURUCZ = 9.+7.*EXP(-HCK/T*3229.3)+5.*EXP(-HCK/T*4687.5)+ &
+      5.*EXP(-HCK/T*10229.3)+3.*EXP(-HCK/T*13468.9)+ &
+      1.*EXP(-HCK/T*13697.5)+5.*EXP(-HCK/T*14634.4)+ &
+      9.*EXP(-HCK/T*17879.3)
   CASE (274); PFGROUND_KURUCZ = 1.                    ! Pd IV
   CASE (275); PFGROUND_KURUCZ = 1.                    ! Pd V
   CASE (276); PFGROUND_KURUCZ = 1.                    ! Pd VI
@@ -17784,7 +17968,8 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
 
   ! --- Z=50  Sn ---
   CASE (295)  ! Sn I
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1691.8)+5.*EXP(-HCK/T*3427.7)+ 5.*EXP(-HCK/T*6513.0)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*1691.8)+5.*EXP(-HCK/T*3427.7)+ &
+      5.*EXP(-HCK/T*6513.0)
   CASE (296)  ! Sn II
     PFGROUND_KURUCZ = 2.+4.*EXP(-HCK/T*4251.4)
   CASE (297); PFGROUND_KURUCZ = 1.                    ! Sn III
@@ -17807,9 +17992,11 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (307)  ! Te I
     PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*4750.712)+EXP(-HCK/T*4706.5)
   CASE (308)  ! Te II
-    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*10222.385)+6.*EXP(-HCK/T*12421.854)+ 2.*EXP(-HCK/T*20546.591)+4.*EXP(-HCK/T*24032.2)
+    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*10222.385)+6.*EXP(-HCK/T*12421.854)+ &
+      2.*EXP(-HCK/T*20546.591)+4.*EXP(-HCK/T*24032.2)
   CASE (309)  ! Te III
-    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*4756.5)+5.*EXP(-HCK/T*8166.9)+ 5.*EXP(-HCK/T*17358.)
+    PFGROUND_KURUCZ = 1.+3.*EXP(-HCK/T*4756.5)+5.*EXP(-HCK/T*8166.9)+ &
+      5.*EXP(-HCK/T*17358.)
   CASE (310); PFGROUND_KURUCZ = 1.                    ! Te IV
   CASE (311); PFGROUND_KURUCZ = 1.                    ! Te V
   CASE (312); PFGROUND_KURUCZ = 1.                    ! Te VI
@@ -17818,9 +18005,11 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (313)  ! I  I
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*7063.15)
   CASE (314)  ! I  II
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*7087.0)+EXP(-HCK/T*6447.9)+ 5.*EXP(-HCK/T*13727.2)+1.*EXP(-HCK/T*29501.3)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*7087.0)+EXP(-HCK/T*6447.9)+ &
+      5.*EXP(-HCK/T*13727.2)+1.*EXP(-HCK/T*29501.3)
   CASE (315)  ! I  III
-    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*11711.2)+6.*EXP(-HCK/T*14901.9)+ 2.*EXP(-HCK/T*24299.3)+4.*EXP(-HCK/T*29636.8)
+    PFGROUND_KURUCZ = 4.+4.*EXP(-HCK/T*11711.2)+6.*EXP(-HCK/T*14901.9)+ &
+      2.*EXP(-HCK/T*24299.3)+4.*EXP(-HCK/T*29636.8)
   CASE (316); PFGROUND_KURUCZ = 1.                    ! I  IV
   CASE (317); PFGROUND_KURUCZ = 1.                    ! I  V
   CASE (318); PFGROUND_KURUCZ = 1.                    ! I  VI
@@ -17830,7 +18019,8 @@ FUNCTION PFGROUND_KURUCZ(NELION, T)
   CASE (320)  ! Xe II
     PFGROUND_KURUCZ = 4.+2.*EXP(-HCK/T*10537.01)
   CASE (321)  ! Xe III
-    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*9794.36)+EXP(-HCK/T*8130.08)+ 5.*EXP(-HCK/T*17098.73)+1.*EXP(-HCK/T*36102.94)
+    PFGROUND_KURUCZ = 5.+3.*EXP(-HCK/T*9794.36)+EXP(-HCK/T*8130.08)+ &
+      5.*EXP(-HCK/T*17098.73)+1.*EXP(-HCK/T*36102.94)
   CASE (322); PFGROUND_KURUCZ = 1.                    ! Xe IV
   CASE (323); PFGROUND_KURUCZ = 1.                    ! Xe V
   CASE (324); PFGROUND_KURUCZ = 1.                    ! Xe VI
