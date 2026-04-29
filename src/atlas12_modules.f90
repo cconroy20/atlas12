@@ -1083,6 +1083,7 @@ MODULE mod_atlas_data
   REAL(8)  :: XSCALE = 1.0d0
   CHARACTER(4) :: WLTE = 'LTE '
   CHARACTER(256) :: DATADIR    ! Path to data files (from $ATLAS12)
+  CHARACTER(256) :: INPUT_MODEL_FILE = ''   ! Input atmosphere file (set by atlas12 driver)
   INTEGER :: INPUTDATA
 
   ! --- Flag set if SYNTHE is running ---
@@ -3858,9 +3859,14 @@ SUBROUTINE READIN(MODE)
 
   IF (MODE .EQ. 1) THEN
     !-------------------------------------------------------------------
-    ! ATLAS12 path: read model from input_model.dat, then stdin overrides
+    ! ATLAS12 path: read model from INPUT_MODEL_FILE, then stdin overrides
     !-------------------------------------------------------------------
-    OPEN(UNIT=3, FILE='input_model.dat', STATUS='OLD', ACTION='READ')
+    IF (LEN_TRIM(INPUT_MODEL_FILE) .EQ. 0) THEN
+      WRITE(6, '(A)') ' ERROR: READIN called with INPUT_MODEL_FILE unset.'
+      WRITE(6, '(A)') '        Driver must set INPUT_MODEL_FILE before CALL READIN(1).'
+      STOP 1
+    END IF
+    OPEN(UNIT=3, FILE=TRIM(INPUT_MODEL_FILE), STATUS='OLD', ACTION='READ')
     INPUTDATA = 3
     IFPRES = 1
     IFCORR = 1
@@ -15167,9 +15173,9 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   ! (1) LOWLINES predicted (unit 11)
   !=====================================================================
-  OPEN(UNIT=11, FILE=trim(DATADIR)//'lowlines_pl.bin', &
+  OPEN(UNIT=11, FILE=trim(DATADIR)//'gfpred29dec2014.bin', &
        STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-       ACCESS='STREAM', ERR=669)
+       ACCESS='STREAM', ERR=569)
 
   DO LINE = 1, MAX_LINES
     READ(11, END=581) LINEREC
@@ -15216,7 +15222,7 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   ! (2) LOWLINES observed (unit 111)
   !=====================================================================
-  OPEN(UNIT=111, FILE=trim(DATADIR)//'lowlines_obs.bin', &
+  569 OPEN(UNIT=111, FILE=trim(DATADIR)//'lowobsat12.bin', &
        STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
        ACCESS='STREAM', ERR=669)
 
@@ -15835,7 +15841,7 @@ SUBROUTINE XLINOP
   REAL(8)  :: BOLTH(kw, 100), EH(100)
   REAL(8)  :: WCON, WMERGE, WSHIFT, EMERGE(kw), Z, WMAX
   REAL(8)  :: NSTARK, NMERGE, RATIOLG
-  ! Temporaries matching the binary record layout of nltelines_obs.bin
+  ! Temporaries matching the binary record layout of nltelinobsat12.bin
   REAL(4)  :: ELO4, GF4, GAMMAR4, GAMMAS4, GAMMAW4
   INTEGER(4) :: IFJ(kw+1)
   INTEGER :: TYPE, NLAST

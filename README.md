@@ -52,11 +52,11 @@ cd src && make && cd ..
 # Point the code at the data directory
 export ATLAS12=$(pwd)
 
-# Move into the work directory, which ships with a solar input_model.dat
+# Move into the work directory, which ships with a solar starting atmosphere
 cd workdir
 
-# Run ATLAS12 on the solar model
-../bin/atlas12c.exe sun
+# Run ATLAS12 on the solar model (first arg = input atmosphere, second = output basename)
+../bin/atlas12c.exe ap00t5777g4.44at12.dat sun
 
 # Synthesize a visible spectrum from the converged model
 ../bin/synthe.exe sun.atm wlbeg=400 wlend=700
@@ -93,16 +93,16 @@ clean (no `.o` or `.mod` files).
 
 ```
 export ATLAS12=/path/to/atlas12/
-atlas12c.exe [basename] [key=value ...]
+atlas12c.exe <input_atm> [basename] [key=value ...]
 ```
 
-The input model is read from a file named `input_model.dat` in the
-current working directory.  This file contains the standard Kurucz
-keyword cards (TEFF, GRAVITY, ABUNDANCE, TURBULENCE, CONVECTION,
-READ DECK, ...) terminated by a `BEGIN` card.  The positional
-`basename` argument sets the prefix for all output files (default
-`mystar`); keyword arguments may appear in any order, before or after
-it.
+The first positional argument is the input atmosphere file and is
+required.  This file contains the standard Kurucz keyword cards (TEFF,
+GRAVITY, ABUNDANCE, TURBULENCE, CONVECTION, READ DECK, ...) terminated
+by a `BEGIN` card.  The optional second positional `basename` argument
+sets the prefix for all output files (default `mystar`); keyword
+arguments may appear in any order, before or after the positionals.
+Pass `--help` (or `-h`, `help`) to print usage and exit.
 
 Output files:
 
@@ -190,7 +190,7 @@ compatibility with legacy post-processing.
 
 ## Example Usage
 
-*TBD — end-to-end worked example (e.g. a solar-model `input_model.dat`,
+*TBD — end-to-end worked example (e.g. a solar input atmosphere file,
 the ATLAS12 invocation that converges it, and the SYNTHE call that
 synthesizes the visible spectrum from the resulting `.atm` file).*
 
@@ -257,23 +257,16 @@ The full contents of the data directory, organized by purpose:
 |------|---------|----------|
 | `lines.list`             | `run_mklinelist` | Plain-text manifest pointing at the line-list files below |
 | `gfallvac08oct17.dat` †  | `read_gfall`     | Kurucz atomic line list (vacuum wavelengths, Oct 2017) |
-| `gfpred29dec2014.bin` †  | `read_predict`   | Kurucz predicted atomic lines (Dec 2014) |
+| `gfpred29dec2014.bin` †  | `read_predict`, SELECTLINES | Kurucz predicted atomic lines (Dec 2014) |
 | `h2ofastfix.bin` †       | SELECTLINES      | H₂O line list (Partridge & Schwenke) |
 | `schwenke.bin` †         | SELECTLINES      | Schwenke diatomic/metal-hydride line list |
 | `diatomicspacksrt.bin` † | SELECTLINES      | Packed diatomic molecule line list (sorted) |
 | `hilines.bin` †          | SELECTLINES      | Hydrogen/helium line table |
-| `lowlines_obs.bin`       | SELECTLINES      | Low-excitation observed atomic lines (symlink → `lowobsat12.bin` †) |
-| `lowlines_pl.bin`        | SELECTLINES      | Low-excitation predicted atomic lines (symlink) |
-| `nltelines_obs.bin`      | ATLAS12 / XLINOP | NLTE line data (symlink → `nltelinobsat12.bin`) |
+| `lowobsat12.bin` †       | SELECTLINES      | Low-excitation observed atomic lines |
+| `nltelinobsat12.bin` †   | ATLAS12 / XLINOP | NLTE line data |
 | `mol.tar.gz` †           | —                | Archive of molecular sub-lists referenced from `lines.list`; unpack in place |
 
 † Not tracked in the repository; download from the Google Drive folder above.
-
-Several files in this directory are symbolic links that provide stable
-"logical" names pointing at versioned data (for example
-`lowlines_obs.bin → lowobsat12.bin`,
-`nltelines_obs.bin → nltelinobsat12.bin`).  The code always opens the
-logical name; versioned targets may be swapped without source changes.
 
 ## Translation from Fortran 77
 

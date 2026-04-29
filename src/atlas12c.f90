@@ -57,7 +57,7 @@ PROGRAM ATLAS12
   CHARACTER(256) :: OUTBASE, ARGBUF
   CHARACTER(256) :: ABUND_FILE
   CHARACTER(256) :: ABUND_LINE
-  INTEGER        :: NARGS, IEQPOS, ISTAT
+  INTEGER        :: NARGS, IEQPOS, ISTAT, IPOSARG
   REAL(8)        :: VTURB_KMS
   REAL(8)        :: CMD_TEFF, CMD_LOGG
   REAL(8)        :: CMD_ZSCALE, CMD_HEABND
@@ -71,10 +71,12 @@ PROGRAM ATLAS12
   CALL SYSTEM_CLOCK(CLOCK_TOTAL_START, CLOCK_RATE)
 
   ! --- Parse command-line arguments ---
-  !     Usage: atlas12.exe [basename] [numit=N] [vturb=X] [mlt=X] [teff=X]
-  !            [logg=X] [zscale=X] [heabnd=X] [abund=file]
-  !     Output files: <basename>.atm, .flux, .taunu, .iter, .tcorr
+  !     Usage: atlas12.exe <input_atm> [basename] [numit=N] [vturb=X] [mlt=X]
+  !            [teff=X] [logg=X] [zscale=X] [heabnd=X] [abund=file]
+  !     Pass --help (or -h, help) to print usage and exit.
+  !     input_atm  : input atmosphere model file (REQUIRED, first positional)
   !     basename   : output file base name (default 'mystar')
+  !     Output files: <basename>.atm, .flux, .taunu, .iter, .tcorr
   !     numit=N    : number of iterations (default 30)
   !     vturb=X    : microturbulence in km/s (default: from model)
   !     mlt=X      : mixing length parameter (default 2.0)
@@ -86,6 +88,7 @@ PROGRAM ATLAS12
   !     abund=file : file with individual element overrides (Z  log_abund)
   OUTBASE    = 'mystar'
   ABUND_FILE = ''
+  INPUT_MODEL_FILE = ''
   NUMITS     = 30
   VTURB_KMS  = -1.0D0    ! sentinel: not set
   CMD_TEFF   = -1.0D0    ! sentinel: not set
@@ -94,12 +97,39 @@ PROGRAM ATLAS12
   CMD_HEABND = -1.0D0    ! sentinel: not set
 
   NARGS = COMMAND_ARGUMENT_COUNT()
+
+  ! First pass: scan for help triggers anywhere on the command line
+  DO I = 1, NARGS
+    CALL GET_COMMAND_ARGUMENT(I, ARGBUF)
+    SELECT CASE (TRIM(ARGBUF))
+    CASE ('--help', '-h', 'help')
+      CALL print_usage()
+      STOP 0
+    END SELECT
+  END DO
+
+  ! No args at all -> show usage and exit with error
+  IF (NARGS .EQ. 0) THEN
+    CALL print_usage()
+    STOP 1
+  END IF
+
+  ! Sequential parse: positional args fill input_atm then basename, in order
+  IPOSARG = 0
   DO I = 1, NARGS
     CALL GET_COMMAND_ARGUMENT(I, ARGBUF)
     IEQPOS = INDEX(ARGBUF, '=')
     IF (IEQPOS .EQ. 0) THEN
-      ! positional argument -> basename
-      OUTBASE = ARGBUF
+      ! positional argument
+      IPOSARG = IPOSARG + 1
+      SELECT CASE (IPOSARG)
+      CASE (1)
+        INPUT_MODEL_FILE = ARGBUF
+      CASE (2)
+        OUTBASE = ARGBUF
+      CASE DEFAULT
+        WRITE(6, '(A)') ' WARNING: extra positional argument ignored: '//TRIM(ARGBUF)
+      END SELECT
       CYCLE
     END IF
 
@@ -128,6 +158,14 @@ PROGRAM ATLAS12
       END IF
     END BLOCK
   END DO
+
+  ! Validate: input atmosphere file is required
+  IF (LEN_TRIM(INPUT_MODEL_FILE) .EQ. 0) THEN
+    WRITE(6, '(A)') ' ERROR: missing required argument <input_atm>'
+    WRITE(6, '(A)') ''
+    CALL print_usage()
+    STOP 1
+  END IF
 
   ! Are any CLI overrides active?  (Controls whether we re-apply abundance
   ! math and/or recompute derived quantities after READIN.)
@@ -180,7 +218,7 @@ PROGRAM ATLAS12
 
   ! --- Open optional pre-computed line data file (unit 19) ---
   !     ERR branch: if file doesn't exist, just continue
-  OPEN(UNIT=19, FILE=TRIM(DATADIR)//'nltelines_obs.bin', &
+  OPEN(UNIT=19, FILE=TRIM(DATADIR)//'nltelinobsat12.bin', &
        STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', ERR=10)
 10 continue
   ITEMP = 0
@@ -600,5 +638,36 @@ CONTAINS
     END IF
 
   END SUBROUTINE report_elapsed
+
+  ! ------------------------------------------------------------------------
+  !  print_usage()
+  !
+  !  Print command-line usage to stderr-equivalent (unit 6).  Called when
+  !  the user passes --help/-h/help, when no arguments are given, or when
+  !  the required <input_atm> argument is missing.
+  ! ------------------------------------------------------------------------
+  SUBROUTINE print_usage()
+    WRITE(6, '(A)') 'Usage: atlas12.exe <input_atm> [basename] [key=value ...]'
+    WRITE(6, '(A)') ''
+    WRITE(6, '(A)') 'Required:'
+    WRITE(6, '(A)') '  input_atm    Input atmosphere model file'
+    WRITE(6, '(A)') ''
+    WRITE(6, '(A)') 'Optional positional:'
+    WRITE(6, '(A)') '  basename     Output file base name (default ''mystar'')'
+    WRITE(6, '(A)') '               Outputs: <basename>.atm, .flux, .taunu, .iter, .tcorr'
+    WRITE(6, '(A)') ''
+    WRITE(6, '(A)') 'Options (key=value):'
+    WRITE(6, '(A)') '  numit=N      Number of iterations (default 30)'
+    WRITE(6, '(A)') '  vturb=X      Microturbulence in km/s (default: from model)'
+    WRITE(6, '(A)') '  mlt=X        Mixing length parameter (default 2.0)'
+    WRITE(6, '(A)') '  teff=X       Rescale model to this Teff (default: from model)'
+    WRITE(6, '(A)') '  logg=X       Rescale model to this log g (default: from model)'
+    WRITE(6, '(A)') '  zscale=X     Metal abundance scale factor (default: no scaling)'
+    WRITE(6, '(A)') '  heabnd=X     He number fraction Y; H = 1 - Y - Z (default: from model)'
+    WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'
+    WRITE(6, '(A)') ''
+    WRITE(6, '(A)') 'Help:'
+    WRITE(6, '(A)') '  --help, -h, help    Print this message and exit'
+  END SUBROUTINE print_usage
 
 END PROGRAM ATLAS12
