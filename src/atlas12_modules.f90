@@ -180,6 +180,14 @@ MODULE mod_parameters
   INTEGER, PARAMETER :: maxeq = 35     ! Maximum number of equilibrium equations
   INTEGER, PARAMETER :: maxloc = 3 * maxmol
 
+  ! Line opacity cutoff: a line is dropped (in SELECTLINES, in the LINOP1/
+  ! XLINOP wing-truncation, and in SYNTHE's compute_line_opacity) wherever
+  ! its monochromatic opacity falls below LINE_CUTOFF * local continuum.
+  ! A single shared value keeps ATLAS line selection and SYNTHE line
+  ! retention in lockstep — if SYNTHE retains a line at a wavelength,
+  ! ATLAS selected it; if ATLAS rejected it, SYNTHE would have dropped it.
+  REAL(8), PARAMETER :: LINE_CUTOFF = 1.0D-3
+
   ! Debug flag: set to 1 to print subroutine entry tracing to unit 6
   INTEGER, PARAMETER :: IDEBUG = 0
 
@@ -490,7 +498,7 @@ SUBROUTINE init_bc_partition_functions()
   IF (IOS .NE. 0) THEN
     WRITE(6,'(A,A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: cannot open ', &
          trim(BC_DATADIR)//'partfn_bc2016.dat'
-    STOP 1
+    CALL EXIT(1)
   END IF
 
   ! --- Skip header comments and blank lines to find the title line ---
@@ -498,7 +506,7 @@ SUBROUTINE init_bc_partition_functions()
     READ(LUN, '(A)', IOSTAT=IOS) LINE
     IF (IOS .NE. 0) THEN
       WRITE(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: no title line found'
-      STOP 1
+      CALL EXIT(1)
     END IF
     LINE = adjustl(LINE)
     IF (len_trim(LINE) .EQ. 0) CYCLE
@@ -513,7 +521,7 @@ SUBROUTINE init_bc_partition_functions()
     READ(LUN, '(A)', IOSTAT=IOS) LINE
     IF (IOS .NE. 0) THEN
       WRITE(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: missing species count'
-      STOP 1
+      CALL EXIT(1)
     END IF
     LINE = adjustl(LINE)
     IF (len_trim(LINE) .EQ. 0) CYCLE
@@ -521,7 +529,7 @@ SUBROUTINE init_bc_partition_functions()
     READ(LINE, *, IOSTAT=IOS) N_SPECIES
     IF (IOS .NE. 0 .OR. N_SPECIES .LE. 0) THEN
       WRITE(6,'(A,A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: bad species count line: ', trim(LINE)
-      STOP 1
+      CALL EXIT(1)
     END IF
     EXIT
   END DO
@@ -531,7 +539,7 @@ SUBROUTINE init_bc_partition_functions()
     READ(LUN, '(A)', IOSTAT=IOS) LINE
     IF (IOS .NE. 0) THEN
       WRITE(6,'(A)') ' INIT_BC_PARTITION_FUNCTIONS ERROR: missing T grid'
-      STOP 1
+      CALL EXIT(1)
     END IF
     LINE = adjustl(LINE)
     IF (len_trim(LINE) .EQ. 0) CYCLE
@@ -625,7 +633,7 @@ SUBROUTINE parse_t_grid(LINE, TGRID)
   READ(BUF, *, IOSTAT=IOS) (TGRID(I), I=1,NT_BC)
   IF (IOS .NE. 0) THEN
     WRITE(6,'(A,A)') ' PARSE_T_GRID ERROR on line: ', trim(LINE)
-    STOP 1
+    CALL EXIT(1)
   END IF
 END SUBROUTINE parse_t_grid
 
@@ -924,15 +932,12 @@ MODULE mod_atlas_data
   SAVE
 
   ! --- Rosseland optical depth scale ---
-  ! COMMON /ABROSS/
   REAL(8)  :: ABROSS(kw), TAUROS(kw)
 
   ! --- Total absorption and scattering ---
-  ! COMMON /ABTOT/
   REAL(8)  :: ABTOT(kw), ALPHA(kw)
 
   ! --- Cool-star continuous opacities (C I, Mg I, Al I, Si I, Fe I) ---
-  ! COMMON /ACOOL/
   REAL(8)  :: AC1(kw), AMG1(kw), AAL1(kw), ASI1(kw), AFE1(kw)
   ! Per-species source functions: computed by C1OP/AL1OP/FE1OP/HE2OP
   ! but NOT consumed by KAPP, which follows the atlas12.for convention
@@ -942,11 +947,9 @@ MODULE mod_atlas_data
   REAL(8)  :: SAL1(kw), SFE1(kw), SHE2(kw), SC1(kw)
 
   ! --- Lukewarm opacities (C II, N I, O I, Mg II, Si II, Ca II) ---
-  ! COMMON /ALUKE/
   REAL(8)  :: AC2(kw), AN1(kw), AO1(kw), AMG2(kw), ASI2(kw), ACA2(kw)
 
   ! --- Convection parameters ---
-  ! COMMON /CONV/
   REAL(8)  :: DLTDLP(kw) = 0.0d0, HEATCP(kw) = 0.0d0, DLRDLT(kw) = 0.0d0, VELSND(kw) = 0.0d0
   REAL(8)  :: GRDADB(kw) = 0.0d0, HSCALE(kw) = 0.0d0, FLXCNV(kw) = 0.0d0, VCONV(kw) = 0.0d0
   REAL(8)  :: MIXLTH = 2.0d0, OVERWT = 0.0d0
@@ -954,17 +957,14 @@ MODULE mod_atlas_data
   INTEGER :: IFCONV = 1, NCONV = 30
 
   ! --- NLTE departure coefficients ---
-  ! COMMON /DEPART/
   REAL(8)  :: BHYD(kw, 6) = 1.0d0, BMIN(kw) = 1.0d0
   INTEGER :: NLTEON = 0
 
   ! --- Electron density ---
-  ! COMMON /EDENS/
   REAL(8)  :: EDENS(kw)
   INTEGER :: IFEDNS
 
   ! --- Element abundances, atomic masses, labels ---
-  ! COMMON /ELEM/
   REAL(8)       :: YABUND(99)
   ! Default solar abundances: Anders & Grevesse (1989, Geochim. Cosmochim.
   ! Acta, 53, 197).  H and He are fractional number densities (H+He=1);
@@ -1021,32 +1021,25 @@ MODULE mod_atlas_data
   'NP','Pu','Am','Cm','Bk','Cf','Es'/)
 
   ! --- Radiative flux and flux derivatives ---
-  ! COMMON /FLUX/
   REAL(8)  :: FLUX = 0.0d0, FLXERR(kw) = 0.0d0, FLXDRV(kw) = 0.0d0, FLXRAD(kw)
 
   ! --- Free-format input parser state ---
-  ! COMMON /FREE/
   INTEGER :: NUMCOL, LETCOL, LAST, MORE, IFFAIL, MAXPOW
 
   ! --- Current frequency point ---
-  ! COMMON /FREQ/
   REAL(8)  :: FREQ, FREQLG, EHVKT(kw), STIM(kw), BNU(kw), WAVE, WAVENO
 
   ! --- Frequency set for opacity distribution functions ---
-  ! COMMON /FRESET/
   REAL(8)  :: WAVESET(30000), RCOSET(30000)
   INTEGER :: NULO, NUHI, NUMNU = 0, NUSTEP
 
   ! --- Hydrogen bound-free opacity tables ---
-  ! COMMON /H1TAB/
   REAL(8)  :: H0TAB(2001), H1TAB(2001), H2TAB(2001)
 
   ! --- Geometric height scale ---
-  ! COMMON /HEIGHT/
   REAL(8)  :: HEIGHT(kw)
 
   ! --- Control flags ---
-  ! COMMON /IF/
   INTEGER :: IFCORR = 1, IFPRES = 1, IFSURF = 0, IFSCAT = 1, IFMOL = 1, IFREADLINES = 1
 
   ! ROSSTAB interpolation mode:
@@ -1055,30 +1048,24 @@ MODULE mod_atlas_data
   INTEGER :: IROSSTAB = 1
 
   ! --- Molecular equilibrium ---
-  ! COMMON /IFEQUA/
   REAL(8)  :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
   INTEGER :: IFEQUA(101), KCOMPS(maxloc), LOCJ(max1), IDEQUA(maxeq)
   INTEGER :: NEQUA, NEQUA1, NEQNEQ, NUMMOL, NLOC
 
   ! --- Population control flag ---
-  ! COMMON /IFPOP/
   INTEGER :: IFPOP
 
   ! --- Line data integer header words ---
-  ! COMMON /IIIIIII/ (renamed LINEREC) — packed binary line-data record
   INTEGER    :: IWL
   INTEGER(2)  :: IELION, IELO, IGFLOG, IGR, IGS, IGW
 
   ! --- Isotope fractional abundances ---
-  ! COMMON /ISOTOPE/
   REAL(8)  :: ISOTOPE(10, 2, mion)
 
   ! --- Iteration control ---
-  ! COMMON /ITER/
   INTEGER :: ITER, ifprnt(60) = 2, ifpnch(60) = 0, NUMITS = 0
 
   ! --- Title and header data ---
-  ! COMMON /JUNK/
   CHARACTER(1) :: TITLE(74) = ' '
   REAL(8)  :: XSCALE = 1.0d0
   CHARACTER(4) :: WLTE = 'LTE '
@@ -1098,20 +1085,16 @@ MODULE mod_atlas_data
   INTEGER :: IFMOLOUT = 0
 
   ! --- Radiative transfer J-coefficient matrix ---
-  ! COMMON /MATXJ/
   REAL(8)  :: COEFJ(51, 51)
 
   ! --- Radiative transfer H-coefficient matrix ---
-  ! COMMON /MATXH/
   REAL(8)  :: COEFH(51, 51)
 
   ! --- Angular quadrature ---
-  ! COMMON /MUS/
   REAL(8)  :: ANGLE(20), SURFI(20) = 0.0d0
   INTEGER :: NMU = 1
 
   ! --- Individual continuous opacity sources ---
-  ! COMMON /OPS/
   REAL(8)  :: AHYD(kw), AH2P(kw), AHMIN(kw), SIGH(kw)
   REAL(8)  :: AHE1(kw), AHE2(kw), AHEMIN(kw), SIGHE(kw)
   REAL(8)  :: ACOOL(kw), ALUKE(kw), AHOT(kw)
@@ -1122,7 +1105,6 @@ MODULE mod_atlas_data
   REAL(8)  :: SHYD(kw), SHMIN(kw), SHLINE(kw), SXLINE(kw), SXCONT(kw)
 
   ! --- Total opacity ---
-  ! COMMON /OPTOT/
   REAL(8)  :: ACONT(kw), SCONT(kw), ALINE(kw), SLINE(kw)
   REAL(8)  :: SIGMAC(kw), SIGMAL(kw)
 
@@ -1207,114 +1189,152 @@ MODULE mod_atlas_data
   LOGICAL :: FELO_INITIALIZED = .FALSE.
 
   ! --- Ionization potentials ---
-  ! COMMON /POTION/
   REAL(8)  :: POTION(999), POTIONSUM(999)
 
   ! --- Total pressure ---
-  ! COMMON /PTOTAL/
   REAL(8)  :: PTOTAL(kw)
 
   ! --- Output control ---
-  ! COMMON /PUT/
   REAL(8)  :: PUT
   INTEGER :: IPUT
 
   ! --- Zero-point pressure and radiation field ---
-  ! COMMON /PZERO/
   REAL(8)  :: PZERO, PCON, PRADK0, PTURB0
   REAL(8)  :: KNU(kw), PRADK(kw), RADEN(kw)
 
   ! --- Radiation pressure ---
-  ! COMMON /RAD/
   REAL(8)  :: ACCRAD(kw) = 0.0d0, PRAD(kw) = 0.0d0
 
   ! --- Column mass depth scale ---
-  ! COMMON /RHOX/
   REAL(8)  :: RHOX(kw)
   INTEGER :: NRHOX = 0
 
   ! --- Mean intensity diagnostic ---
-  ! COMMON /RR/
   REAL(8)  :: RJMINSNU(kw), RDIAGJNU(kw)
 
   ! --- Thermodynamic state (pressure, electron density, etc.) ---
-  ! COMMON /STATE/
   REAL(8)  :: P(kw), XNE(kw), XNATOM(kw), RHO(kw), CHARGESQ(kw)
 
   ! --- Depth integration step parameters ---
-  ! COMMON /STEPLG/
   REAL(8)  :: STEPLG = 0.125d0, TAU1LG = -6.875d0
   INTEGER :: KRHOX = 0
 
   ! --- Continuous opacity table ---
-  ! COMMON /TABCONT/
-  REAL(8)  :: TABCONT(kw, 344)
-  REAL(8)  :: WAVETAB(344)
-  INTEGER :: IWAVETAB(344)
+  !
+  ! WAVETAB: hardcoded wavelength grid (nm), 361 points from 9.09 nm to
+  ! 400 um.  Compile-time constant; consumers may use it directly.
+  !
+  ! IWAVETAB: log-encoded integer index of each wavelength on the master
+  ! 0.0001-dex line-list grid (RATIOLG = log(1 + 1/2e6)).  Filled by
+  ! KAPCONT.  Has one extra slot at NWAVE+1 holding a sentinel value
+  ! (2**30) that terminates "advance bin" loops cleanly when a line
+  ! falls past the grid red end.
+  !
+  ! TABCONT: continuous opacity (per depth, per wavelength bin), scaled
+  ! by LINE_CUTOFF.  Filled by KAPCONT.  Has one extra slot at NWAVE+1
+  ! mirroring the last real bin so that LINOP1/XLINOP wing-truncation
+  ! tests against TABCONT(:, NUCONT) remain in-bounds when NUCONT is
+  ! advanced past the last real bin.
+  INTEGER, PARAMETER :: NWAVE = 361
+  REAL(8), PARAMETER :: WAVETAB(NWAVE) = (/ &
+    9.09D0, 9.35D0, 9.61D0, 9.77D0, 9.96D0, 10.2D0, 10.38D0, 10.56D0, &
+    10.77D0, 11.04D0, 11.4D0, 11.78D0, 12.13D0, 12.48D0, 12.71D0, 12.84D0, &
+    13.05D0, 13.24D0, 13.39D0, 13.66D0, 13.98D0, 14.33D0, 14.72D0, 15.1D0, &
+    15.52D0, 15.88D0, 16.2D0, 16.6D0, 17.03D0, 17.34D0, 17.68D0, 18.02D0, &
+    18.17D0, 18.61D0, 19.1D0, 19.39D0, 19.84D0, 20.18D0, 20.5D0, 21.05D0, &
+    21.62D0, 21.98D0, 22.3D0, 22.68D0, 23.0D0, 23.4D0, 24.0D0, 24.65D0, &
+    25.24D0, 25.68D0, 26.0D0, 26.4D0, 26.85D0, 27.35D0, 27.85D0, 28.4D0, &
+    29.0D0, 29.6D0, 30.1D0, 30.8D0, 31.8D0, 32.8D0, 33.8D0, 34.8D0, &
+    35.7D0, 36.6D0, 37.5D0, 38.5D0, 39.5D0, 40.5D0, 41.4D0, 42.2D0, &
+    43.0D0, 44.1D0, 45.1D0, 46.0D0, 47.0D0, 48.0D0, 49.0D0, 50.0D0, &
+    50.6D0, 51.4D0, 53.0D0, 55.0D0, 56.7D0, 58.5D0, 60.5D0, 62.5D0, &
+    64.5D0, 66.3D0, 68.0D0, 70.0D0, 71.6D0, 73.0D0, 75.0D0, 77.0D0, &
+    79.0D0, 81.0D0, 83.0D0, 85.0D0, 87.0D0, 89.0D0, 90.6D0, 92.6D0, &
+    96.0D0, 100.0D0, 104.0D0, 108.0D0, 111.5D0, 114.5D0, 118.0D0, 122.0D0, &
+    126.0D0, 130.0D0, 134.0D0, 138.0D0, 142.0D0, 146.0D0, 150.0D0, 154.0D0, &
+    160.0D0, 165.0D0, 169.0D0, 173.0D0, 177.5D0, 182.0D0, 186.0D0, 190.5D0, &
+    195.0D0, 200.0D0, 204.5D0, 208.5D0, 212.5D0, 217.5D0, 222.5D0, 227.5D0, &
+    232.5D0, 237.5D0, 242.5D0, 248.0D0, 253.0D0, 257.5D0, 262.5D0, 267.5D0, &
+    272.5D0, 277.5D0, 282.5D0, 287.5D0, 295.0D0, 305.0D0, 315.0D0, 325.0D0, &
+    335.0D0, 345.0D0, 355.0D0, 362.0D0, 367.0D0, 375.0D0, 385.0D0, 395.0D0, &
+    405.0D0, 415.0D0, 425.0D0, 435.0D0, 455.0D0, 465.0D0, 475.0D0, 485.0D0, &
+    495.0D0, 505.0D0, 515.0D0, 525.0D0, 535.0D0, 545.0D0, 555.0D0, 565.0D0, &
+    575.0D0, 585.0D0, 595.0D0, 605.0D0, 615.0D0, 625.0D0, 635.0D0, 645.0D0, &
+    655.0D0, 665.0D0, 675.0D0, 685.0D0, 695.0D0, 705.0D0, 715.0D0, 725.0D0, &
+    735.0D0, 745.0D0, 755.0D0, 765.0D0, 775.0D0, 785.0D0, 795.0D0, 805.0D0, &
+    815.0D0, 825.0D0, 835.0D0, 845.0D0, 855.0D0, 865.0D0, 875.0D0, 885.0D0, &
+    895.0D0, 905.0D0, 915.0D0, 925.0D0, 935.0D0, 945.0D0, 955.0D0, 965.0D0, &
+    975.0D0, 985.0D0, 995.0D0, 1012.5D0, 1037.5D0, 1062.5D0, 1087.5D0, 1112.5D0, &
+    1137.5D0, 1162.5D0, 1187.5D0, 1212.5D0, 1237.5D0, 1262.5D0, 1287.5D0, 1312.5D0, &
+    1337.5D0, 1362.5D0, 1387.5D0, 1412.5D0, 1442.0D0, 1467.0D0, 1487.5D0, 1512.5D0, &
+    1537.5D0, 1562.5D0, 1587.5D0, 1620.0D0, 1660.0D0, 1700.0D0, 1740.0D0, 1780.0D0, &
+    1820.0D0, 1860.0D0, 1900.0D0, 1940.0D0, 1980.0D0, 2025.0D0, 2075.0D0, 2125.0D0, &
+    2175.0D0, 2225.0D0, 2265.0D0, 2290.0D0, 2325.0D0, 2375.0D0, 2425.0D0, 2475.0D0, &
+    2525.0D0, 2575.0D0, 2625.0D0, 2675.0D0, 2725.0D0, 2775.0D0, 2825.0D0, 2875.0D0, &
+    2925.0D0, 2975.0D0, 3025.0D0, 3075.0D0, 3125.0D0, 3175.0D0, 3240.0D0, 3340.0D0, &
+    3450.0D0, 3550.0D0, 3650.0D0, 3750.0D0, 3850.0D0, 3950.0D0, 4050.0D0, 4150.0D0, &
+    4250.0D0, 4350.0D0, 4450.0D0, 4550.0D0, 4650.0D0, 4750.0D0, 4850.0D0, 4950.0D0, &
+    5050.0D0, 5150.0D0, 5250.0D0, 5350.0D0, 5450.0D0, 5550.0D0, 5650.0D0, 5750.0D0, &
+    5850.0D0, 5950.0D0, 6050.0D0, 6150.0D0, 6250.0D0, 6350.0D0, 6500.0D0, 6700.0D0, &
+    6900.0D0, 7100.0D0, 7300.0D0, 7500.0D0, 7700.0D0, 7900.0D0, 8100.0D0, 8300.0D0, &
+    8500.0D0, 8700.0D0, 8900.0D0, 9100.0D0, 9300.0D0, 9500.0D0, 9700.0D0, 9900.0D0, &
+    10000.0D0, 11000.0D0, 12000.0D0, 13000.0D0, 14000.0D0, 15000.0D0, 16000.0D0, 17000.0D0, &
+    18000.0D0, 19000.0D0, 20000.0D0, 22000.0D0, 24000.0D0, 26000.0D0, 28000.0D0, 30000.0D0, &
+    32000.0D0, 34000.0D0, 36000.0D0, 38000.0D0, 40000.0D0, 60000.0D0, 80000.0D0, 100000.0D0, &
+    120000.0D0, 140000.0D0, 160000.0D0, 200000.0D0, 240000.0D0, 280000.0D0, &
+    320000.0D0, 360000.0D0, 400000.0D0 /)
+  REAL(8) :: TABCONT(kw, NWAVE + 1)
+  INTEGER :: IWAVETAB(NWAVE + 1)
 
   ! --- Log lookup table (replaced array with function) ---
-  ! COMMON /TABLOG/ removed — now computed inline via TABLOG()
 
   ! --- Optical depth, source function, flux moments ---
-  ! COMMON /TAUSHJ/
   REAL(8)  :: TAUNU(kw), SNU(kw), HNU(kw), JNU(kw), JMINS(kw)
 
   ! --- Standard optical depth scale ---
-  ! COMMON /TAUSTD/
   REAL(8)  :: TAUSTD(kw)
 
   ! --- Effective temperature and gravity ---
-  ! COMMON /TEFF/
   REAL(8)  :: TEFF = 0.0d0, GRAV = 0.0d0, GLOG
 
   ! --- Temperature and derived quantities ---
-  ! COMMON /TEMP/
   REAL(8)  :: T(kw), TKEV(kw), TK(kw), HKT(kw), HCKT(kw), TLOG(kw)
   INTEGER :: ITEMP
 
   ! --- Temperature smoothing ---
-  ! COMMON /TSMOOTH/
   INTEGER :: J1SMOOTH = 0, J2SMOOTH = 0
   REAL(8)  :: WTJM1 = 0.3d0, WTJ = 0.4d0, WTJP1 = 0.3d0, TSMOOTH(kw)
 
   ! --- Turbulent pressure ---
-  ! COMMON /TURBPR/
-  REAL(8)  :: VTURB(kw) = 0.0d0, PTURB(kw) = 0.0d0, TRBFDG = 0.0d0, TRBCON = 0.0d0, TRBPOW = 0.0d0, TRBSND = 0.0d0
+  REAL(8)  :: VTURB(kw) = 0.0d0, PTURB(kw) = 0.0d0, TRBFDG = 0.0d0, &
+       TRBCON = 0.0d0, TRBPOW = 0.0d0, TRBSND = 0.0d0
   INTEGER :: IFTURB = 0
 
   ! --- Wavelength grid control ---
-  ! COMMON /WAVEY/
   REAL(8)  :: WBEGIN, DELTAW
   INTEGER :: IFWAVE = 0
 
   ! --- Current line data ---
-  ! COMMON /WWWWWWW/ (renamed LINEPARAM) — packed line-parameter record
   REAL(8)  :: WLVAC
   INTEGER :: NELION
   REAL(8)  :: CGF, ELO, GAMMAR, GAMMAS, GAMMAW
 
   ! --- Depth-dependent abundances ---
-  ! COMMON /XABUND/
   REAL(8)  :: XABUND(kw, 99), WTMOLE(kw), XRELATIVE(99) = 0.D0
 
   ! --- Isotope fractions and masses ---
-  ! COMMON /XISO/
   REAL(8)  :: XISO(10, mion), AMASSISO(10, mion)
 
   ! --- Line opacity distribution ---
-  ! COMMON /XLINES/
   REAL(8)  :: XLINES(kw, 30000)
 
   ! --- Ion number densities ---
-  ! COMMON /XNF/
   REAL(8)  :: XNF(kw, mion), XNFP(kw, mion), XNH2(kw)
 
   ! --- Doppler-broadened line opacity ---
-  ! COMMON /XNFDOP/
   REAL(8)  :: XNFDOP(kw, mion), DOPPLE(kw, mion)
 
   ! --- Molecular number densities ---
-  ! COMMON /XNMOL/
   REAL(8)  :: XNMOL(kw, maxmol), XNFPMOL(kw, maxmol)
 
   ! Flag: set to 1 after MOLEC has read molecular data from INPUTDATA
@@ -1322,7 +1342,6 @@ MODULE mod_atlas_data
   INTEGER :: MOLEC_IREAD = 0
 
   ! --- Saved number densities for equilibrium ---
-  ! COMMON /XNSAVE/
   REAL(8)  :: XNSAVE(kw, maxeq)
 
   ! --- In-memory line data storage (replaces fort.12 I/O) ---
@@ -3849,7 +3868,7 @@ SUBROUTINE READIN(MODE)
   REAL(8)  :: XSCALELOG
   INTEGER :: I, IZ
   INTEGER :: J, MU
-  INTEGER :: IOS_CARD
+  INTEGER :: IOS_CARD, IOS_OPEN
   LOGICAL :: FIRST_KW
   CHARACTER(20) :: KEYWORD
 
@@ -3864,9 +3883,14 @@ SUBROUTINE READIN(MODE)
     IF (LEN_TRIM(INPUT_MODEL_FILE) .EQ. 0) THEN
       WRITE(6, '(A)') ' ERROR: READIN called with INPUT_MODEL_FILE unset.'
       WRITE(6, '(A)') '        Driver must set INPUT_MODEL_FILE before CALL READIN(1).'
-      STOP 1
+      CALL EXIT(1)
     END IF
-    OPEN(UNIT=3, FILE=TRIM(INPUT_MODEL_FILE), STATUS='OLD', ACTION='READ')
+    OPEN(UNIT=3, FILE=TRIM(INPUT_MODEL_FILE), STATUS='OLD', ACTION='READ', &
+         IOSTAT=IOS_OPEN)
+    IF (IOS_OPEN .NE. 0) THEN
+      WRITE(6, '(A)') ' ERROR: cannot open input atmosphere file: '//TRIM(INPUT_MODEL_FILE)
+      CALL EXIT(1)
+    END IF
     INPUTDATA = 3
     IFPRES = 1
     IFCORR = 1
@@ -3988,7 +4012,7 @@ SUBROUTINE READIN(MODE)
           EXIT keyword_loop
         ELSE
           WRITE(6, '(A,A)') ' ABUNDANCE: unknown sub-keyword: ', trim(KEYWORD)
-          STOP 1
+          CALL EXIT(1)
         END IF
 
       !-----------------------------------------------------------------
@@ -4036,7 +4060,7 @@ SUBROUTINE READIN(MODE)
 
         ELSE
           WRITE(6, '(A,A)') ' READ: unknown sub-keyword: ', trim(KEYWORD)
-          STOP 1
+          CALL EXIT(1)
         END IF
 
       !-----------------------------------------------------------------
@@ -4066,7 +4090,7 @@ SUBROUTINE READIN(MODE)
           TRBCON = 0.0D0
         ELSE
           WRITE(6, '(A,A)') ' TURBULENCE: unknown sub-keyword: ', trim(KEYWORD)
-          STOP 1
+          CALL EXIT(1)
         END IF
         CYCLE keyword_loop
 
@@ -4087,7 +4111,7 @@ SUBROUTINE READIN(MODE)
           IFSURF = 0
         ELSE
           WRITE(6, '(A,A)') ' SURFACE: unknown sub-keyword: ', trim(KEYWORD)
-          STOP 1
+          CALL EXIT(1)
         END IF
         CYCLE keyword_loop
 
@@ -4332,7 +4356,7 @@ FUNCTION FREEFF(CARD)
     END IF
     WRITE(6, '(A/(1X,131A1))') '1FREEFF HAS READ OFF THE END', &
       (CARD(I), I = 1, LAST)
-    STOP 1
+    CALL EXIT(1)
   END IF
 
   ANSWER = 0.0D0
@@ -4512,7 +4536,7 @@ FUNCTION FREEFF(CARD)
   END IF
   WRITE(6, '(A/(1X,131A1))') '1FREEFF HAS READ OFF THE END', &
     (CARD(I), I = 1, LAST)
-  STOP 1
+  CALL EXIT(1)
 
 CONTAINS
 
@@ -4566,7 +4590,7 @@ FUNCTION NEXTWORD(CARD)
     IF (MORE .GT. 0) RETURN
     WRITE(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
       (CARD(I), I = 1, LAST)
-    STOP 1
+    CALL EXIT(1)
   END IF
 
   !---------------------------------------------------------------------
@@ -4645,7 +4669,7 @@ FUNCTION NEXTWORD(CARD)
   IF (MORE .GT. 0) RETURN
   WRITE(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
     (CARD(I), I = 1, LAST)
-  STOP 1
+  CALL EXIT(1)
 
 END FUNCTION NEXTWORD
 
@@ -4763,7 +4787,8 @@ SUBROUTINE READMOL
   OPEN(UNIT=2, FILE=trim(DATADIR)//'molecules.dat', &
        STATUS='OLD', ACTION='READ', IOSTAT=IOS)
   IF (IOS .NE. 0) THEN
-    STOP 'molecules.dat file not found'
+    WRITE(6,'(A)') ' READMOL: ERROR opening '//trim(DATADIR)//'molecules.dat'
+    CALL EXIT(1)
   END IF
 
   ! --- Initialize: no elements require equations yet ---
@@ -4799,7 +4824,7 @@ SUBROUTINE READMOL
       WRITE(6, '(A)') ' READMOL ERROR: malformed data line:'
       WRITE(6, '(A,A)') '   ', trim(BUFFER)
       CLOSE(UNIT=2)
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     ! Legacy `0.0` terminator (now optional): treat as end-of-list
@@ -4809,7 +4834,7 @@ SUBROUTINE READMOL
     IF (JMOL .GT. maxmol) THEN
       WRITE(6, '(A,I5)') ' READMOL ERROR: molecule count exceeds maxmol =', maxmol
       CLOSE(UNIT=2)
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     IF (IDEBUG .EQ. 1) WRITE(6, '(I5, F18.2, F7.3, 1P5E11.4)') &
@@ -4827,7 +4852,7 @@ SUBROUTINE READMOL
     IF (II .EQ. 0) THEN
       WRITE(6, '(A,F18.2)') ' READMOL ERROR: invalid species code ', C
       CLOSE(UNIT=2)
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     ! Extract atomic numbers from successive digit pairs
@@ -4840,12 +4865,12 @@ SUBROUTINE READMOL
         WRITE(6, '(A,I5,A,F18.2)') ' READMOL ERROR: decoded atomic ID =', ID, &
           ' out of range for species code ', C
         CLOSE(UNIT=2)
-        STOP 1
+        CALL EXIT(1)
       END IF
       IF (KLOC .GT. MAXLOC) THEN
         WRITE(6, '(A,I5)') ' READMOL ERROR: KCOMPS overflow, MAXLOC =', MAXLOC
         CLOSE(UNIT=2)
-        STOP 1
+        CALL EXIT(1)
       END IF
       IFEQUA(ID) = 1              ! flag: this element needs an equation
       KCOMPS(KLOC) = ID
@@ -4862,7 +4887,7 @@ SUBROUTINE READMOL
         IF (KLOC .GT. MAXLOC) THEN
           WRITE(6, '(A,I5)') ' READMOL ERROR: KCOMPS overflow, MAXLOC =', MAXLOC
           CLOSE(UNIT=2)
-          STOP 1
+          CALL EXIT(1)
         END IF
         KCOMPS(KLOC) = 101
         KLOC = KLOC + 1
@@ -4891,7 +4916,7 @@ SUBROUTINE READMOL
     IF (IEQUA .GT. maxeq) THEN
       WRITE(6, '(A,I5)') ' READMOL ERROR: too many equations, maxeq =', maxeq
       CLOSE(UNIT=2)
-      STOP 1
+      CALL EXIT(1)
     END IF
     IFEQUA(I) = IEQUA        ! element I → equation number IEQUA
     IDEQUA(IEQUA) = I        ! equation IEQUA → element I
@@ -5020,7 +5045,7 @@ SUBROUTINE COMPUTE_ONE_POP(CODE, MODE, NUMBER)
     IF (CODE .GE. 100.0D0) THEN
       ! Molecular species requested but molecules are off
       WRITE(6, '(A)') ' COMPUTE_ONE_POP ERROR: molecular species requested but IFMOL=0'
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     ! --- Decode species code ---
@@ -8011,7 +8036,7 @@ CONTAINS
     OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
     IF (IOS .NE. 0) THEN
       WRITE(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
-      STOP 'XKARZAS: cannot read Karzas-Latter data'
+      CALL EXIT(1)
     END IF
     READ(IU, '(A)') FILEPATH  ! skip header
     READ(IU, '(A)') FILEPATH  ! skip header
@@ -8025,7 +8050,7 @@ CONTAINS
     OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
     IF (IOS .NE. 0) THEN
       WRITE(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
-      STOP 'XKARZAS: cannot read Karzas-Latter data'
+      CALL EXIT(1)
     END IF
     READ(IU, '(A)') FILEPATH  ! skip header
     READ(IU, '(A)') FILEPATH  ! skip header
@@ -8042,7 +8067,7 @@ CONTAINS
     OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
     IF (IOS .NE. 0) THEN
       WRITE(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
-      STOP 'XKARZAS: cannot read Karzas-Latter data'
+      CALL EXIT(1)
     END IF
     READ(IU, '(A)') FILEPATH  ! skip header
     READ(IU, '(A)') FILEPATH  ! skip header
@@ -8058,7 +8083,7 @@ CONTAINS
     OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
     IF (IOS .NE. 0) THEN
       WRITE(6,*) 'XKARZAS: ERROR opening ', trim(FILEPATH)
-      STOP 'XKARZAS: cannot read Karzas-Latter data'
+      CALL EXIT(1)
     END IF
     READ(IU, '(A)') FILEPATH  ! skip header
     READ(IU, '(A)') FILEPATH  ! skip header
@@ -8381,7 +8406,7 @@ CONTAINS
     OPEN(UNIT=IU, FILE=FILEPATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
     IF (IOS .NE. 0) THEN
       WRITE(6,*) 'COULFF: ERROR opening ', trim(FILEPATH)
-      STOP 'COULFF: cannot read van Hoof Gaunt factor table'
+      CALL EXIT(1)
     END IF
 
     ! --- Skip copyright header (lines starting with '#') and consume the
@@ -8406,7 +8431,7 @@ CONTAINS
       WRITE(6,*) '   log_gam2_min: expect ', GFF_LOG_GAM2_MIN, ' got ', LOG_GAM2_IN
       WRITE(6,*) '   log_u_min:    expect ', GFF_LOG_U_MIN,    ' got ', LOG_U_IN
       WRITE(6,*) '   dlog:         expect ', GFF_DLOG,         ' got ', DLOG_IN
-      STOP 'COULFF: van Hoof table header does not match compiled constants'
+      CALL EXIT(1)
     END IF
 
     ! --- Skip blank lines and '#' comment lines between the metadata and
@@ -8427,7 +8452,7 @@ CONTAINS
       READ(DATALINE, *, IOSTAT=IOS) (ROW(I), I = 1, GFF_N_GAM2)
       IF (IOS .NE. 0) THEN
         WRITE(6,*) 'COULFF: error parsing row ', J, ' of Gaunt factor data'
-        STOP 'COULFF: corrupted Gaunt factor data file'
+        CALL EXIT(1)
       END IF
       DO I = 1, GFF_N_GAM2
         GFF_LOGTAB(I, J) = log10(ROW(I))
@@ -8455,7 +8480,7 @@ CONTAINS
       READ(IU, '(A)', IOSTAT=IOS) LINE
       IF (IOS .NE. 0) THEN
         WRITE(6,*) 'COULFF: unexpected EOF reading gauntff_vanhoof.dat'
-        STOP 'COULFF: corrupted Gaunt factor data file'
+        CALL EXIT(1)
       END IF
       LINE = adjustl(LINE)
       IF (len_trim(LINE) .EQ. 0) CYCLE
@@ -10520,7 +10545,7 @@ SUBROUTINE FELO_LOAD_ION(ION, PATH)
   OPEN(LUN, FILE=PATH, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
   IF (IOS .NE. 0) THEN
     WRITE(6,'(A,A)') ' FELO_LOAD_ION ERROR: cannot open ', trim(PATH)
-    STOP 1
+    CALL EXIT(1)
   END IF
 
   ! Skip header comment/blank lines, then back up so list-directed
@@ -10529,7 +10554,7 @@ SUBROUTINE FELO_LOAD_ION(ION, PATH)
     READ(LUN, '(A)', IOSTAT=IOS) LINE
     IF (IOS .NE. 0) THEN
       WRITE(6,'(A)') ' FELO_LOAD_ION ERROR: unexpected EOF in header'
-      STOP 1
+      CALL EXIT(1)
     END IF
     LINE = adjustl(LINE)
     IF (len_trim(LINE) .EQ. 0)   CYCLE
@@ -10543,7 +10568,7 @@ SUBROUTINE FELO_LOAD_ION(ION, PATH)
   IF (NLEV .GT. FELO_NLEV_MAX) THEN
     WRITE(6,'(A,I4,A,I4)') ' FELO_LOAD_ION ERROR: NLEV=', NLEV, &
           ' exceeds FELO_NLEV_MAX=', FELO_NLEV_MAX
-    STOP 1
+    CALL EXIT(1)
   END IF
   FELO_NLEV(ION) = NLEV
 
@@ -10567,13 +10592,13 @@ SUBROUTINE FELO_LOAD_ION(ION, PATH)
       IF (NFIT .GT. FELO_NPTS_MAX) THEN
         WRITE(6,'(A,I4,A,I4)') ' FELO_LOAD_ION ERROR: NFIT=', NFIT, &
               ' exceeds FELO_NPTS_MAX=', FELO_NPTS_MAX
-        STOP 1
+        CALL EXIT(1)
       END IF
       READ(LUN, *) (FELO_X     (K, I, ION), &
                     FELO_LOGSIG(K, I, ION), K = 1, NFIT)
     ELSE
       WRITE(6,'(A,I4)') ' FELO_LOAD_ION ERROR: unexpected IFANCY=', IFANCY
-      STOP 1
+      CALL EXIT(1)
     END IF
   END DO
 
@@ -11022,7 +11047,7 @@ SUBROUTINE READ_XS_FILE(FNAME, LEVELS, NLEVELS_OUT)
   OPEN(UNIT=LUN, FILE=FNAME, STATUS='OLD', ACTION='READ', IOSTAT=IOS)
   IF (IOS .NE. 0) THEN
     WRITE(6,*) 'READ_XS_FILE: cannot open ', trim(FNAME)
-    STOP 'READ_XS_FILE: missing file'
+    CALL EXIT(1)
   END IF
 
   ! Skip header lines: read until first data-looking line, then backspace
@@ -11045,7 +11070,7 @@ SUBROUTINE READ_XS_FILE(FNAME, LEVELS, NLEVELS_OUT)
     NLEVELS_OUT = NLEVELS_OUT + 1
     IF (NLEVELS_OUT .GT. MAX_LEVELS) THEN
       WRITE(6,*) 'READ_XS_FILE: level overflow in ', trim(FNAME)
-      STOP
+      CALL EXIT(1)
     END IF
     TMP(NLEVELS_OUT)%ISLP = ISLP
     TMP(NLEVELS_OUT)%ILV = ILV
@@ -12114,7 +12139,7 @@ FUNCTION CHOP(J)
     OPEN(UNIT=89, FILE=trim(DATADIR)//'crossch.dat', STATUS='OLD', ACTION='READ', IOSTAT=IT_XSEC)
     IF (IT_XSEC .NE. 0) THEN
       WRITE(6, '(A)') ' CHOP: ERROR opening ' // trim(DATADIR) // 'crossch.dat'
-      STOP 'CHOP: crossch.dat not found'
+      CALL EXIT(1)
     END IF
     READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')  ! skip header
     READ(89, '(A)') ; READ(89, '(A)')                     ! skip header
@@ -12239,7 +12264,7 @@ FUNCTION OHOP(J)
     OPEN(UNIT=89, FILE=trim(DATADIR)//'crossoh.dat', STATUS='OLD', ACTION='READ', IOSTAT=IT_XSEC)
     IF (IT_XSEC .NE. 0) THEN
       WRITE(6, '(A)') ' OHOP: ERROR opening ' // trim(DATADIR) // 'crossoh.dat'
-      STOP 'OHOP: crossoh.dat not found'
+      CALL EXIT(1)
     END IF
     READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')  ! skip header
     READ(89, '(A)') ; READ(89, '(A)')                     ! skip header
@@ -14091,9 +14116,9 @@ SUBROUTINE LINOP1
     ! Advance continuous opacity bin
     DO WHILE (IWL .GE. IWAVETAB(NUCONT))
       NUCONT = NUCONT + 1
-      IF (NUCONT .GT. 344) THEN
-        WRITE(6, '(A)') ' WARNING: NUCONT > 344, clamping'
-        NUCONT = 344
+      IF (NUCONT .GT. NWAVE + 1) THEN
+        WRITE(6, '(A,I4,A)') ' WARNING: NUCONT > ', NWAVE + 1, ', clamping'
+        NUCONT = NWAVE + 1
         EXIT
       END IF
     END DO
@@ -14710,7 +14735,7 @@ SUBROUTINE BLOCKJ
          ACTION='READ', IOSTAT=IOS)
     IF (IOS .NE. 0) THEN
       WRITE(6,*) 'BLOCKJ: ERROR opening ', trim(DATADIR)//'blockj.dat'
-      STOP 'BLOCKJ: cannot read J-coefficient data'
+      CALL EXIT(1)
     END IF
     READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
     READ(89, *) (CJ(I), I=1, 2601)
@@ -14752,7 +14777,7 @@ SUBROUTINE BLOCKH
          ACTION='READ', IOSTAT=IOS)
     IF (IOS .NE. 0) THEN
       WRITE(6,*) 'BLOCKH: ERROR opening ', trim(DATADIR)//'blockh.dat'
-      STOP 'BLOCKH: cannot read H-coefficient data'
+      CALL EXIT(1)
     END IF
     READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
     READ(89, *) (CH(I), I=1, 2601)
@@ -14804,7 +14829,7 @@ SUBROUTINE IONPOTS
          ACTION='READ', IOSTAT=IOST)
     IF (IOST .NE. 0) THEN
       WRITE(6,*) 'IONPOTS: ERROR opening ', trim(DATADIR)//'ionpots.dat'
-      STOP 'IONPOTS: cannot read ionization potential data'
+      CALL EXIT(1)
     END IF
     READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
     READ(89, *) (POTION(IZ), IZ=1, 999)
@@ -14881,7 +14906,7 @@ SUBROUTINE ISOTOPES
          ACTION='READ', IOSTAT=IOST)
     IF (IOST .NE. 0) THEN
       WRITE(6,*) 'ISOTOPES: ERROR opening ', trim(DATADIR)//'isotopes.dat'
-      STOP 'ISOTOPES: cannot read isotope data'
+      CALL EXIT(1)
     END IF
     READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)') ; READ(89, '(A)')
     READ(89, *) ((ISOION(I, IZ), I=1,20), IZ=1,265)
@@ -14930,83 +14955,63 @@ END SUBROUTINE ISOTOPES
 !=========================================================================
 ! SUBROUTINE KAPCONT
 !
-! Tabulate continuous opacity at 343 wavelength points.
+! Tabulate continuous opacity at NWAVE (=361) wavelength points, scaled by
+! LINE_CUTOFF, for use as a per-depth, per-bin line-rejection threshold.
 !
 ! Computes the continuous (non-line) opacity at a fixed grid of
-! wavelengths from 9.09 to 400000 nm, storing the results in
-! TABCONT(J,NU) for later use in line opacity calculations.
+! wavelengths from 9.09 to 400000 nm and stores
+!
+!    TABCONT(J, NU) = (ACONT + SIGMAC) * LINE_CUTOFF / STIM
+!
+! where ACONT is total continuous opacity, SIGMAC is electron scattering,
+! STIM = 1 - exp(-h*nu/kT) is the stimulated-emission correction that
+! KAPP applies internally, and LINE_CUTOFF (declared in mod_parameters)
+! is the line-rejection ratio (default 1e-3 = 0.1%).  Two scalings are
+! folded in so consumers compare cleanly:
+!
+!   * The 1/STIM factor cancels the STIM that KAPP applied to ACONT, so
+!     TABCONT is the *un*-stim-corrected continuum.  Line opacities are
+!     compared against TABCONT before their own STIM correction is
+!     applied (the line side multiplies by STIM later, in the frequency
+!     loop), so this matches like-with-like.
+!
+!   * The LINE_CUTOFF factor is the line significance threshold.  Storing
+!     it inside TABCONT lets every consumer write a clean comparison:
+!         IF (line_opacity .LT. TABCONT(J, NU)) <reject>
+!     instead of carrying the cutoff factor at every comparison site.
+!
+! TABCONT is consumed by:
+!   - SELECTLINES, which admits a line to LINEDATA only if at *some*
+!     depth gf*XNFP*DOP/freq exceeds TABCONT (one-time pre-filter).
+!   - LINOP1 and XLINOP, which truncate the Voigt wing walk at each
+!     depth when the wing opacity falls below TABCONT (per-depth filter).
 !
 ! For each wavelength point:
 !   1. Set FREQ, WAVENO, and thermodynamic quantities (EHVKT, STIM, BNU)
 !   2. Call KAPP to compute continuous opacity ACONT and scattering SIGMAC
-!   3. Store total opacity: TABCONT = (ACONT + SIGMAC) * 0.001 / STIM
+!   3. Store the scaled threshold TABCONT (formula above)
 !
 ! Also computes IWAVETAB (integer wavelength indices for fast lookup)
 ! and prints a diagnostic table.
+!
+! KAPCONT runs once per ATLAS invocation (first iteration only); TABCONT
+! is not updated as T(tau) iterates.  This is fine for SELECTLINES (a
+! one-time decision) and benign for the wing-truncation cutoffs, which
+! are soft thresholds well into the wings.
 !=========================================================================
 
 SUBROUTINE KAPCONT
 
   IMPLICIT NONE
 
-  INTEGER, PARAMETER :: NWAVE = 343
-
-  ! --- Wavelength grid (nm): 343 points from 9.09 to 400000 nm ---
-  REAL(8), PARAMETER :: WBIG(NWAVE) = (/ &
-    9.09D0, 9.35D0, 9.61D0, 9.77D0, 9.96D0, 10.2D0, 10.38D0, 10.56D0, &
-    10.77D0, 11.04D0, 11.4D0, 11.78D0, 12.13D0, 12.48D0, 12.71D0, 12.84D0, &
-    13.05D0, 13.24D0, 13.39D0, 13.66D0, 13.98D0, 14.33D0, 14.72D0, 15.1D0, &
-    15.52D0, 15.88D0, 16.2D0, 16.6D0, 17.03D0, 17.34D0, 17.68D0, 18.02D0, &
-    18.17D0, 18.61D0, 19.1D0, 19.39D0, 19.84D0, 20.18D0, 20.5D0, 21.05D0, &
-    21.62D0, 21.98D0, 22.3D0, 22.68D0, 23.0D0, 23.4D0, 24.0D0, 24.65D0, &
-    25.24D0, 25.68D0, 26.0D0, 26.4D0, 26.85D0, 27.35D0, 27.85D0, 28.4D0, &
-    29.0D0, 29.6D0, 30.1D0, 30.8D0, 31.8D0, 32.8D0, 33.8D0, 34.8D0, &
-    35.7D0, 36.6D0, 37.5D0, 38.5D0, 39.5D0, 40.5D0, 41.4D0, 42.2D0, &
-    43.0D0, 44.1D0, 45.1D0, 46.0D0, 47.0D0, 48.0D0, 49.0D0, 50.0D0, &
-    50.6D0, 51.4D0, 53.0D0, 55.0D0, 56.7D0, 58.5D0, 60.5D0, 62.5D0, &
-    64.5D0, 66.3D0, 68.0D0, 70.0D0, 71.6D0, 73.0D0, 75.0D0, 77.0D0, &
-    79.0D0, 81.0D0, 83.0D0, 85.0D0, 87.0D0, 89.0D0, 90.6D0, 92.6D0, &
-    96.0D0, 100.0D0, 104.0D0, 108.0D0, 111.5D0, 114.5D0, 118.0D0, 122.0D0, &
-    126.0D0, 130.0D0, 134.0D0, 138.0D0, 142.0D0, 146.0D0, 150.0D0, 154.0D0, &
-    160.0D0, 165.0D0, 169.0D0, 173.0D0, 177.5D0, 182.0D0, 186.0D0, 190.5D0, &
-    195.0D0, 200.0D0, 204.5D0, 208.5D0, 212.5D0, 217.5D0, 222.5D0, 227.5D0, &
-    232.5D0, 237.5D0, 242.5D0, 248.0D0, 253.0D0, 257.5D0, 262.5D0, 267.5D0, &
-    272.5D0, 277.5D0, 282.5D0, 287.5D0, 295.0D0, 305.0D0, 315.0D0, 325.0D0, &
-    335.0D0, 345.0D0, 355.0D0, 362.0D0, 367.0D0, 375.0D0, 385.0D0, 395.0D0, &
-    405.0D0, 415.0D0, 425.0D0, 435.0D0, 455.0D0, 465.0D0, 475.0D0, 485.0D0, &
-    495.0D0, 505.0D0, 515.0D0, 525.0D0, 535.0D0, 545.0D0, 555.0D0, 565.0D0, &
-    575.0D0, 585.0D0, 595.0D0, 605.0D0, 615.0D0, 625.0D0, 635.0D0, 645.0D0, &
-    655.0D0, 665.0D0, 675.0D0, 685.0D0, 695.0D0, 705.0D0, 715.0D0, 725.0D0, &
-    735.0D0, 745.0D0, 755.0D0, 765.0D0, 775.0D0, 785.0D0, 795.0D0, 805.0D0, &
-    815.0D0, 825.0D0, 835.0D0, 845.0D0, 855.0D0, 865.0D0, 875.0D0, 885.0D0, &
-    895.0D0, 905.0D0, 915.0D0, 925.0D0, 935.0D0, 945.0D0, 955.0D0, 965.0D0, &
-    975.0D0, 985.0D0, 995.0D0, 1012.5D0, 1037.5D0, 1062.5D0, 1087.5D0, 1112.5D0, &
-    1137.5D0, 1162.5D0, 1187.5D0, 1212.5D0, 1237.5D0, 1262.5D0, 1287.5D0, 1312.5D0, &
-    1337.5D0, 1362.5D0, 1387.5D0, 1412.5D0, 1442.0D0, 1467.0D0, 1487.5D0, 1512.5D0, &
-    1537.5D0, 1562.5D0, 1587.5D0, 1620.0D0, 1660.0D0, 1700.0D0, 1740.0D0, 1780.0D0, &
-    1820.0D0, 1860.0D0, 1900.0D0, 1940.0D0, 1980.0D0, 2025.0D0, 2075.0D0, 2125.0D0, &
-    2175.0D0, 2225.0D0, 2265.0D0, 2290.0D0, 2325.0D0, 2375.0D0, 2425.0D0, 2475.0D0, &
-    2525.0D0, 2575.0D0, 2625.0D0, 2675.0D0, 2725.0D0, 2775.0D0, 2825.0D0, 2875.0D0, &
-    2925.0D0, 2975.0D0, 3025.0D0, 3075.0D0, 3125.0D0, 3175.0D0, 3240.0D0, 3340.0D0, &
-    3450.0D0, 3550.0D0, 3650.0D0, 3750.0D0, 3850.0D0, 3950.0D0, 4050.0D0, 4150.0D0, &
-    4250.0D0, 4350.0D0, 4450.0D0, 4550.0D0, 4650.0D0, 4750.0D0, 4850.0D0, 4950.0D0, &
-    5050.0D0, 5150.0D0, 5250.0D0, 5350.0D0, 5450.0D0, 5550.0D0, 5650.0D0, 5750.0D0, &
-    5850.0D0, 5950.0D0, 6050.0D0, 6150.0D0, 6250.0D0, 6350.0D0, 6500.0D0, 6700.0D0, &
-    6900.0D0, 7100.0D0, 7300.0D0, 7500.0D0, 7700.0D0, 7900.0D0, 8100.0D0, 8300.0D0, &
-    8500.0D0, 8700.0D0, 8900.0D0, 9100.0D0, 9300.0D0, 9500.0D0, 9700.0D0, 9900.0D0, &
-    10000.0D0, 20000.0D0, 40000.0D0, 60000.0D0, 80000.0D0, 100000.0D0, 120000.0D0, 140000.0D0, &
-    160000.0D0, 200000.0D0, 240000.0D0, 280000.0D0, 320000.0D0, 360000.0D0, 400000.0D0 /)
+  ! NWAVE and WAVETAB live at module scope (mod_atlas_data); see the
+  ! TABCONT block there for grid description.
 
   ! --- Local variables ---
   REAL(8)  :: RATIOLG, FREQ15
   INTEGER :: NU, NU9, J, N
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING KAPCONT'
-
-  !---------------------------------------------------------------------
-  ! Copy wavelength grid to module array
-  !---------------------------------------------------------------------
-  WAVETAB(1:NWAVE) = WBIG
 
   !---------------------------------------------------------------------
   ! Wavelength-to-index conversion factor
@@ -15036,13 +15041,14 @@ SUBROUTINE KAPCONT
     N = 0
     IF (WAVE .GT. WAVESET(NULO)) CALL KAPP
 
-    ! Store tabulated opacity
-    TABCONT(:, NU) = (ACONT + SIGMAC) * 0.001D0 / STIM
+    ! Store tabulated opacity (scaled by LINE_CUTOFF, see header)
+    TABCONT(:, NU) = (ACONT + SIGMAC) * LINE_CUTOFF / STIM
   END DO
 
-  ! Pad last entry
+  ! Pad last entry of TABCONT (consumed by LINOP1/XLINOP wing-truncation
+  ! when NUCONT advances past the last real bin); IWAVETAB sentinel was
+  ! set above before the loop.
   TABCONT(:, NWAVE + 1) = TABCONT(:, NWAVE)
-  WAVETAB(NWAVE + 1) = WAVETAB(NWAVE)
 
   !---------------------------------------------------------------------
   ! Diagnostic printout
@@ -15132,7 +15138,7 @@ SUBROUTINE SELECTLINES
   INTEGER, PARAMETER :: H2O_ISOCORR(4) = (/ -1, -3398, -2690, -5000 /)
 
   ! --- Local variables ---
-  REAL(8)  :: XNFDOPMAX(mion, 344)
+  REAL(8)  :: XNFDOPMAX(mion, NWAVE + 1)
   REAL(8)  :: CENRATIO, RATIOLG, GR, tablog8
   INTEGER(4) :: LINEREC(4)
   INTEGER :: NU, J, K, LINE
@@ -15149,7 +15155,7 @@ SUBROUTINE SELECTLINES
   IF (IOS .NE. 0) THEN
     WRITE(6, '(A,F6.2,A)') ' SELECTLINES: cannot allocate ', &
       LINEDATA_CAP * 16.0D0 / 1.0D9, ' GB for LINEDATA'
-    STOP 'SELECTLINES: insufficient memory'
+    CALL EXIT(1)
   END IF
   NLINES_STORED = 0
 
@@ -15157,7 +15163,7 @@ SUBROUTINE SELECTLINES
   ! Compute maximum XNFDOP/TABCONT ratio over depth for each (ion, nu)
   !---------------------------------------------------------------------
   XNFDOPMAX = 0.0D0
-  DO NU = 1, 344
+  DO NU = 1, NWAVE + 1
     DO NELION = 1, MION
       DO J = 1, NRHOX
         XNFDOPMAX(NELION, NU) = max(XNFDOPMAX(NELION, NU), &
@@ -15206,7 +15212,7 @@ SUBROUTINE SELECTLINES
     NLINES_STORED = NLINES_STORED + 1
     IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
       WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      STOP 'SELECTLINES: increase LINEDATA_CAP'
+      CALL EXIT(1)
     END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
     IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
@@ -15214,7 +15220,7 @@ SUBROUTINE SELECTLINES
     N12 = N12 + 1
   END DO
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES predicted'
-  STOP 'SELECTLINES: increase MAX_LINES'
+  CALL EXIT(1)
 
   581 WRITE(6, '(I12,A)') N12, ' LINES FROM LOWLINES'
   CLOSE(UNIT=11)
@@ -15246,7 +15252,7 @@ SUBROUTINE SELECTLINES
     NLINES_STORED = NLINES_STORED + 1
     IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
       WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      STOP 'SELECTLINES: increase LINEDATA_CAP'
+      CALL EXIT(1)
     END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
     IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
@@ -15255,7 +15261,7 @@ SUBROUTINE SELECTLINES
     N122 = N122 + 1
   END DO
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES observed'
-  STOP 'SELECTLINES: increase MAX_LINES'
+  CALL EXIT(1)
 
   5819 WRITE(6, '(I12,A)') N122, ' LINES FROM LOWLINES observed'
   CLOSE(UNIT=111)
@@ -15288,7 +15294,7 @@ SUBROUTINE SELECTLINES
     NLINES_STORED = NLINES_STORED + 1
     IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
       WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      STOP 'SELECTLINES: increase LINEDATA_CAP'
+      CALL EXIT(1)
     END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
     IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
@@ -15296,7 +15302,7 @@ SUBROUTINE SELECTLINES
     N22 = N22 + 1
   END DO
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading HILINES'
-  STOP 'SELECTLINES: increase MAX_LINES'
+  CALL EXIT(1)
 
   681 WRITE(6, '(I12,A)') N22, ' LINES FROM HILINES'
   CLOSE(UNIT=21)
@@ -15336,7 +15342,7 @@ SUBROUTINE SELECTLINES
       END DO
       IF (IMOL .EQ. 0) THEN
         WRITE(6, '(9I12)') LINE, LINEREC
-        STOP 1
+        CALL EXIT(1)
       END IF
     END IF
 
@@ -15354,7 +15360,7 @@ SUBROUTINE SELECTLINES
     NLINES_STORED = NLINES_STORED + 1
     IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
       WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      STOP 'SELECTLINES: increase LINEDATA_CAP'
+      CALL EXIT(1)
     END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
     IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
@@ -15362,7 +15368,7 @@ SUBROUTINE SELECTLINES
     N32 = N32 + 1
   END DO
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading DIATOMICS'
-  STOP 'SELECTLINES: increase MAX_LINES'
+  CALL EXIT(1)
 
   781 WRITE(6, '(I12,A)') N32, ' LINES FROM DIATOMICS'
   CLOSE(UNIT=31)
@@ -15406,7 +15412,7 @@ SUBROUTINE SELECTLINES
     NLINES_STORED = NLINES_STORED + 1
     IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
       WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      STOP 'SELECTLINES: increase LINEDATA_CAP'
+      CALL EXIT(1)
     END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
     IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
@@ -15414,7 +15420,7 @@ SUBROUTINE SELECTLINES
     N42 = N42 + 1
   END DO
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading TIOLINES'
-  STOP 'SELECTLINES: increase MAX_LINES'
+  CALL EXIT(1)
 
   881 WRITE(6, '(I12,A)') N42, ' LINES FROM TIOLINES'
   CLOSE(UNIT=41)
@@ -15469,7 +15475,7 @@ SUBROUTINE SELECTLINES
     NLINES_STORED = NLINES_STORED + 1
     IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
       WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      STOP 'SELECTLINES: increase LINEDATA_CAP'
+      CALL EXIT(1)
     END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
     IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
@@ -15477,7 +15483,7 @@ SUBROUTINE SELECTLINES
     N52 = N52 + 1
   END DO
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H2OFAST'
-  STOP 'SELECTLINES: increase MAX_LINES'
+  CALL EXIT(1)
 
   1881 WRITE(6, '(I12,A)') N52, ' LINES FROM H2OFAST'
   CLOSE(UNIT=51)
@@ -15516,13 +15522,13 @@ SUBROUTINE SELECTLINES
     NLINES_STORED = NLINES_STORED + 1
     IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
       WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      STOP 'SELECTLINES: increase LINEDATA_CAP'
+      CALL EXIT(1)
     END IF
     LINEDATA(:, NLINES_STORED) = LINEREC
     N62 = N62 + 1
   END DO
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H3PLUS'
-  STOP 'SELECTLINES: increase MAX_LINES'
+  CALL EXIT(1)
 
   2881 WRITE(6, '(I10,A)') N62, ' LINES FROM H3PLUS'
   CLOSE(UNIT=61)
@@ -15535,7 +15541,7 @@ SUBROUTINE SELECTLINES
   WRITE(6, '(I12,A,F6.2,A)') NLINES_STORED, ' LINES STORED IN MEMORY (', &
        NLINES_STORED * 16.0D0 / 1.0D9, ' GB)'
   IF (NLINES_STORED .EQ. 0) THEN
-    STOP 'SELECTLINES ERROR: no lines found'
+    CALL EXIT(1)
   END IF
 
   FLUSH(6)
@@ -15915,9 +15921,9 @@ SUBROUTINE XLINOP
     ! Advance continuous opacity bin
     DO WHILE (IWL .GE. IWAVETAB(NUCONT))
       NUCONT = NUCONT + 1
-      IF (NUCONT .GT. 344) THEN
-        WRITE(6, '(A)') ' WARNING: NUCONT > 344, clamping'
-        NUCONT = 344
+      IF (NUCONT .GT. NWAVE + 1) THEN
+        WRITE(6, '(A,I4,A)') ' WARNING: NUCONT > ', NWAVE + 1, ', clamping'
+        NUCONT = NWAVE + 1
         EXIT
       END IF
     END DO
@@ -18201,7 +18207,8 @@ FUNCTION PARTFNH2(T)
     LUN = 89
     OPEN(LUN, FILE=trim(DATADIR)//'partfnh2.dat', STATUS='old', IOSTAT=IOS)
     IF (IOS .NE. 0) THEN
-      STOP ' PARTFNH2 ERROR: cannot open '//trim(DATADIR)//'partfnh2.dat'
+      WRITE(6,'(A)') ' PARTFNH2 ERROR: cannot open '//trim(DATADIR)//'partfnh2.dat'
+      CALL EXIT(1)
    ENDIF
    DO WHILE (NPF .LT. NMAX)
       READ(LUN, '(A)', IOSTAT=IOS) LINE

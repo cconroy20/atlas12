@@ -65,6 +65,7 @@ PROGRAM ATLAS12
   INTEGER        :: IZ_ABUND, IOS_ABUND
   REAL(8)        :: ABUND_VAL
   LOGICAL        :: have_abund_overrides, have_overrides
+  LOGICAL        :: file_exists
 
   ! --- INITIALIZATION PHASE ---------------------------------------------
 
@@ -104,14 +105,14 @@ PROGRAM ATLAS12
     SELECT CASE (TRIM(ARGBUF))
     CASE ('--help', '-h', 'help')
       CALL print_usage()
-      STOP 0
+      CALL EXIT(0)
     END SELECT
   END DO
 
   ! No args at all -> show usage and exit with error
   IF (NARGS .EQ. 0) THEN
     CALL print_usage()
-    STOP 1
+    CALL EXIT(1)
   END IF
 
   ! Sequential parse: positional args fill input_atm then basename, in order
@@ -154,7 +155,7 @@ PROGRAM ATLAS12
       END SELECT
       IF (ISTAT .NE. 0) THEN
         WRITE(6, '(A,A,A)') ' ERROR: invalid ', TRIM(key), ' value: '//TRIM(ARGBUF)
-        STOP 1
+        CALL EXIT(1)
       END IF
     END BLOCK
   END DO
@@ -164,7 +165,14 @@ PROGRAM ATLAS12
     WRITE(6, '(A)') ' ERROR: missing required argument <input_atm>'
     WRITE(6, '(A)') ''
     CALL print_usage()
-    STOP 1
+    CALL EXIT(1)
+  END IF
+
+  ! Validate: input atmosphere file must exist and be readable
+  INQUIRE(FILE=TRIM(INPUT_MODEL_FILE), EXIST=file_exists)
+  IF (.NOT. file_exists) THEN
+    WRITE(6, '(A)') ' ERROR: input atmosphere file not found: '//TRIM(INPUT_MODEL_FILE)
+    CALL EXIT(1)
   END IF
 
   ! Are any CLI overrides active?  (Controls whether we re-apply abundance
@@ -251,7 +259,7 @@ PROGRAM ATLAS12
       IF (IOS_ABUND .NE. 0) THEN
         WRITE(6, '(A,A)') ' ERROR: cannot open abundance file: ', &
               TRIM(ABUND_FILE)
-        STOP 1
+        CALL EXIT(1)
       END IF
       DO
         READ(4, '(A)', IOSTAT=IOS_ABUND) ABUND_LINE
@@ -282,7 +290,7 @@ PROGRAM ATLAS12
       IF (ABUND(1) .LT. 0.0D0) THEN
         WRITE(6, '(A,F10.6)') ' ERROR: H abundance is negative: ', ABUND(1)
         WRITE(6, '(A,F10.6,A,F10.6)') '   Y = ', ABUND(2), '  Z = ', Z_TOTAL
-        STOP 1
+        CALL EXIT(1)
       END IF
       WRITE(6, '(A,F10.6,A,F10.6,A,F10.6)') &
         ' Number fractions: X(H)=', ABUND(1), '  Y(He)=', ABUND(2), &

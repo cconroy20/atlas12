@@ -879,7 +879,7 @@ CONTAINS
       WRITE(*,'(A,E12.5,A,2I4)') &
         ' stark_quasistatic_profile: negative plasma parameter p=', p, &
         ' for transition (n,m)=', n, m
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     IF (b .GT. 500.0) THEN
@@ -3145,7 +3145,8 @@ CONTAINS
 !  Arguments:
 !    J        -- current depth index (1..NRHOX)
 !    N19      -- number of records on unit 19 (the "complex profile" pool)
-!    CUTOFF   -- minimum kappa/continuum ratio to include a line
+!    CUTOFF   -- minimum kappa/continuum ratio to include a line (REAL(8);
+!                normally LINE_CUTOFF from mod_parameters)
 !    VELSHIFT -- radial velocity shift for this depth (km/s), REAL(4)
 !    IFVAC    -- output wavelength convention.  Internal calculations are
 !                always in vacuum (line lists on units 12/14/19/20 are in
@@ -3156,7 +3157,8 @@ CONTAINS
   SUBROUTINE compute_line_opacity(j, n19, cutoff, velshift, ifvac)
 
     INTEGER,  INTENT(IN) :: j, n19, ifvac
-    REAL(4),  INTENT(IN) :: cutoff, velshift
+    REAL(8),  INTENT(IN) :: cutoff
+    REAL(4),  INTENT(IN) :: velshift
 
     ! ----- local scalars -----
     REAL(4)  :: bolt, bolth, oldelo
@@ -3457,7 +3459,7 @@ CONTAINS
               ' compute_line_opacity: hydrogen line list has out-of-range ', &
               'principal quantum numbers nblo=', nblo, ', nbup=', nbup
             WRITE(*,'(A,F10.4,A)') ' at wl=', wl_loc, ' nm; aborting.'
-            STOP 1
+            CALL EXIT(1)
           END IF
           kappa0 = REAL(gf_loc * xnfdop(1))
           kapmin = continuum(MIN(MAX(nbuff,1),length)) * cutoff
@@ -3856,7 +3858,7 @@ CONTAINS
     IF (NCONT_EDGE_DATA .GT. me) THEN
       WRITE(6,'(A,I5,A,I5)') ' run_xnfpelsyn: CONT_EDGE_DATA size ', &
         NCONT_EDGE_DATA, ' exceeds max edge count me=', me
-      STOP 1
+      CALL EXIT(1)
     END IF
     DO in_e = 1, NCONT_EDGE_DATA
       edge = CONT_EDGE_DATA(in_e)
@@ -3920,7 +3922,7 @@ CONTAINS
           IF (in_e .GE. me) THEN
             WRITE(6,'(A,I6,A)') ' run_xnfpelsyn: edge count exceeded me=', &
               me, ' while appending MBF_TOPBASE thresholds'
-            STOP 1
+            CALL EXIT(1)
           END IF
           in_e = in_e + 1
           wledge_m(in_e) = wl_new
@@ -3946,7 +3948,7 @@ CONTAINS
           IF (in_e .GE. me) THEN
             WRITE(6,'(A,I6,A)') ' run_xnfpelsyn: edge count exceeded me=', &
               me, ' while appending FELO thresholds'
-            STOP 1
+            CALL EXIT(1)
           END IF
           in_e = in_e + 1
           wledge_m(in_e) = wl_new
@@ -3969,7 +3971,7 @@ CONTAINS
         IF (in_e .GE. me) THEN
           WRITE(6,'(A,I6,A)') ' run_xnfpelsyn: edge count exceeded me=', &
             me, ' while appending MBF_HIGH_ION thresholds'
-          STOP 1
+          CALL EXIT(1)
         END IF
         in_e = in_e + 1
         wledge_m(in_e) = wl_new
@@ -4044,7 +4046,7 @@ CONTAINS
       IF (3 * (nedge_m - 1) .GT. nf) THEN
         WRITE(6,'(A,I6,A,I6)') ' run_xnfpelsyn: 3*(nedge_m-1) = ', &
           3 * (nedge_m - 1), ' exceeds nf = ', nf
-        STOP 1
+        CALL EXIT(1)
       END IF
     END IF
 

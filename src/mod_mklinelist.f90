@@ -261,7 +261,7 @@ CONTAINS
     OPEN(UNIT=LU, FILE=listfile, STATUS='old', ACTION='read', IOSTAT=ios)
     IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: lines.list not found: ', TRIM(listfile)
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     DO
@@ -390,7 +390,7 @@ CONTAINS
          FORM='formatted', IOSTAT=ios)
     IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open gfall file: ', TRIM(filename)
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     delfactor = 1.0D0
@@ -759,7 +759,7 @@ CONTAINS
          ACCESS='direct', RECL=16, IOSTAT=ios)
     IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open predict file: ', TRIM(filename)
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     READ(11, REC=1) iwl1
@@ -1060,7 +1060,7 @@ CONTAINS
          FORM='formatted', IOSTAT=ios)
     IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open molecule file: ', TRIM(filename)
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     lte_cap = CHUNK
@@ -1176,7 +1176,7 @@ CONTAINS
          ACCESS='direct', RECL=8, IOSTAT=ios)
     IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open H2O file: ', TRIM(filename)
-      STOP 1
+      CALL EXIT(1)
     END IF
 
     READ(11, REC=1) irec

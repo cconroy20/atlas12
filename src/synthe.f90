@@ -38,6 +38,7 @@ PROGRAM SYNTHE
   
   USE synthe_module
   USE mod_mklinelist, only: run_mklinelist, lte_lines, nlines_lte, nlines_nlte
+  USE mod_parameters, only: LINE_CUTOFF
   USE mod_atlas_data, only: &
     JOSH, READIN, BLOCKJ, BLOCKH, set_bc_data_dir, &
     DATADIR, IFSYNTHE, IFMOLOUT, &
@@ -87,11 +88,11 @@ PROGRAM SYNTHE
     '[resolu=<R>] [turbv=<kms>] [more_output=yes|no]'
 
   ! --- Fixed run parameters (formerly read from fort.93 / SYNBEG) -------
-  !   ifvac  = 1    : vacuum wavelengths throughout
-  !   cutoff = 1e-3 : line-wing truncation threshold (drop when local
-  !                   opacity < cutoff * continuum)
+  !   ifvac = 1 : vacuum wavelengths throughout
+  ! Line-rejection threshold uses LINE_CUTOFF from mod_parameters; that
+  ! single constant keeps SYNTHE in lockstep with ATLAS's SELECTLINES /
+  ! TABCONT cutoff (see KAPCONT header).
   INTEGER, PARAMETER :: IFVAC  = 1
-  REAL(4), PARAMETER :: CUTOFF = 1.0E-3
 
   ! --- Run parameters set from CLI --------------------------------------
   REAL(4)   :: turbv
@@ -164,7 +165,7 @@ PROGRAM SYNTHE
   IF (COMMAND_ARGUMENT_COUNT() .LT. 1) THEN
     WRITE(6,'(A)') ' ERROR: expected model filename as first argument'
     WRITE(6,'(A)') USAGE
-    STOP 1
+    CALL EXIT(1)
   END IF
   CALL GET_COMMAND_ARGUMENT(1, model_file)
 
@@ -179,7 +180,7 @@ PROGRAM SYNTHE
     eqpos = INDEX(tmparg, '=')
     IF (eqpos .LT. 2) THEN
       WRITE(6,'(A,A)') ' ERROR: unrecognised argument (expected key=value): ', TRIM(tmparg)
-      STOP 1
+      CALL EXIT(1)
     END IF
     SELECT CASE (tmparg(1:eqpos-1))
       CASE ('wlbeg');  READ(tmparg(eqpos+1:), *) wlbeg
@@ -195,18 +196,18 @@ PROGRAM SYNTHE
           CASE DEFAULT
             WRITE(6,'(A,A)') ' ERROR: more_output expects yes/no, got: ', &
               TRIM(tmparg(eqpos+1:))
-            STOP 1
+            CALL EXIT(1)
         END SELECT
       CASE DEFAULT
         WRITE(6,'(A,A)') ' ERROR: unknown keyword argument: ', TRIM(tmparg)
-        STOP 1
+        CALL EXIT(1)
     END SELECT
   END DO
 
   IF (wlbeg .LE. 0.0D0 .OR. wlend .LE. wlbeg) THEN
     WRITE(6,'(A)') ' ERROR: require 0 < wlbeg < wlend'
     WRITE(6,'(A)') USAGE
-    STOP 1
+    CALL EXIT(1)
   END IF
 
   ! Propagate more_output to the ATLAS-level flag read by NMOLEC
@@ -424,7 +425,7 @@ PROGRAM SYNTHE
                      (t(j)/10000.0D0)**0.3D0 )
 
     ! NLTE / complex-profile lines (velshift argument reserved for future use)
-    IF (nlines_nlte .GT. 0) CALL compute_line_opacity(j, nlines_nlte, CUTOFF, 0.0, IFVAC)
+    IF (nlines_nlte .GT. 0) CALL compute_line_opacity(j, nlines_nlte, LINE_CUTOFF, 0.0, IFVAC)
 
     ! LTE metal lines: Voigt core on the wavelength grid + r^-2 far-wing tail
     IF (nlines_lte .GT. 0) THEN
@@ -438,7 +439,7 @@ PROGRAM SYNTHE
           gamwf     = lte_lines(iline)%gamwf
 
           kappa0_s = congf_s * REAL(xnfdop(congf_nel))
-          kapmin_s = continuum(MIN(MAX(nbuff_s,1),length)) * CUTOFF
+          kapmin_s = continuum(MIN(MAX(nbuff_s,1),length)) * REAL(LINE_CUTOFF, 4)
           IF (kappa0_s .LT. kapmin_s) CYCLE
           kappa0_s = kappa0_s * REAL(EXP(-elo_s * hckt(j)))
           IF (kappa0_s .LT. kapmin_s) CYCLE
@@ -522,7 +523,7 @@ PROGRAM SYNTHE
   CALL SYSTEM_CLOCK(clock_end)
   CALL report_elapsed(REAL(clock_end - clock_start, 8) / REAL(clock_rate, 8))
 
-  STOP
+  CALL EXIT(0)
 
 CONTAINS
 
