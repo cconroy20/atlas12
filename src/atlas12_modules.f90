@@ -1,21 +1,5 @@
 !=========================================================================
 !  ATLAS12  —  Opacity-Sampling Stellar Atmosphere Code
-!
-!  Robert L. Kurucz, Harvard-Smithsonian Center for Astrophysics
-!  Translated from Fortran 77 (fixed-form) to Fortran 90 (free-form),
-!
-!  Data files are located via the environment variable
-!  ATLAS12.  If unset, defaults to ./data/
-!       export ATLAS12=/path/to/atlas12/
-!
-!  LIMITATIONS:
-!    - The iron PF and CH, OH cross sections have a low-T limit of 2000K
-!    - The OS grid only extends to ~14.5um, which might not be red enough
-!      for very cool stars
-!
-!  CHANGE LOG:
-!    2/26: initial translation from F77 to F90 (C. Conroy w/ Claude.ai)
-!
 !=========================================================================
 !
 !  STRUCTURE OUTLINE
@@ -1070,7 +1054,7 @@ MODULE mod_atlas_data
   REAL(8)  :: XSCALE = 1.0d0
   CHARACTER(4) :: WLTE = 'LTE '
   CHARACTER(256) :: DATADIR    ! Path to data files (from $ATLAS12)
-  CHARACTER(256) :: INPUT_MODEL_FILE = ''   ! Input atmosphere file (set by atlas12 driver)
+  CHARACTER(256) :: INPUT_MODEL_FILE = ''
   INTEGER :: INPUTDATA
 
   ! --- Flag set if SYNTHE is running ---
@@ -1078,6 +1062,13 @@ MODULE mod_atlas_data
 
   ! --- Flag set to use TOPbase metal continuum opacities ---
   LOGICAL :: USE_TOPBASE_MBF = .TRUE.
+
+  ! --- Flag set to use Barklem & Collet (2016) atomic partition functions ---
+  LOGICAL :: USE_BC_PARTITION_FUNCTIONS = .TRUE.
+
+  ! --- Flag set to use Hummer & Mihalas (1988) occupation probability
+  !     weighting in the H I partition function ---
+  LOGICAL :: USE_HM_OCCUPATION_PROBABILITY = .TRUE.
   
   ! --- Flag set if SYNTHE should emit .mol/.linform output files ---
   ! Gated by the more_output CLI argument.  NMOLEC checks IFMOLOUT to
@@ -1285,8 +1276,6 @@ MODULE mod_atlas_data
     320000.0D0, 360000.0D0, 400000.0D0 /)
   REAL(8) :: TABCONT(kw, NWAVE + 1)
   INTEGER :: IWAVETAB(NWAVE + 1)
-
-  ! --- Log lookup table (replaced array with function) ---
 
   ! --- Optical depth, source function, flux moments ---
   REAL(8)  :: TAUNU(kw), SNU(kw), HNU(kw), JNU(kw), JMINS(kw)
@@ -1755,21 +1744,12 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! --- MODE 3 locals: Lambda correction ---
   REAL(8)  :: DTLAMB(kw)        ! Lambda-iteration temperature correction
   REAL(8)  :: DTSURF(kw)        ! surface boundary correction
-  REAL(8)  :: DTCONV(kw)        ! convective flux correction (Crivellari-Simonneau)
+  REAL(8)  :: DTCONV(kw)        ! convective flux correction (currently zero; see C2/E2)
   REAL(8)  :: T1(kw)            ! total correction
   REAL(8)  :: TEFF25            ! clamp: Teff/25
   REAL(8)  :: DTSUR             ! surface correction magnitude
   REAL(8)  :: DUM(kw), TINTEG(kw), TAV
   REAL(8)  :: TONE_ARR(1), TTWO_ARR(1), XNEW_TMP(1)
-
-  ! --- MODE 3 locals: convective adiabatic sweep ---
-  REAL(8)  :: T_SWEEP(kw)       ! corrected T for adiabatic integration
-  REAL(8)  :: DT_RAD            ! radiative correction at a layer
-  REAL(8)  :: DT_ADIAB          ! adiabatic sweep correction at a layer
-  REAL(8)  :: DLNP              ! Δln P between adjacent layers
-  REAL(8)  :: T_ADIAB           ! adiabatic extrapolation temperature
-  REAL(8)  :: FCONV_RATIO       ! convective flux fraction at a depth
-  INTEGER :: JANCHOR           ! shallowest convective layer (anchor)
 
   ! --- MODE 3 locals: RHOX correction / remapping ---
   REAL(8)  :: TPLUS(kw), TNEW1(kw), TNEW2(kw), PRDNEW(kw)
@@ -1944,25 +1924,26 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !     Integrate CODRHX to get G(RHOX), then integrate G*(flux error)
   !     over tau_Ross and convert to temperature correction.
   !
-  !     Crivellari-Simonneau modification: suppress the GFLUX integrand
-  !     in convection-dominated layers. A persistent flux error at depth
-  !     (from MLT or opacity sampling limitations) accumulates in the
-  !     DTAU integral and corrupts DTFLUX at all depths. Weight GFLUX
-  !     by (1 - f_conv) so deep convective layers contribute negligibly.
+  !     This follows the F77 strategy: DTFLUX drives flux constancy at
+  !     full strength in both radiative and convective layers. MLT (via
+  !     CONVEC) delivers a self-consistent adiabat as a side-effect of
+  !     flux constancy in the deep CZ.
+  !
+  !     History: an earlier modernization weighted GFLUX by (1 - f_conv)
+  !     to suppress contributions from deep convective layers, motivated
+  !     by a persistent positive FLXERR observed in cool-dwarf models
+  !     (~2800 K) where MLT or opacity sampling appeared to introduce a
+  !     structural deep-layer flux bias that corrupted the DTAU integral
+  !     globally. That weighting also disabled flux-constancy feedback in
+  !     the deep CZ for normal stars (e.g. solar models converged ~300 K
+  !     too cool at tau ~ 100). Reverted to F77 behavior here.
   !---------------------------------------------------------------------
+  
   CALL INTEG(RHOX, CODRHX, G, NRHOX, 0.0D0)
   DO J = 1, NRHOX
     G(J) = exp(G(J))
     GFLUX(J) = G(J) * (FLXRAD(J) + CNVFLX(J) - FLUX) &
              / (FLXRAD(J) + CNVFLX(J) * 1.5D0 * DLTDLP(J) * DDEL(J))
-
-    ! Suppress GFLUX in convection-dominated layers (with hysteresis)
-    IF (IFCONV .EQ. 1 .AND. &
-        (CNVFLX(J) .GT. 0.0D0 .OR. FLXCNV0(J) .GT. 0.0D0)) THEN
-      FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
-                  / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
-      GFLUX(J) = GFLUX(J) * (1.0D0 - FCONV_RATIO)
-    END IF
   END DO
 
   CALL INTEG(TAUROS, GFLUX, DTAU, NRHOX, 0.0D0)
@@ -1977,23 +1958,20 @@ SUBROUTINE TCORR(MODE, RCOWT)
   TEFF25 = TEFF / 25.0D0
 
   !---------------------------------------------------------------------
-  ! (C2) Suppress DTFLUX in convective layers.
-  !      The Avrett-Krook integral handles radiative flux errors only;
-  !      in convective layers, DTFLUX is attenuated by (1 - f_conv).
-  !      The convective correction (adiabatic sweep) is applied later,
-  !      after DTLAMB and DTSURF have been computed.
+  ! (C2) [REMOVED] DTFLUX attenuation in convective layers.
+  !
+  !      An earlier modernization multiplied DTFLUX by (1 - f_conv) in
+  !      convective layers to prevent the structural deep-layer flux
+  !      bias seen in cool-dwarf models from polluting DTFLUX globally.
+  !      For normal stars this killed the only flux-constancy feedback
+  !      in the deep CZ and made converged solar models ~300 K too cool
+  !      at tau ~ 100. Removed; DTFLUX now operates at full strength
+  !      everywhere, matching F77.
+  !
+  !      DTCONV is retained as a zeroed array so the section (F) sum
+  !      and the section (H) diagnostic print continue to work.
   !---------------------------------------------------------------------
   DTCONV(:) = 0.0D0
-
-  IF (IFCONV .EQ. 1) THEN
-    DO J = 1, NRHOX
-      IF (CNVFLX(J) .GT. 0.0D0 .OR. FLXCNV0(J) .GT. 0.0D0) THEN
-        FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
-                    / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
-        DTFLUX(J) = DTFLUX(J) * (1.0D0 - FCONV_RATIO)
-      END IF
-    END DO
-  END IF
 
   !---------------------------------------------------------------------
   ! (D) DTLAMB: Lambda-iteration correction (optically thin layers)
@@ -2046,6 +2024,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !     Uniform shift from flux error at tau=0, adjusted to not fight
   !     the integral of (DTFLUX + DTLAMB) between tau=0.1 and tau=2.
   !---------------------------------------------------------------------
+  
   DTSUR = (FLUX - FLXRAD(1)) / FLUX * 0.25D0 * T(1)
   DTSUR = max(-TEFF25, min(TEFF25, DTSUR))
 
@@ -2065,77 +2044,31 @@ SUBROUTINE TCORR(MODE, RCOWT)
   HRATIO = CNVFLX / (CNVFLX + max(FLXRAD, 1.0D-30))
 
   !---------------------------------------------------------------------
-  ! (E2) DTCONV: convective temperature correction via adiabatic sweep
+  ! (E2) [REMOVED] Adiabatic sweep DTCONV.
   !
-  !      Now that DTFLUX, DTLAMB, and DTSURF are all computed, we can
-  !      build the adiabatic sweep. Strategy:
-  !        1. Find the anchor (shallowest convective layer)
-  !        2. Anchor T = current T + radiative corrections
-  !        3. Sweep downward: each layer's T follows the adiabat from
-  !           the corrected layer above
-  !        4. Blend using f_conv: radiative corrections at low f_conv,
-  !           adiabatic sweep at high f_conv
+  !      An earlier modernization built DTCONV by sweeping downward from
+  !      the shallowest convective layer (the "anchor"), enforcing the
+  !      adiabatic gradient via T_adiab = T_sweep(J-1) * exp(grad_ad * dlnP).
+  !      Intent: paired with the C/C2 suppressions, this would replace
+  !      DTFLUX in the deep CZ and let the structure follow the adiabat
+  !      from the corrected anchor downward. Together with C and C2 this
+  !      was meant to address cool-dwarf convergence failures.
+  !
+  !      Failure modes that motivated removal:
+  !        - The recurrence T_sweep(J) = T_sweep(J-1) * exp(grad_ad * dlnP)
+  !          amplifies anchor errors exponentially through the deep CZ
+  !          (factor ~exp(grad_ad * sum dlnP) ~ 2-3 by tau ~ 100).
+  !        - DLNP = ln(P(J)/P(J-1)) shifts iteration-to-iteration as the
+  !          structure relaxes, injecting noise into deep T(tau) that
+  !          does not damp out.
+  !        - With C2 also active, no flux-constancy feedback remained in
+  !          the deep CZ; the model relaxed onto an internally
+  !          self-consistent but flux-incorrect adiabat, with FLXERR
+  !          large at depth even as T1 -> 0.
+  !
+  !      DTCONV stays zero (set in section C2). DTFLUX + DTLAMB + DTSURF
+  !      handle the full T-correction, as in F77.
   !---------------------------------------------------------------------
-
-  IF (IFCONV .EQ. 1) THEN
-
-    ! --- Find anchor: shallowest layer with convective flux ---
-    JANCHOR = 0
-    DO J = 1, NRHOX
-      IF (CNVFLX(J) .GT. 0.0D0 .OR. FLXCNV0(J) .GT. 0.0D0) THEN
-        JANCHOR = J
-        EXIT
-      END IF
-    END DO
-
-    ! --- Adiabatic sweep from anchor downward ---
-    IF (JANCHOR .GT. 0) THEN
-      ! Anchor gets normal radiative corrections only (DTCONV=0 there).
-      ! T_SWEEP tracks the corrected temperature for integration.
-      T_SWEEP(JANCHOR) = T(JANCHOR) + DTFLUX(JANCHOR) &
-                       + DTLAMB(JANCHOR) + DTSURF(JANCHOR)
-
-      DO J = JANCHOR + 1, NRHOX
-        ! Convective fraction at this layer (with hysteresis)
-        IF (CNVFLX(J) .GT. 0.0D0 .OR. FLXCNV0(J) .GT. 0.0D0) THEN
-          FCONV_RATIO = max(CNVFLX(J), FLXCNV0(J)) &
-                      / (max(CNVFLX(J), FLXCNV0(J)) + max(FLXRAD(J), 1.0D-30))
-        ELSE
-          FCONV_RATIO = 0.0D0
-        END IF
-
-        IF (FCONV_RATIO .GT. 0.0D0 .AND. PTOTAL(J) .GT. 0.0D0 &
-            .AND. PTOTAL(J-1) .GT. 0.0D0) THEN
-          ! Adiabatic extrapolation from corrected layer above
-          DLNP = log(PTOTAL(J) / PTOTAL(J-1))
-          T_ADIAB = T_SWEEP(J-1) * exp(GRDADB(J) * DLNP)
-
-          ! Normal (radiative) correction for this layer
-          DT_RAD = DTFLUX(J) + DTLAMB(J) + DTSURF(J)
-
-          ! Adiabatic correction: what sweep says T should be minus current T
-          DT_ADIAB = T_ADIAB - T(J)
-
-          ! Blend: f_conv=0 → pure radiative, f_conv=1 → pure adiabat
-          DTCONV(J) = FCONV_RATIO * DT_ADIAB &
-                    + (1.0D0 - FCONV_RATIO) * DT_RAD - DT_RAD
-          ! Note: total correction T1 = DT_RAD + DTCONV, so
-          !   T1 = DT_RAD + f*DT_ADIAB + (1-f)*DT_RAD - DT_RAD
-          !      = f*DT_ADIAB + (1-f)*DT_RAD   ← the desired blend
-
-          ! Clamp to ±Teff/25
-          DTCONV(J) = max(-TEFF25, min(TEFF25, DTCONV(J)))
-
-          ! Update sweep temperature to reflect what we actually apply
-          ! so next layer integrates from the right place
-          T_SWEEP(J) = T(J) + DT_RAD + DTCONV(J)
-        ELSE
-          ! Non-convective layer below anchor: no DTCONV, pass through
-          T_SWEEP(J) = T(J) + DTFLUX(J) + DTLAMB(J) + DTSURF(J)
-        END IF
-      END DO
-    END IF
-  END IF
 
   !---------------------------------------------------------------------
   ! (F) Total correction and iteration damping
@@ -2144,24 +2077,37 @@ SUBROUTINE TCORR(MODE, RCOWT)
 
   ! Iteration damping: compare current correction T1 against previous
   ! iteration's correction OLDT1 to detect convergence behavior.
-  !   Same sign, shrinking  → accelerate by 1.25x (monotone convergence)
-  !   Same sign, growing    → cap at previous magnitude (prevent runaway)
-  !   Sign flip             → damp by 0.5x (oscillation control)
-  ! Skip damping on first iteration only (no history).
+  !   Same sign, shrinking  -> accelerate by 1.25x (monotone convergence)
+  !   Sign flip             -> damp by 0.5x (oscillation control)
+  !   Same sign, growing    -> leave alone (F77 behavior)
+  !
+  ! Skip damping when:
+  !   - First iteration (no history yet)
+  !   - Convective layer (HRATIO > 0): convection's adiabatic structure
+  !     is set by MLT, not by the radiative-equilibrium iteration that
+  !     OLDT1 is designed to accelerate; applying the rule there can
+  !     drive a deep-CZ layer into a different fixed point than its
+  !     neighbors.
+  !   - Deeper half (J >= NRHOX/3): same logic; the deep atmosphere is
+  !     dominated by either convection or near-equilibrium radiative
+  !     transfer, neither of which benefits from acceleration.
+  ! These match F77 ATLAS12 (label 62 skips in atlas12.for line 849-852).
+  ! An earlier modernization applied the rule to all layers and added a
+  ! "growing -> cap at OLDT1" branch; both changes were reverted because
+  ! they made the deep CZ susceptible to bistable fixed points.
   DO J = 1, NRHOX
-    IF (ITER .EQ. 1) THEN
-      ! No damping — accept raw correction
-    ELSE IF (OLDT1(J) * T1(J) .GT. 0.0D0) THEN
-      ! Same sign as previous iteration
-      IF (abs(T1(J)) .LT. abs(OLDT1(J))) THEN
-        ! Shrinking: accelerate by 25%
-        T1(J) = T1(J) * 1.25D0
-      ELSE
-        ! Growing: cap at previous magnitude to prevent runaway
-        T1(J) = sign(abs(OLDT1(J)), T1(J))
-      END IF
+    IF (IFCONV .EQ. 1 .AND. HRATIO(J) .GT. 0.0D0) THEN
+      ! Convective layer: skip damping
+    ELSE IF (IFCONV .EQ. 1 .AND. J .GE. NRHOX/3) THEN
+      ! Deep enough that damping shouldn't be applied
+    ELSE IF (ITER .EQ. 1) THEN
+      ! No history: skip damping
+    ELSE IF (OLDT1(J) * T1(J) .GT. 0.0D0 .AND. &
+             abs(OLDT1(J)) .GT. abs(T1(J))) THEN
+      ! Same sign, shrinking: accelerate
+      T1(J) = T1(J) * 1.25D0
     ELSE IF (OLDT1(J) * T1(J) .LT. 0.0D0) THEN
-      ! Sign flip: damp by 50%
+      ! Sign flip: damp
       T1(J) = T1(J) * 0.5D0
     END IF
     OLDT1(J) = T1(J)
@@ -2185,6 +2131,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !     Uses finite-difference: run TTAUP with T and T+DT, compare
   !     total pressures to infer needed RHOX adjustment.
   !---------------------------------------------------------------------
+  
   DO J = 1, NRHOX
     TPLUS(J)  = T(J) + T1(J)
     TAUSTD(J) = 10.0D0**(TAU1LG + (J - 1) * STEPLG)
@@ -2204,6 +2151,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !---------------------------------------------------------------------
   ! (H) Apply temperature correction
   !---------------------------------------------------------------------
+  
    !apply damping to the temperature correction
   ! T1(J) = sign(min(abs(T1(J)), 0.02D0 * T(J)), T1(J))
    T = T + T1
@@ -2232,6 +2180,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !---------------------------------------------------------------------
   ! (I) Recompute thermodynamic quantities from corrected T
   !---------------------------------------------------------------------
+   
   IFUDGE = 0
 
   TK   = KBOL * T
@@ -5602,29 +5551,40 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
     SELECT CASE (N)
 
     CASE (1)  ! ---- Hydrogen I ----
-      ! Partition function with Hummer & Mihalas (1988) occupation
-      ! probability weighting.  Each level n is weighted by w_n, the
-      ! probability that the level survives Stark dissolution.
-      ! For FGK stars (T < 8000 K), the ground state dominates and
-      ! this gives PF ≈ 2.000 regardless of density.  For hotter stars
-      ! the weighting properly truncates the sum that would otherwise
-      ! diverge from unweighted high-n levels.
-      !
-      ! Replaces the former approach of levels 1-6 at full weight plus
-      ! a fixed Euler-Maclaurin integral from n=6.5 to ionization.
-      PART(1) = 2.d0 * B_dep       ! n=1: w_1 = 1 always
-      DO I = 2, 6
-        PART(1) = PART(1) + occupation_prob(I, XNE(J)) &
-                * GHYD(I) * B_dep * EXP(-EHYD(I)*HCKT(J))
-      END DO
-      ! Levels n=7 and above: hydrogenic energies, weighted by w_n.
-      ! Sum truncates naturally where w_n -> 0 or Boltzmann factor -> 0.
-      DO I = 7, 80
-        D1 = occupation_prob(I, XNE(J))
-        IF (D1 .LT. 1.0d-6) EXIT   ! remaining levels fully dissolved
-        PART(1) = PART(1) + D1 &
-                * 2.0d0 * dble(I)**2 * EXP(-(ELIM_HI - RYDBERG_H/dble(I)**2)*HCKT(J))
-      END DO
+      IF (USE_HM_OCCUPATION_PROBABILITY) THEN
+        ! Hummer & Mihalas (1988) occupation-probability formalism.
+        ! Each level n is weighted by w_n, the probability that the
+        ! level survives Stark dissolution.  For FGK stars (T < 8000 K)
+        ! the ground state dominates and this gives PF ~ 2.000
+        ! regardless of density.  For hotter stars the weighting
+        ! properly truncates the sum that would otherwise diverge
+        ! from unweighted high-n levels.
+        PART(1) = 2.d0 * B_dep       ! n=1: w_1 = 1 always
+        DO I = 2, 6
+          PART(1) = PART(1) + occupation_prob(I, XNE(J)) &
+                  * GHYD(I) * B_dep * EXP(-EHYD(I)*HCKT(J))
+        END DO
+        ! Levels n=7 and above: hydrogenic energies, weighted by w_n.
+        ! Sum truncates naturally where w_n -> 0 or Boltzmann factor -> 0.
+        DO I = 7, 80
+          D1 = occupation_prob(I, XNE(J))
+          IF (D1 .LT. 1.0d-6) EXIT   ! remaining levels fully dissolved
+          PART(1) = PART(1) + D1 &
+                  * 2.0d0 * dble(I)**2 * EXP(-(ELIM_HI - RYDBERG_H/dble(I)**2)*HCKT(J))
+        END DO
+      ELSE
+        ! F77-style: explicit sum over n=1..6 (no w_n weighting), then
+        ! smooth Euler-Maclaurin Rydberg-series correction from n=6.5
+        ! to ionization via pfsaha_highlevels.  Matches the original
+        ! Kurucz ATLAS12 H I partition function exactly.
+        PART(1) = 2.d0 * B_dep
+        DO I = 2, 6
+          PART(1) = PART(1) + GHYD(I) * B_dep * EXP(-EHYD(I)*HCKT(J))
+        END DO
+        D1 = RYDBERG_H / 6.5d0 / 6.5d0 * HCKT(J)
+        CALL pfsaha_highlevels(PART(ION), G, IP(ION), Z_ion, TV, &
+                               POTLO(ION), D1)
+      END IF
       CYCLE
 
     CASE (3)  ! ---- Helium I ----
@@ -7221,6 +7181,7 @@ SUBROUTINE CONVEC
   ! Assumes overshooting by 0.5 H_P if convection is strong,
   ! none if weak. Setting OVERWT=0 turns off overshooting entirely.
   !=====================================================================
+  
   IF (OVERWT .GT. 0.0D0) THEN
     ! Find maximum convective-to-total flux ratio
     !     WTCNV = MIN(FLXCNV(NRHOX)/FLUX, 1.D0) * OVERWT
@@ -7231,11 +7192,9 @@ SUBROUTINE CONVEC
     END DO
     WTCNV = min(WTCNV, 1.0D0) * OVERWT
 
-    !      DELHGT(J) = MIN(HSCALE(J)*MIXLTH*0.5D-5, HEIGHT(NRHOX)-HEIGHT(J),
     DELHGT = min(HSCALE * 0.5D-5 * WTCNV, &
                     HEIGHT(NRHOX) - HEIGHT, &
                     HEIGHT - HEIGHT(1))
-    !      WRITE(6,775) J, HEIGHT(J), DELHGT(J), CNVINT(J)
     FLXCNV0 = FLXCNV
     FLXCNV1 = 0.0D0
 
@@ -7255,7 +7214,6 @@ SUBROUTINE CONVEC
 
   ! Patch to remove numerical artifacts in outermost layers
   DO J = 1, NCONV
-    ! DO 7779 J=1,NRHOX/3
     FLXCNV(J) = 0.0D0
   END DO
 
@@ -17234,6 +17192,11 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
     !         anything more extreme is almost certainly bad data).
     !     If any guard fails, leave BC_RATIO at its default 1.0 -- the
     !     hybrid becomes a pure no-op for that (IT, ION, IELEM) slot.
+    !
+    !     Skipped entirely when USE_BC_PARTITION_FUNCTIONS = .FALSE., in
+    !     which case BC_RATIO remains its default 1.0 everywhere and the
+    !     runtime multiplication becomes a global no-op.
+    IF (USE_BC_PARTITION_FUNCTIONS) THEN
     BLOCK
       REAL(8) :: TLOG_IT, T_IT, U_BC_val, RATIO, x, w, taper
       INTEGER :: IT_init, ION_init
@@ -17275,6 +17238,7 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
         END DO
       END DO
     END BLOCK
+    END IF
 
     INITIALIZED = .TRUE.
   END IF
@@ -18114,6 +18078,12 @@ FUNCTION PFGROUND_HYBRID(NELION, T)
   REAL(8), PARAMETER :: T_HIGH_BC = 10000.0d0
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING PFGROUND_HYBRID'
+
+  ! --- Diagnostic flag: skip B&C entirely, return pristine Kurucz ---
+  IF (.NOT. USE_BC_PARTITION_FUNCTIONS) THEN
+    PFGROUND_HYBRID = PFGROUND_KURUCZ(NELION, T)
+    RETURN
+  END IF
 
   ! --- Iron group deferred to PFIRON; short-circuit ---
   IF (NELION .GE. 115 .AND. NELION .LE. 168) THEN
