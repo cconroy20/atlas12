@@ -5,8 +5,10 @@
 #   make atlas        Build atlas12c.exe only
 #   make synthe       Build synthe.exe only
 #
-# Compile order for synthe:
-#   atlas12_modules -> mod_mklinelist -> synthe_module -> synthe
+# Compile order:
+#   mod_mklinelist -> atlas12_modules -> {atlas12c, synthe_module -> synthe}
+# (ATLAS12 now reads diatomic line lists via mod_mklinelist, the same
+#  reader SYNTHE uses, so mklinelist must be built first for both.)
 #
 # Executables are installed to ../bin/
 # All builds start clean (recompile everything).
@@ -24,29 +26,30 @@ FFLAGS   = $(OPT) -ftree-vectorize -march=native -ffpe-summary=none
 BINDIR   = ../bin
 
 all: clean
+	$(FC) $(FFLAGS) -c mod_mklinelist.f90
 	$(FC) $(FFLAGS) -c atlas12_modules.f90
 	$(FC) $(FFLAGS) -c atlas12c.f90
-	$(FC) $(FFLAGS) -o atlas12c.exe atlas12_modules.o atlas12c.o
-	$(FC) $(FFLAGS) -c mod_mklinelist.f90
+	$(FC) $(FFLAGS) -o atlas12c.exe mod_mklinelist.o atlas12_modules.o atlas12c.o
 	$(FC) $(FFLAGS) -c synthe_module.f90
 	$(FC) $(FFLAGS) -c synthe.f90
-	$(FC) $(FFLAGS) -o synthe.exe atlas12_modules.o mod_mklinelist.o synthe_module.o synthe.o
+	$(FC) $(FFLAGS) -o synthe.exe mod_mklinelist.o atlas12_modules.o synthe_module.o synthe.o
 	mv atlas12c.exe synthe.exe $(BINDIR)/
 	rm -f *.o *.mod
 
 atlas: clean
+	$(FC) $(FFLAGS) -c mod_mklinelist.f90
 	$(FC) $(FFLAGS) -c atlas12_modules.f90
 	$(FC) $(FFLAGS) -c atlas12c.f90
-	$(FC) $(FFLAGS) -o atlas12c.exe atlas12_modules.o atlas12c.o
+	$(FC) $(FFLAGS) -o atlas12c.exe mod_mklinelist.o atlas12_modules.o atlas12c.o
 	mv atlas12c.exe $(BINDIR)/
 	rm -f *.o *.mod
 
 synthe: clean
-	$(FC) $(FFLAGS) -c atlas12_modules.f90
 	$(FC) $(FFLAGS) -c mod_mklinelist.f90
+	$(FC) $(FFLAGS) -c atlas12_modules.f90
 	$(FC) $(FFLAGS) -c synthe_module.f90
 	$(FC) $(FFLAGS) -c synthe.f90
-	$(FC) $(FFLAGS) -o synthe.exe atlas12_modules.o mod_mklinelist.o synthe_module.o synthe.o
+	$(FC) $(FFLAGS) -o synthe.exe mod_mklinelist.o atlas12_modules.o synthe_module.o synthe.o
 	mv synthe.exe $(BINDIR)/
 	rm -f *.o *.mod
 

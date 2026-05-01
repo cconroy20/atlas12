@@ -59,6 +59,21 @@ MODULE mod_mklinelist
     INTEGER  :: lim      ! wing extent index (0=widest, 6=narrowest)
   END TYPE nlte_line_t
 
+  !  Diatomic record for ATLAS12 ingestion — bare physical quantities, with
+  !  isotope (x1+x2+fudge) gf correction already applied to gflog_dex.  The
+  !  ATLAS12 SELECTLINES dispatcher packs these into the 4-INT(4) LINEREC
+  !  format and applies its own XNFDOPMAX/CENRATIO/Boltzmann filters.
+  !  molcode == 0 signals "skip" (line is for a species not in ATLAS's
+  !  diatomic stack, e.g., AlO, TiO, NaH, KH, MgO, CaO, 48CaH).
+  TYPE, PUBLIC :: diatomic_record_t
+    REAL(8) :: wlvac_nm     ! vacuum wavelength (nm)
+    REAL(8) :: gflog_dex    ! log10(gf), with (x1+x2+fudge) baked in
+    REAL(8) :: elo_cm       ! lower-level energy (cm^-1, always >= 0)
+    REAL(8) :: gammar_log   ! log10(gammar) — radiative damping
+    REAL(8) :: gammaw_log   ! log10(gammaw) — van der Waals damping
+    INTEGER :: molcode      ! ATLAS MOLCODE (one of 46 in MOLCODES table)
+  END TYPE diatomic_record_t
+
   ! --- Public module arrays and counters --------------------------------
 
   TYPE(lte_line_t),  ALLOCATABLE, PUBLIC :: lte_lines(:)
@@ -71,6 +86,7 @@ MODULE mod_mklinelist
   INTEGER, PUBLIC :: VERBOSE = 0
 
   PUBLIC :: run_mklinelist
+  PUBLIC :: read_diatomics_for_atlas
 
   ! --- Module-level ionisation potential table (replaces COMMON /potion/)
   REAL(8), SAVE :: potion(999)
@@ -1048,8 +1064,9 @@ CONTAINS
     REAL(8)          :: gammar, gammas, gammaw, gamrf, gamsf, gamwf
     REAL(4)          :: gflog, xj, xjp, fudge, x1, x2
     INTEGER          :: loggr, icode, iso, nelion, iso1, iso2
-    INTEGER          :: ios, ixwl, nbuff
+    INTEGER          :: ios, ixwl, nbuff, nbad
     CHARACTER(LEN=8) :: clabel, clabelp
+    CHARACTER(LEN=160) :: linebuf
 
     INTEGER, PARAMETER :: CHUNK = 200000
     TYPE(lte_line_t), ALLOCATABLE :: lte_buf(:)
@@ -1066,14 +1083,42 @@ CONTAINS
     lte_cap = CHUNK
     ALLOCATE(lte_buf(lte_cap))
     n_new = 0
+    nbad  = 0
 
     DO
-      READ(11, '(F10.4,F7.3,F5.1,F10.3,F5.1,F11.3,I4,A8,A8,I2,I4)', &
-           IOSTAT=ios) wl, gflog, xj, e, xjp, ep, icode, clabel, clabelp, iso, loggr
+      ! Two-stage read: pull whole line into a buffer (auto-pads short
+      ! lines, tolerates trailing junk like CRLF), then internal-read the
+      ! Kurucz molecular fixed-format columns.  Robust against per-file
+      ! quirks that trip a direct formatted read.
+      READ(11, '(A)', IOSTAT=ios) linebuf
       IF (ios .LT. 0) EXIT
       IF (ios .GT. 0) THEN
-        WRITE(6,'(a,i0)') ' ERROR: read_molec_ascii: read error near line ', n_new
+        WRITE(6,'(a,i0)') ' ERROR: read_molec_ascii: I/O error near line ', n_new
         EXIT
+      END IF
+
+      ! Skip blank lines silently.
+      IF (LEN_TRIM(linebuf) .EQ. 0) CYCLE
+
+      ! Strip trailing CR if present (handles DOS line endings).
+      BLOCK
+        INTEGER :: lt
+        lt = LEN_TRIM(linebuf)
+        IF (lt .GT. 0) THEN
+          IF (linebuf(lt:lt) .EQ. CHAR(13)) linebuf(lt:lt) = ' '
+        END IF
+      END BLOCK
+
+      READ(linebuf, '(F10.4,F7.3,F5.1,F10.3,F5.1,F11.3,I4,A8,A8,I2,I4)', &
+           IOSTAT=ios) wl, gflog, xj, e, xjp, ep, icode, clabel, clabelp, iso, loggr
+      IF (ios .NE. 0) THEN
+        nbad = nbad + 1
+        IF (nbad .LE. 3) THEN
+          WRITE(6,'(a,i0,a,a)') ' WARNING: read_molec_ascii: malformed line ', &
+            n_new + nbad, ' in ', TRIM(filename)
+          WRITE(6,'(a,a,a)')    '          [', TRIM(linebuf), ']'
+        END IF
+        CYCLE
       END IF
 
       IF (ABS(wl) .GT. wlend + 2.0D0) EXIT
@@ -1119,6 +1164,11 @@ CONTAINS
     END DO
 
     CLOSE(11)
+
+    IF (nbad .GT. 0) THEN
+      WRITE(6,'(a,i0,a,a)') ' NOTE: read_molec_ascii: skipped ', nbad, &
+        ' malformed line(s) in ', TRIM(filename)
+    END IF
 
     n_old = n_lte
     IF (n_old .GT. 0 .AND. ALLOCATED(lte_arr)) THEN
@@ -1271,131 +1321,354 @@ CONTAINS
 
 
   ! ============================================================================
-  !  MOLEC_DISPATCH — map ISO isotope index to NELION and abundance corrections
+  !  READ_DIATOMICS_FOR_ATLAS — read all per-molecule ASCII line lists in
+  !                              lines.list and emit a flat array of physical
+  !                              line records suitable for ATLAS12 packing.
+  !
+  !  Replaces the diatomicspacksrt.bin path in ATLAS12 SELECTLINES (case 4).
+  !  Iterates only over rows whose first column is "mol" and whose path does
+  !  NOT end in ".bin" (the sole .bin entry today is the TiO list, which
+  !  ATLAS12 reads via its own schwenke.bin path in case 5).
+  !
+  !  For each in-window line, applies the SYNTHE-side isotope abundance
+  !  correction (x1+x2+fudge) directly to gflog_dex.  Records with
+  !  molcode == 0 (species not in ATLAS's diatomic stack — AlO, NaH, KH,
+  !  MgO, CaO, TiO, 48CaH) are silently skipped.
+  !
+  !  The returned `recs(:)` array is unsorted; the caller is responsible for
+  !  sorting by wavelength before iterating.
+  !
+  !  wlbeg_nm, wlend_nm: vacuum-wavelength window (nm) for the synthesis grid
   ! ============================================================================
-  SUBROUTINE molec_dispatch(iso, icode, nelion, iso1, iso2, x1, x2, fudge)
+  SUBROUTINE read_diatomics_for_atlas(lines_list_path, datadir, &
+                                       wlbeg_nm, wlend_nm, recs, n_recs)
+    CHARACTER(LEN=*),                       INTENT(IN)  :: lines_list_path
+    CHARACTER(LEN=*),                       INTENT(IN)  :: datadir
+    REAL(8),                                INTENT(IN)  :: wlbeg_nm, wlend_nm
+    TYPE(diatomic_record_t), ALLOCATABLE,   INTENT(OUT) :: recs(:)
+    INTEGER,                                INTENT(OUT) :: n_recs
+
+    CHARACTER(LEN=512) :: gfall_file, predict_file, h2o_file
+    CHARACTER(LEN=512) :: mol_files(256)
+    INTEGER            :: nmol, k, plen
+    LOGICAL            :: file_exists
+
+    INTEGER, PARAMETER :: CHUNK = 200000
+    TYPE(diatomic_record_t), ALLOCATABLE :: buf(:)
+    INTEGER :: cap
+
+    n_recs = 0
+    cap    = CHUNK
+    ALLOCATE(buf(cap))
+
+    ! Parse manifest (reuses SYNTHE's parser, which already extracts the
+    ! mol_files list; non-mol entries are ignored here).
+    CALL parse_lines_list(lines_list_path, datadir, gfall_file, predict_file, &
+                          h2o_file, mol_files, nmol)
+
+    DO k = 1, nmol
+      ! Skip .bin entries — only TiO uses .bin format and that is handled
+      ! by ATLAS12's separate schwenke.bin path.
+      plen = LEN_TRIM(mol_files(k))
+      IF (plen .GE. 4) THEN
+        IF (mol_files(k)(plen-3:plen) .EQ. '.bin') CYCLE
+      END IF
+
+      INQUIRE(FILE=mol_files(k), EXIST=file_exists)
+      IF (.NOT. file_exists) THEN
+        WRITE(6,'(a,a)') ' WARNING: skipping missing molecule file: ', &
+          TRIM(mol_files(k))
+        CYCLE
+      END IF
+
+      CALL read_one_diatomic_ascii(mol_files(k), wlbeg_nm, wlend_nm, &
+                                   buf, cap, n_recs)
+    END DO
+
+    ! Trim allocation to actual size
+    IF (n_recs .GT. 0) THEN
+      ALLOCATE(recs(n_recs))
+      recs(1:n_recs) = buf(1:n_recs)
+    ELSE
+      ALLOCATE(recs(0))
+    END IF
+    DEALLOCATE(buf)
+
+  END SUBROUTINE read_diatomics_for_atlas
+
+
+  ! ============================================================================
+  !  READ_ONE_DIATOMIC_ASCII — read one per-molecule ASCII file and append
+  !                             ATLAS-format diatomic_record_t entries.
+  !
+  !  Internal helper for read_diatomics_for_atlas.  Mirrors the read loop in
+  !  read_molec_ascii but emits the physical-units record format instead of
+  !  the SYNTHE lte_line_t.  No grid-index packing here — that happens in
+  !  ATLAS12.  The (x1+x2+fudge) gf correction from molec_dispatch is baked
+  !  into gflog_dex so the caller sees a single number.
+  ! ============================================================================
+  SUBROUTINE read_one_diatomic_ascii(filename, wlbeg_nm, wlend_nm, &
+                                      buf, cap, n)
+    CHARACTER(LEN=*),                                 INTENT(IN)    :: filename
+    REAL(8),                                          INTENT(IN)    :: wlbeg_nm, wlend_nm
+    TYPE(diatomic_record_t), ALLOCATABLE,             INTENT(INOUT) :: buf(:)
+    INTEGER,                                          INTENT(INOUT) :: cap
+    INTEGER,                                          INTENT(INOUT) :: n
+
+    REAL(8)          :: wl, e, ep, wlvac, elo, gammar, gammaw
+    REAL(4)          :: gflog, xj, xjp, fudge, x1, x2
+    INTEGER          :: loggr, icode, iso, nelion, iso1, iso2, molcode
+    INTEGER          :: ios, nrec, nbad
+    CHARACTER(LEN=8) :: clabel, clabelp
+    CHARACTER(LEN=160) :: linebuf
+
+    OPEN(UNIT=11, FILE=filename, STATUS='old', ACTION='read', &
+         FORM='formatted', IOSTAT=ios)
+    IF (ios .NE. 0) THEN
+      WRITE(6,'(a,a)') 'ERROR: cannot open molecule file: ', TRIM(filename)
+      CALL EXIT(1)
+    END IF
+
+    nrec = 0
+    nbad = 0
+
+    DO
+      ! Two-stage read: pull whole line into a buffer (auto-pads short lines
+      ! and tolerates trailing junk like CRLF), then internal-read the
+      ! Kurucz molecular fixed-format columns.  Robust against per-file
+      ! quirks that trip the direct formatted read.
+      READ(11, '(A)', IOSTAT=ios) linebuf
+      IF (ios .LT. 0) EXIT
+      IF (ios .GT. 0) THEN
+        WRITE(6,'(a,a)') ' ERROR: read_one_diatomic_ascii: I/O error reading ', &
+          TRIM(filename)
+        EXIT
+      END IF
+      nrec = nrec + 1
+
+      ! Skip blank lines silently.
+      IF (LEN_TRIM(linebuf) .EQ. 0) CYCLE
+
+      ! Strip trailing CR if present (handles DOS line endings).
+      BLOCK
+        INTEGER :: lt
+        lt = LEN_TRIM(linebuf)
+        IF (lt .GT. 0) THEN
+          IF (linebuf(lt:lt) .EQ. CHAR(13)) linebuf(lt:lt) = ' '
+        END IF
+      END BLOCK
+
+      READ(linebuf, '(F10.4,F7.3,F5.1,F10.3,F5.1,F11.3,I4,A8,A8,I2,I4)', &
+           IOSTAT=ios) wl, gflog, xj, e, xjp, ep, icode, clabel, clabelp, iso, loggr
+      IF (ios .NE. 0) THEN
+        nbad = nbad + 1
+        IF (nbad .LE. 3) THEN
+          WRITE(6,'(a,i0,a,a)') ' WARNING: malformed line ', nrec, ' in ', &
+            TRIM(filename)
+          WRITE(6,'(a,a,a)')    '          [', TRIM(linebuf), ']'
+        END IF
+        CYCLE
+      END IF
+
+      IF (ABS(wl) .GT. wlend_nm + 2.0D0) EXIT
+
+      wlvac = 1.0D7 / ABS(ABS(ep) - ABS(e))
+      IF (wlvac .LT. wlbeg_nm) CYCLE
+      IF (wlvac .GT. wlend_nm) CYCLE
+
+      CALL molec_dispatch(iso, icode, nelion, iso1, iso2, x1, x2, fudge, molcode)
+      IF (molcode .EQ. 0) CYCLE
+
+      elo = MIN(ABS(e), ABS(ep))
+
+      IF (loggr .EQ. 0) THEN
+        gammar = 2.223D13 / wlvac**2
+      ELSE
+        gammar = 10.0D0**(loggr * 0.01D0)
+      END IF
+
+      IF (clabelp(1:1) .EQ. 'X') THEN
+        gammaw = 1.0D-8
+      ELSE
+        gammaw = 1.0D-7
+      END IF
+
+      IF (n .EQ. cap) CALL grow_diatomic(buf, cap)
+      n = n + 1
+      buf(n)%wlvac_nm    = wlvac
+      buf(n)%gflog_dex   = REAL(gflog,8) + REAL(x1,8) + REAL(x2,8) + REAL(fudge,8)
+      buf(n)%elo_cm      = elo
+      buf(n)%gammar_log  = LOG10(gammar)
+      buf(n)%gammaw_log  = LOG10(gammaw)
+      buf(n)%molcode     = molcode
+    END DO
+
+    CLOSE(11)
+
+    IF (nbad .GT. 0) THEN
+      WRITE(6,'(a,i0,a,a)') ' NOTE: skipped ', nbad, &
+        ' malformed line(s) in ', TRIM(filename)
+    END IF
+
+  END SUBROUTINE read_one_diatomic_ascii
+
+
+  ! ============================================================================
+  !  GROW_DIATOMIC — geometric reallocation helper for diatomic_record_t buffer
+  ! ============================================================================
+  SUBROUTINE grow_diatomic(buf, cap)
+    TYPE(diatomic_record_t), ALLOCATABLE, INTENT(INOUT) :: buf(:)
+    INTEGER,                              INTENT(INOUT) :: cap
+    TYPE(diatomic_record_t), ALLOCATABLE                :: tmp(:)
+    INTEGER :: new_cap
+    new_cap = MAX(cap * 2, cap + 200000)
+    ALLOCATE(tmp(new_cap))
+    tmp(1:cap) = buf(1:cap)
+    CALL MOVE_ALLOC(tmp, buf)
+    cap = new_cap
+  END SUBROUTINE grow_diatomic
+
+
+  ! ============================================================================
+  !  MOLEC_DISPATCH — map ISO isotope index to NELION and abundance corrections
+  !
+  !  Optional output `molcode` provides the ATLAS-side 4-digit MOLCODE used by
+  !  ATLAS12 SELECTLINES for diatomic line dispatch (one of 46 entries in the
+  !  ATLAS MOLCODES/ISOX tables).  Returns 0 for cases not present in the
+  !  ATLAS diatomic stack (AlO, NaH, KH, MgO, CaO, TiO, 48CaH, and any
+  !  unmatched DEFAULT).  ATLAS callers should treat molcode==0 as "skip line".
+  ! ============================================================================
+  SUBROUTINE molec_dispatch(iso, icode, nelion, iso1, iso2, x1, x2, fudge, molcode)
     INTEGER, INTENT(IN)  :: iso, icode
     INTEGER, INTENT(OUT) :: nelion, iso1, iso2
     REAL(4), INTENT(OUT) :: x1, x2, fudge
+    INTEGER, INTENT(OUT), OPTIONAL :: molcode
+
+    INTEGER :: mc
 
     nelion = 0; iso1 = 0; iso2 = 0; x1 = 0.0; x2 = 0.0; fudge = 0.0
+    mc = 0
 
     SELECT CASE (iso)
-    CASE (1);   nelion=240; iso1=1;  iso2=1;  x1= 0.0;    x2=-5.0
-    CASE (2);   nelion=240; iso1=1;  iso2=2;  x1= 0.0;    x2=-4.469
+    CASE (1);   nelion=240; iso1=1;  iso2=1;  x1= 0.0;    x2=-5.0    ; mc=8410
+    CASE (2);   nelion=240; iso1=1;  iso2=2;  x1= 0.0;    x2=-4.469  ; mc=8411
     CASE (12)
       SELECT CASE (icode)
-      CASE (606); nelion=264; iso1=12; iso2=12; x1=-.005; x2=-.005
-      CASE (608); nelion=276; iso1=12; iso2=16; x1=-.005; x2=-.001
-      CASE (106); nelion=246; iso1=1;  iso2=12; x1= 0.0;  x2=-.005
+      CASE (606); nelion=264; iso1=12; iso2=12; x1=-.005; x2=-.005   ; mc=8680
+      CASE (608); nelion=276; iso1=12; iso2=16; x1=-.005; x2=-.001   ; mc=8700
+      CASE (106); nelion=246; iso1=1;  iso2=12; x1= 0.0;  x2=-.005   ; mc=8460
       CASE DEFAULT
-                  nelion=270; iso1=12; iso2=14; x1=-.005; x2=-.002
+                  nelion=270; iso1=12; iso2=14; x1=-.005; x2=-.002   ; mc=8690
       END SELECT
     CASE (13)
       SELECT CASE (icode)
-      CASE (606); nelion=264; iso1=12; iso2=13; x1=-.005;  x2=-1.955
-      CASE (608); nelion=276; iso1=13; iso2=16; x1=-1.955; x2=-.001
-      CASE (106); nelion=246; iso1=1;  iso2=13; x1= 0.0;   x2=-1.955
+      CASE (606); nelion=264; iso1=12; iso2=13; x1=-.005;  x2=-1.955 ; mc=8681
+      CASE (608); nelion=276; iso1=13; iso2=16; x1=-1.955; x2=-.001  ; mc=8701
+      CASE (106); nelion=246; iso1=1;  iso2=13; x1= 0.0;   x2=-1.955 ; mc=8461
       CASE DEFAULT
-                  nelion=270; iso1=13; iso2=14; x1=-1.955; x2=-.002
+                  nelion=270; iso1=13; iso2=14; x1=-1.955; x2=-.002  ; mc=8691
       END SELECT
-    CASE (14);  nelion=252; iso1=1;  iso2=14; x1= 0.0;   x2=-.002
+    CASE (14);  nelion=252; iso1=1;  iso2=14; x1= 0.0;   x2=-.002    ; mc=8470
     CASE (15)
       IF (icode .EQ. 607) THEN
-                  nelion=270; iso1=12; iso2=15; x1=-.005; x2=-2.444
-      ELSE;       nelion=252; iso1=1;  iso2=15; x1= 0.0;  x2=-2.444
+                  nelion=270; iso1=12; iso2=15; x1=-.005; x2=-2.444  ; mc=8692
+      ELSE;       nelion=252; iso1=1;  iso2=15; x1= 0.0;  x2=-2.444  ; mc=8471
       END IF
     CASE (16)
       IF (icode .EQ. 813) THEN
-                  nelion=324; iso1=27; iso2=16; x1= 0.0;  x2=-.001
-      ELSE;       nelion=258; iso1=1;  iso2=16; x1= 0.0;  x2=-.001
+                  nelion=324; iso1=27; iso2=16; x1= 0.0;  x2=-.001   ! AlO: not in ATLAS
+      ELSE;       nelion=258; iso1=1;  iso2=16; x1= 0.0;  x2=-.001   ; mc=8480
       END IF
     CASE (17)
       IF (icode .EQ. 813) THEN
-                  nelion=324; iso1=27; iso2=17; x1= 0.0;  x2=-3.398
+                  nelion=324; iso1=27; iso2=17; x1= 0.0;  x2=-3.398  ! AlO: not in ATLAS
       ELSE;       nelion=276; iso1=12; iso2=17; x1=-.005; x2=-3.398
+                  ! 12C17O: ATLAS has 8702 entry; default branch here is CO
+                  mc=8702
       END IF
     CASE (18)
       SELECT CASE (icode)
-      CASE (814); nelion=330; iso1=28; iso2=18; x1=-.035; x2=-2.690
-      CASE (608); nelion=276; iso1=12; iso2=18; x1=-.005; x2=-2.690
-      CASE (813); nelion=324; iso1=27; iso2=18; x1= 0.0;  x2=-2.690
+      CASE (814); nelion=330; iso1=28; iso2=18; x1=-.035; x2=-2.690  ; mc=8896
+      CASE (608); nelion=276; iso1=12; iso2=18; x1=-.005; x2=-2.690  ; mc=8704
+      CASE (813); nelion=324; iso1=27; iso2=18; x1= 0.0;  x2=-2.690  ! AlO: not in ATLAS
       CASE DEFAULT
-                  nelion=258; iso1=1;  iso2=18; x1= 0.0;  x2=-2.690
+                  nelion=258; iso1=1;  iso2=18; x1= 0.0;  x2=-2.690  ; mc=8482
       END SELECT
-    CASE (23);  nelion=492; iso1=1;  iso2=23; x1= 0.0;   x2= 0.0
+    CASE (23);  nelion=492; iso1=1;  iso2=23; x1= 0.0;   x2= 0.0     ! NaH: not in ATLAS
     CASE (24)
       IF (icode .EQ. 812) THEN
-                  nelion=318; iso1=16; iso2=24; x1=-.001; x2=-.102
-      ELSE;       nelion=300; iso1=1;  iso2=24; x1= 0.0;  x2=-.105
+                  nelion=318; iso1=16; iso2=24; x1=-.001; x2=-.102   ! MgO: not in ATLAS
+      ELSE;       nelion=300; iso1=1;  iso2=24; x1= 0.0;  x2=-.105   ; mc=8510
       END IF
     CASE (25)
       IF (icode .EQ. 812) THEN
-                  nelion=318; iso1=16; iso2=25; x1=-.001; x2=-1.000
-      ELSE;       nelion=300; iso1=1;  iso2=25; x1= 0.0;  x2=-.996
+                  nelion=318; iso1=16; iso2=25; x1=-.001; x2=-1.000  ! MgO: not in ATLAS
+      ELSE;       nelion=300; iso1=1;  iso2=25; x1= 0.0;  x2=-.996   ; mc=8511
       END IF
     CASE (26)
       IF (icode .EQ. 812) THEN
-                  nelion=318; iso1=16; iso2=26; x1=-.001; x2=-.958
-      ELSE;       nelion=300; iso1=1;  iso2=26; x1= 0.0;  x2=-.947
+                  nelion=318; iso1=16; iso2=26; x1=-.001; x2=-.958   ! MgO: not in ATLAS
+      ELSE;       nelion=300; iso1=1;  iso2=26; x1= 0.0;  x2=-.947   ; mc=8512
       END IF
     CASE (28)
       IF (icode .EQ. 814) THEN
-                  nelion=330; iso1=28; iso2=16; x1=-.035; x2=-.001
-      ELSE;       nelion=312; iso1=1;  iso2=28; x1= 0.0;  x2=-.035
+                  nelion=330; iso1=28; iso2=16; x1=-.035; x2=-.001   ; mc=8890
+      ELSE;       nelion=312; iso1=1;  iso2=28; x1= 0.0;  x2=-.035   ; mc=8530
       END IF
     CASE (29)
       IF (icode .EQ. 814) THEN
-                  nelion=330; iso1=29; iso2=16; x1=-1.328; x2=-.001
-      ELSE;       nelion=312; iso1=1;  iso2=29; x1= 0.0;   x2=-1.331
+                  nelion=330; iso1=29; iso2=16; x1=-1.328; x2=-.001  ; mc=8891
+      ELSE;       nelion=312; iso1=1;  iso2=29; x1= 0.0;   x2=-1.331 ; mc=8531
       END IF
     CASE (30)
       IF (icode .EQ. 814) THEN
-                  nelion=330; iso1=30; iso2=16; x1=-1.510; x2=-.001
-      ELSE;       nelion=312; iso1=1;  iso2=30; x1= 0.0;   x2=-1.516
+                  nelion=330; iso1=30; iso2=16; x1=-1.510; x2=-.001  ; mc=8892
+      ELSE;       nelion=312; iso1=1;  iso2=30; x1= 0.0;   x2=-1.516 ; mc=8532
       END IF
-    CASE (33);  nelion=264; iso1=13; iso2=13; x1=-1.955; x2=-1.955
-    CASE (39);  nelion=498; iso1=39; iso2=1;  x1=-.030;  x2= 0.0
+    CASE (33);  nelion=264; iso1=13; iso2=13; x1=-1.955; x2=-1.955   ; mc=8682
+    CASE (39);  nelion=498; iso1=39; iso2=1;  x1=-.030;  x2= 0.0     ! KH: not in ATLAS
     CASE (40)
       IF (icode .EQ. 820) THEN
-                  nelion=354; iso1=40; iso2=16; x1=-.013; x2=-.001
-      ELSE;       nelion=342; iso1=40; iso2=1;  x1=-.013; x2= 0.0
+                  nelion=354; iso1=40; iso2=16; x1=-.013; x2=-.001   ! CaO: not in ATLAS
+      ELSE;       nelion=342; iso1=40; iso2=1;  x1=-.013; x2= 0.0    ; mc=8580
       END IF
-    CASE (41);  nelion=498; iso1=41; iso2=1;  x1=-1.172; x2= 0.0
-    CASE (42);  nelion=342; iso1=42; iso2=1;  x1=-2.189; x2= 0.0
-    CASE (43);  nelion=342; iso1=43; iso2=1;  x1=-2.870; x2= 0.0
-    CASE (44);  nelion=342; iso1=44; iso2=1;  x1=-1.681; x2= 0.0
+    CASE (41);  nelion=498; iso1=41; iso2=1;  x1=-1.172; x2= 0.0     ! KH: not in ATLAS
+    CASE (42);  nelion=342; iso1=42; iso2=1;  x1=-2.189; x2= 0.0     ; mc=8581
+    CASE (43);  nelion=342; iso1=43; iso2=1;  x1=-2.870; x2= 0.0     ; mc=8582
+    CASE (44);  nelion=342; iso1=44; iso2=1;  x1=-1.681; x2= 0.0     ; mc=8583
     CASE (46)
       IF (icode .EQ. 120) THEN
-                  nelion=342; iso1=46; iso2=1;  x1=-4.398; x2= 0.0
-      ELSE;       nelion=366; iso1=16; iso2=46; x1= 0.0;   x2=-1.101
+                  nelion=342; iso1=46; iso2=1;  x1=-4.398; x2= 0.0   ; mc=8584
+      ELSE;       nelion=366; iso1=16; iso2=46; x1= 0.0;   x2=-1.101 ! TiO: not in ATLAS
       END IF
-    CASE (47);  nelion=366; iso1=16; iso2=47; x1= 0.0;   x2=-1.138
+    CASE (47);  nelion=366; iso1=16; iso2=47; x1= 0.0;   x2=-1.138   ! TiO: not in ATLAS
     CASE (48)
       IF (icode .EQ. 120) THEN
-                  nelion=342; iso1=48; iso2=1;  x1=-2.728; x2= 0.0
-      ELSE;       nelion=366; iso1=16; iso2=48; x1= 0.0;   x2=-.131
+                  nelion=342; iso1=48; iso2=1;  x1=-2.728; x2= 0.0   ! 48CaH: not in ATLAS
+      ELSE;       nelion=366; iso1=16; iso2=48; x1= 0.0;   x2=-.131  ! TiO: not in ATLAS
       END IF
-    CASE (49);  nelion=366; iso1=16; iso2=49; x1= 0.0;   x2=-1.259
+    CASE (49);  nelion=366; iso1=16; iso2=49; x1= 0.0;   x2=-1.259   ! TiO: not in ATLAS
     CASE (50)
       IF (icode .EQ. 124) THEN
-                  nelion=432; iso1=50; iso2=1;  x1=-1.362; x2= 0.0
-      ELSE;       nelion=366; iso1=16; iso2=50; x1= 0.0;   x2=-1.272
+                  nelion=432; iso1=50; iso2=1;  x1=-1.362; x2= 0.0   ; mc=8620
+      ELSE;       nelion=366; iso1=16; iso2=50; x1= 0.0;   x2=-1.272 ! TiO: not in ATLAS
       END IF
-    CASE (51);  nelion=372; iso1=16; iso2=51; x1= 0.0;   x2=-.001
-    CASE (52);  nelion=432; iso1=52; iso2=1;  x1=-.077;  x2= 0.0
-    CASE (53);  nelion=432; iso1=53; iso2=1;  x1=-1.022; x2= 0.0
+    CASE (51);  nelion=372; iso1=16; iso2=51; x1= 0.0;   x2=-.001    ; mc=8960
+    CASE (52);  nelion=432; iso1=52; iso2=1;  x1=-.077;  x2= 0.0     ; mc=8621
+    CASE (53);  nelion=432; iso1=53; iso2=1;  x1=-1.022; x2= 0.0     ; mc=8622
     CASE (54)
       IF (icode .EQ. 124) THEN
-                  nelion=432; iso1=54; iso2=1;  x1=-1.626; x2= 0.0
-      ELSE;       nelion=444; iso1=54; iso2=1;  x1=-1.237; x2= 0.0
+                  nelion=432; iso1=54; iso2=1;  x1=-1.626; x2= 0.0   ; mc=8623
+      ELSE;       nelion=444; iso1=54; iso2=1;  x1=-1.237; x2= 0.0   ; mc=8640
       END IF
-    CASE (56);  nelion=444; iso1=56; iso2=1;  x1=-.038;  x2= 0.0
-    CASE (57);  nelion=444; iso1=57; iso2=1;  x1=-1.658; x2= 0.0
-    CASE (58);  nelion=444; iso1=58; iso2=1;  x1=-2.553; x2= 0.0
+    CASE (56);  nelion=444; iso1=56; iso2=1;  x1=-.038;  x2= 0.0     ; mc=8641
+    CASE (57);  nelion=444; iso1=57; iso2=1;  x1=-1.658; x2= 0.0     ; mc=8642
+    CASE (58);  nelion=444; iso1=58; iso2=1;  x1=-2.553; x2= 0.0     ; mc=8643
     CASE DEFAULT
       nelion = 0
     END SELECT
+
+    IF (PRESENT(molcode)) molcode = mc
   END SUBROUTINE molec_dispatch
 
 

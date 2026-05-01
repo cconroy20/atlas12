@@ -912,6 +912,7 @@ MODULE mod_atlas_data
   USE mod_parameters
   USE mod_constants
   USE mod_partition_functions
+  USE mod_mklinelist, only: read_diatomics_for_atlas, diatomic_record_t
   IMPLICIT NONE
   SAVE
 
@@ -1394,6 +1395,68 @@ CONTAINS
     pair(1) = IGS; pair(2) = IGW
     III(4) = TRANSFER(pair, III(4))
   END SUBROUTINE PACK_LINEDATA
+
+
+  ! Indirect sort by integer key.  Reorders order(:) in place such that
+  ! keys(order(1:n)) is non-decreasing, and additionally rewrites keys(:)
+  ! to be the sorted-key sequence so the caller can index keys(ii) for
+  ! the i-th sorted entry.  Uses heapsort for O(N log N) worst case and
+  ! no stack pressure regardless of input distribution.
+  SUBROUTINE sort_indirect_by_int(keys, order, n)
+    INTEGER, INTENT(INOUT) :: keys(:)
+    INTEGER, INTENT(INOUT) :: order(:)
+    INTEGER, INTENT(IN)    :: n
+    INTEGER :: i, parent, child, root, k_tmp, o_tmp
+
+    IF (n .LE. 1) RETURN
+
+    ! Build max-heap.
+    DO i = n / 2, 1, -1
+      root   = i
+      parent = root
+      DO
+        child = 2 * parent
+        IF (child .GT. n) EXIT
+        IF (child + 1 .LE. n) THEN
+          IF (keys(child + 1) .GT. keys(child)) child = child + 1
+        END IF
+        IF (keys(parent) .GE. keys(child)) EXIT
+        k_tmp = keys(parent)
+        keys(parent) = keys(child)
+        keys(child) = k_tmp
+        o_tmp = order(parent)
+        order(parent) = order(child)
+        order(child) = o_tmp
+        parent = child
+      END DO
+    END DO
+
+    ! Extract max one at a time.
+    DO i = n, 2, -1
+      k_tmp    = keys(1)
+      keys(1)  = keys(i)
+      keys(i)  = k_tmp
+      o_tmp    = order(1)
+      order(1) = order(i)
+      order(i) = o_tmp
+      parent = 1
+      DO
+        child = 2 * parent
+        IF (child .GT. i - 1) EXIT
+        IF (child + 1 .LE. i - 1) THEN
+          IF (keys(child + 1) .GT. keys(child)) child = child + 1
+        END IF
+        IF (keys(parent) .GE. keys(child)) EXIT
+        k_tmp = keys(parent)
+        keys(parent) = keys(child)
+        keys(child) = k_tmp
+        o_tmp = order(parent)
+        order(parent) = order(child)
+        order(child) = o_tmp
+        parent = child
+      END DO
+    END DO
+  END SUBROUTINE sort_indirect_by_int
 
   ! Pack variables into LINEPARAM(4) matching F77 COMMON /LINEPARAM/ layout:
   ! LINEPARAM(1) = WLVAC (REAL*8)
@@ -2173,8 +2236,8 @@ SUBROUTINE TCORR(MODE, RCOWT)
   END DO
 
   ! Floor temperature options
-  ! various opacity tables only extend to 2000K
-   T = max(T, 2000.0D0)
+  ! various opacity tables only extend to 2000K (extrapolated below)
+   T = max(T, 1500.0D0)
   ! T(J) = max(T(J),0.7*TEFF)
 
   !---------------------------------------------------------------------
@@ -15266,70 +15329,132 @@ SUBROUTINE SELECTLINES
   CLOSE(UNIT=21)
 
   !=====================================================================
-  ! (4) DIATOMICS (unit 31)
+  ! (4) DIATOMICS — per-molecule ASCII files via lines.list manifest
   !=====================================================================
-  769 OPEN(UNIT=31, FILE=trim(DATADIR)//'diatomicspacksrt.bin', &
-       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', ERR=869)
-  NU = 1
-  MOLCODEOLD = 0
-  IMOL = 0
+  ! Replaces the legacy diatomicspacksrt.bin path with a unified read of
+  ! the same per-molecule ASCII line lists used by SYNTHE.  Records are
+  ! collected in physical units, sorted by integer wavelength index, then
+  ! packed into LINEREC and filtered by the existing XNFDOPMAX/CENRATIO/
+  ! Boltzmann criteria.
+  !
+  ! Note: 4 doubly-substituted MOLCODES (8481/17OH, 8693/13C15N,
+  ! 8703/13C17O, 8705/13C18O) cannot be produced by this path because the
+  ! SYNTHE ASCII format encodes only one isotopologue index per line.
+  ! Their contribution is negligible.  See conversation with author for
+  ! the design rationale.
+  !=====================================================================
+  769 CONTINUE
+  BLOCK
+    TYPE(diatomic_record_t), ALLOCATABLE :: drecs(:)
+    INTEGER, ALLOCATABLE :: order(:)
+    INTEGER, ALLOCATABLE :: keys(:)
+    INTEGER :: ndia, ii, jj
+    INTEGER :: IWL_LOC, IELION_LOC
+    REAL(8) :: WLVAC_LOC, GFLOG_LOC, GR_LOC, GW_LOC
 
-  DO LINE = 1, MAX_LINES
-    READ(31, END=781) LINEREC
-    CALL UNPACK_LINEDATA(LINEREC)
+    CALL read_diatomics_for_atlas( &
+      lines_list_path = TRIM(DATADIR)//'lines.list', &
+      datadir         = TRIM(DATADIR), &
+      wlbeg_nm        = WAVETAB(1), &
+      wlend_nm        = WAVETAB(NWAVE), &
+      recs            = drecs, &
+      n_recs          = ndia)
 
-    DO WHILE (IWL .GE. IWAVETAB(NU))
-      FREQ = CLIGHT_NMS / WAVETAB(NU)
-      ! (FREQ removed — using FREQ directly)
-      NU = NU + 1
+    IF (ndia .EQ. 0) THEN
+      WRITE(6, '(A)') '          0 LINES FROM DIATOMICS (no lines.list or empty)'
+      DEALLOCATE(drecs)
+      GOTO 869
+    END IF
+
+    ! Sort records by IWL (log-wavelength index) ascending.  Use indirect
+    ! sort to avoid moving the records themselves; downstream loop indexes
+    ! drecs(order(ii)).
+    ALLOCATE(keys(ndia), order(ndia))
+    DO ii = 1, ndia
+      keys(ii)  = NINT(LOG(drecs(ii)%wlvac_nm) / RATIOLG)
+      order(ii) = ii
     END DO
+    CALL sort_indirect_by_int(keys, order, ndia)
 
-    MOLCODE = abs(IELION)
-    KGFLOG = IGFLOG
-    IGS = 1
+    NU            = 1
+    MOLCODEOLD    = 0
+    IMOL          = 0
 
-    ! Look up molecular species code (cache last match)
-    IF (MOLCODE .NE. MOLCODEOLD) THEN
-      MOLCODEOLD = MOLCODE
-      IMOL = 0
-      DO K = 1, NMOL
-        IF (MOLCODE .EQ. MOLCODES(K)) THEN
-          IMOL = K
-          EXIT
-        END IF
+    DO ii = 1, ndia
+      jj = order(ii)
+      WLVAC_LOC = drecs(jj)%wlvac_nm
+      IWL_LOC   = keys(ii)              ! already sorted, == keys(ii)
+
+      ! Advance NU through the wavelength grid (matches legacy DO WHILE).
+      DO WHILE (IWL_LOC .GE. IWAVETAB(NU))
+        FREQ = CLIGHT_NMS / WAVETAB(NU)
+        NU = NU + 1
       END DO
-      IF (IMOL .EQ. 0) THEN
-        WRITE(6, '(9I12)') LINE, LINEREC
+
+      MOLCODE = drecs(jj)%molcode
+
+      ! Look up species index (cache last match).
+      IF (MOLCODE .NE. MOLCODEOLD) THEN
+        MOLCODEOLD = MOLCODE
+        IMOL = 0
+        DO K = 1, NMOL
+          IF (MOLCODE .EQ. MOLCODES(K)) THEN
+            IMOL = K
+            EXIT
+          END IF
+        END DO
+        IF (IMOL .EQ. 0) THEN
+          WRITE(6, '(A,I6)') ' SELECTLINES: unknown diatomic MOLCODE ', MOLCODE
+          CALL EXIT(1)
+        END IF
+      END IF
+
+      ! Pack physical quantities into LINEREC scaled-integer fields.
+      !
+      ! IGFLOG encoding subtracts ISOX(IMOL)/1000 so that the existing
+      ! line `IGFLOG = max(KGFLOG + ISOX(IMOL), 1)` below restores the
+      ! SYNTHE-side gflog + (x1+x2+fudge) physical value.
+      GFLOG_LOC = drecs(jj)%gflog_dex - ISOX(IMOL) * 1.0D-3
+      GR_LOC    = drecs(jj)%gammar_log
+      GW_LOC    = drecs(jj)%gammaw_log
+
+      IELION_LOC = MOLCODE   ! sign convention: positive (downstream uses abs)
+
+      ! Stuff module-scope LINEREC fields used by PACK_LINEDATA.
+      IWL    = IWL_LOC
+      IELION = IELION_LOC
+      IELO   = NINT(LOG10(MAX(drecs(jj)%elo_cm, 1.0D-10)) * 1000.0D0 + 16384.0D0)
+      IGFLOG = NINT(GFLOG_LOC                              * 1000.0D0 + 16384.0D0)
+      IGR    = NINT(GR_LOC                                 * 1000.0D0 + 16384.0D0)
+      IGS    = 1
+      IGW    = NINT(GW_LOC                                 * 1000.0D0 + 16384.0D0)
+
+      ! Apply selection filters (mirrors legacy case-4 logic).
+      KGFLOG = IGFLOG
+      IGFLOG = max(KGFLOG + ISOX(IMOL), 1)
+      NELION = abs(IELION / 10)
+      IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
+      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+      IF (CENRATIO .LT. 1.0D0) CYCLE
+      tablog8 = TABLOG(IELO)
+      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+
+      CALL PACK_LINEDATA(LINEREC)
+      NLINES_STORED = NLINES_STORED + 1
+      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
         CALL EXIT(1)
       END IF
-    END IF
+      LINEDATA(:, NLINES_STORED) = LINEREC
+      IF (mod(ii, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+        WRITE(6, '(8I15)') ii, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+      N32 = N32 + 1
+    END DO
 
-    ! Apply isotope gf correction
-    IGFLOG = max(KGFLOG + ISOX(IMOL), 1)
+    DEALLOCATE(drecs, keys, order)
+  END BLOCK
 
-    NELION = abs(IELION / 10)
-    IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    IF (CENRATIO .LT. 1.0D0) CYCLE
-    tablog8 = TABLOG(IELO)
-    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-    CALL PACK_LINEDATA(LINEREC)
-    NLINES_STORED = NLINES_STORED + 1
-    IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      CALL EXIT(1)
-    END IF
-    LINEDATA(:, NLINES_STORED) = LINEREC
-    IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-    N32 = N32 + 1
-  END DO
-  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading DIATOMICS'
-  CALL EXIT(1)
-
-  781 WRITE(6, '(I12,A)') N32, ' LINES FROM DIATOMICS'
-  CLOSE(UNIT=31)
+  WRITE(6, '(I12,A)') N32, ' LINES FROM DIATOMICS'
 
   !=====================================================================
   ! (5) TiO (unit 41)
