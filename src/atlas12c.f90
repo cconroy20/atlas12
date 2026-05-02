@@ -193,7 +193,6 @@ PROGRAM ATLAS12
 
   OPEN(UNIT=7,  FILE=TRIM(OUTBASE)//'.atm',   STATUS='REPLACE')
   OPEN(UNIT=8,  FILE=TRIM(OUTBASE)//'.flux',  STATUS='REPLACE')
-  OPEN(UNIT=50, FILE=TRIM(OUTBASE)//'.taunu', STATUS='REPLACE')
   OPEN(UNIT=66, FILE=TRIM(OUTBASE)//'.iter',  STATUS='REPLACE')
   OPEN(UNIT=67, FILE=TRIM(OUTBASE)//'.tcorr', STATUS='REPLACE')
 
@@ -361,6 +360,26 @@ PROGRAM ATLAS12
         ! CHARGESQ ~ 2*n_e.  NELECT recomputes this self-consistently.
         CHARGESQ = XNE * 2.0D0
     END IF
+
+    ! --- Echo run parameters (resolved values after CLI/model merge) ---
+    ! Mirrors SYNTHE's input-echo style.  All values are final at this
+    ! point; the (CLI override) tag flags parameters whose value came from
+    ! the command line rather than the model file.
+    WRITE(6,*) ''
+    WRITE(6,'(A,A)')     '  Input model      = ', TRIM(INPUT_MODEL_FILE)
+    WRITE(6,'(A,A)')     '  Output basename  = ', TRIM(OUTBASE)
+    WRITE(6,'(A,I5)')    '  numit            = ', NUMITS
+    WRITE(6,'(A,F5.2)')  '  mlt              = ', MIXLTH
+    WRITE(6,'(A,F5.2)')  '  vturb (km/s)     = ', VTURB(1) * 1.0D-5
+    WRITE(6,'(A,I5)')    '  teff (K)         = ', INT(TEFF)
+    WRITE(6,'(A,F5.2)')  '  logg             = ', GLOG
+    IF (CMD_ZSCALE .GT. 0.0D0) &
+      WRITE(6,'(A,F5.2,A)') '  zscale           = ', CMD_ZSCALE, '   (CLI override)'
+    IF (CMD_HEABND .GT. 0.0D0) &
+      WRITE(6,'(A,F5.2,A)') '  He abundance     = ', CMD_HEABND, '   (CLI override)'
+    IF (LEN_TRIM(ABUND_FILE) .GT. 0) &
+      WRITE(6,'(A,A)')       '  Abundance file   = ', TRIM(ABUND_FILE)
+    WRITE(6,*) ''
 
     ! --- Zero out number densities and Doppler widths for all species ---
     XNF    = 0.0D0
@@ -606,9 +625,8 @@ PROGRAM ATLAS12
         CALL PUTOUT(5)
 
         CALL SYSTEM_CLOCK(CLOCK_END)
-        WRITE(6, '(A,I3,A,F8.1,A)') ' ITERATION ', ITERAT, ' completed in ', &
-             DBLE(CLOCK_END - CLOCK_START) / DBLE(CLOCK_RATE), ' seconds'
-        WRITE(6,*)
+        WRITE(6, '(A,I2,A,I3,A)') ' Iteration ', ITERAT, ' completed in ', &
+             INT(DBLE(CLOCK_END - CLOCK_START) / DBLE(CLOCK_RATE)), ' seconds'
         FLUSH(6)
 
       END IF

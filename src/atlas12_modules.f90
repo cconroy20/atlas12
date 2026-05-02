@@ -1050,6 +1050,13 @@ MODULE mod_atlas_data
   ! --- Iteration control ---
   INTEGER :: ITER, ifprnt(60) = 2, ifpnch(60) = 0, NUMITS = 0
 
+  ! Threshold for printing convergence-failure warnings inside iterative
+  ! routines (TTAUP, CONVEC, etc.).  On the first few ATLAS iterations the
+  ! ROSSTAB opacity table is sparse and inner fixed-point iterations
+  ! routinely fail to converge, but those failures resolve themselves as
+  ! the table populates.  We suppress warnings while ITER < this value.
+  INTEGER, PARAMETER :: WARN_AFTER_ITER = 3
+
   ! --- Title and header data ---
   CHARACTER(1) :: TITLE(74) = ' '
   REAL(8)  :: XSCALE = 1.0d0
@@ -1611,9 +1618,6 @@ SUBROUTINE PUTOUT(MODE)
 401     FORMAT(I6, F10.3, 1PE13.4, 0PF12.5, F10.3, 1PE20.6, E13.4, &
           0PF12.5, F10.3, I6, F6.2, I6)
 
-        ! Write tau(nu) profile to diagnostic file (unit 50)
-        WRITE(50, "(I6,F12.3,(100F10.4))") NU, WAVE, &
-          (log10(TAUNU(J)), J=1,NRHOX)
       END IF
 
       ! --- Intensity output format (IFSURF = 2) ---
@@ -3684,6 +3688,8 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
   REAL(8),  PARAMETER :: OPACITY_REBOOT = 2.0D0    ! opacity ratio triggering surface redo
   INTEGER, PARAMETER :: RELAX_TRIGGER  = 4        ! stall count before under-relaxation
   REAL(8),  PARAMETER :: RELAX_FACTOR   = 0.3D0    ! relaxation weight when oscillating
+  ! Note: WARN_AFTER_ITER (used to gate the corrector-failure warning) is
+  ! a module-level PARAMETER in mod_atlas_data, shared with CONVEC.
 
   ! --- Local variables ---
   REAL(8)  :: DLGTAU              ! log spacing: ln(TAU(2)/TAU(1))
@@ -3819,8 +3825,9 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
       IF (N .GT. MAX_CORRECTOR) EXIT
     END DO
 
-    ! Warn on convergence failure
-    IF (.NOT. CONVERGED) THEN
+    ! Warn on convergence failure (suppressed during the first
+    ! WARN_AFTER_ITER-1 iterations while ROSSTAB is filling up).
+    IF (.NOT. CONVERGED .AND. ITER .GE. WARN_AFTER_ITER .AND. J .GE. 3) THEN
       WRITE(6, '(A,I4,A,ES10.3,A,I5)') &
         ' TTAUP WARNING: corrector did not converge at J=', J, &
         ', error=', ERROR, ', iter=', N
@@ -4146,10 +4153,10 @@ SUBROUTINE READIN(MODE)
     IF (ABUND(IZ) .GT. 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
   END DO
   ! Write abbreviated list of abundances
-  WRITE(6, '(/" TEFF",F7.0,"   LOGG",F8.4/' // &
-       '"   1",A2,F10.6,"     2",A2,F10.6/(5(I4,A2,F7.2,F5.2)))') &
-       TEFF, GLOG, ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
-     (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,32)
+  !WRITE(6, '(/" TEFF",F7.0,"   LOGG",F8.4/' // &
+  !     '"   1",A2,F10.6,"     2",A2,F10.6/(5(I4,A2,F7.2,F5.2)))') &
+  !     TEFF, GLOG, ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
+  !   (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,32)
   DO J = 1, NRHOX
     DO IZ = 3, 99
       XABUND(J,IZ) = 10.0D0**(ABUND(IZ) + XRELATIVE(IZ))
@@ -4177,13 +4184,6 @@ SUBROUTINE READIN(MODE)
     IF (IFTURB .GT. 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
     CHARGESQ(J) = XNE(J)
   END DO
-
-  IF (IFSYNTHE.EQ.0) THEN
-     !only write if running atlas12
-     WRITE(6, *)
-     WRITE(6, '(" NUMITS",I3,"  IFPRNT",*(I2))') NUMITS, IFPRNT(1:NUMITS)
-     WRITE(6, '(10X,"  IFPNCH",*(I2))') IFPNCH(1:NUMITS)
-  ENDIF
 
   ! Auto-generate title from mixing length
   BLOCK
@@ -6957,6 +6957,20 @@ SUBROUTINE CONVEC
   INTEGER :: ITS30         ! max opacity iterations (30 or 1)
   INTEGER :: IDELTAT       ! opacity iteration counter
 
+  ! --- Adaptive relaxation in the DELTAT iteration ---
+  ! When the linearized fixed-point map has eigenvalue more negative than
+  ! about -1.85 (a steep ionization-edge transition can produce this),
+  ! the default 0.7/0.3 mix admits a stable two-cycle that never decays.
+  ! We detect three consecutive sign-flips of (DELTAT_new - OLDDELT) and
+  ! switch to a tighter 0.2/0.8 mix, which damps eigenvalues out to ~ -9.
+  REAL(8),  PARAMETER :: OMEGA_DEFAULT  = 0.7D0   ! default new/old weight
+  REAL(8),  PARAMETER :: OMEGA_DAMPED   = 0.2D0   ! tighter weight when triggered
+  INTEGER, PARAMETER :: FLIP_TRIGGER   = 3       ! consecutive sign flips to trigger
+  REAL(8)  :: OMEGA                    ! current relaxation weight
+  REAL(8)  :: DSTEP, PREV_DSTEP        ! signed step (DELTAT_new - OLDDELT) per iter
+  INTEGER :: NFLIP                    ! consecutive sign-flip count
+  LOGICAL :: TRIGGERED                ! has stronger damping been engaged?
+
   ! --- Local scalars: overshooting ---
   REAL(8)  :: WTCNV         ! overshooting weight
   REAL(8)  :: CNV1(1), CNV2(1)    ! interpolated integrated fluxes
@@ -7109,6 +7123,12 @@ SUBROUTINE CONVEC
     ITS30 = 30
     IF (IFCONV .EQ. 0) ITS30 = 1
 
+    ! Reset adaptive-relaxation state at each depth
+    OMEGA       = OMEGA_DEFAULT
+    NFLIP       = 0
+    PREV_DSTEP  = 0.0D0
+    TRIGGERED   = .FALSE.
+
     DO IDELTAT = 1, ITS30
       DPLUS  = ROSSTAB(T(J) + DELTAT(J), P(J), VTURB(J)) / ROSST(J)
       DMINUS = ROSSTAB(T(J) - DELTAT(J), P(J), VTURB(J)) / ROSST(J)
@@ -7154,16 +7174,47 @@ SUBROUTINE CONVEC
       ! Temperature excess of convective element
       DELTAT(J) = T(J) * MIXLTH * DELTA
       DELTAT(J) = min(DELTAT(J), T(J) * 0.15D0)
-      DELTAT(J) = DELTAT(J) * 0.7D0 + OLDDELT * 0.3D0
+      DELTAT(J) = DELTAT(J) * OMEGA + OLDDELT * (1.0D0 - OMEGA)
 
-      IF (DELTAT(J) .LT. OLDDELT + 0.5D0 .AND. &
-          DELTAT(J) .GT. OLDDELT - 0.5D0) EXIT
+      ! Adaptive-relaxation logic: count consecutive sign-flips of the
+      ! signed step.  Hitting FLIP_TRIGGER consecutive flips means the
+      ! map has a strongly negative eigenvalue and the default OMEGA is
+      ! sustaining a limit cycle; switch to OMEGA_DAMPED and stay there.
+      DSTEP = DELTAT(J) - OLDDELT
+      IF (IDELTAT .GT. 1) THEN
+        IF (DSTEP * PREV_DSTEP .LT. 0.0D0) THEN
+          NFLIP = NFLIP + 1
+        ELSE
+          NFLIP = 0
+        END IF
+        IF (.NOT. TRIGGERED .AND. NFLIP .GE. FLIP_TRIGGER) THEN
+          OMEGA     = OMEGA_DAMPED
+          TRIGGERED = .TRUE.
+        END IF
+      END IF
+      PREV_DSTEP = DSTEP
+
+      ! Exit on convergence: either small absolute step, or small
+      ! relative step at large DELTAT.
+      IF (ABS(DSTEP) .LT. 0.5D0 .OR. &
+          ABS(DSTEP) .LT. 1.0D-3 * MAX(ABS(DELTAT(J)), 1.0D0)) EXIT
       OLDDELT = DELTAT(J)
     END DO  ! IDELTAT
-    IF (IDELTAT .GT. ITS30) THEN
-      WRITE(6,'(A,I3,A,F8.1,A,F8.1)') &
-        ' CONVEC WARNING: opacity iteration did not converge at layer ', &
-        J, '  DELTAT=', DELTAT(J), '  OLDDELT=', OLDDELT
+
+    ! Warn on convergence failure (suppressed during the first
+    ! WARN_AFTER_ITER-1 outer iterations while ROSSTAB is filling up).
+    ! DSTEP is the final post-relaxation step (DELTAT_new - OLDDELT);
+    ! "(damped)" indicates the adaptive relaxation engaged.
+    IF (IDELTAT .GT. ITS30 .AND. ITER .GE. WARN_AFTER_ITER .AND. J .GE. 3) THEN
+      IF (TRIGGERED) THEN
+        WRITE(6,'(A,I3,A,F8.2,A,F8.2,A)') &
+          ' CONVEC WARNING: opacity iteration did not converge at layer ', &
+          J, '  DELTAT=', DELTAT(J), '  dDELTAT=', DSTEP, '  (damped)'
+      ELSE
+        WRITE(6,'(A,I3,A,F8.2,A,F8.2)') &
+          ' CONVEC WARNING: opacity iteration did not converge at layer ', &
+          J, '  DELTAT=', DELTAT(J), '  dDELTAT=', DSTEP
+      END IF
     END IF
 
   END DO  ! J depth loop
@@ -15621,8 +15672,7 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   1882 N18 = N12 + N122 + N22 + N32 + N42 + N52 + N62
   WRITE(6, '(I12,A)') N18, ' LINES TOTAL'
-  WRITE(6, '(I12,A,F6.2,A)') NLINES_STORED, ' LINES STORED IN MEMORY (', &
-       NLINES_STORED * 16.0D0 / 1.0D9, ' GB)'
+  WRITE(6,*) 
   IF (NLINES_STORED .EQ. 0) THEN
     CALL EXIT(1)
   END IF
