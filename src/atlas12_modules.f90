@@ -135,18 +135,14 @@
 !    DERIV                       Differentiation by parabolic interpolation
 !    INTEG                       Integration using parabolic coefficients
 !    PARCOE                      Parabolic interpolation coefficients
-!    MAP1                        Linear interpolation/remapping
-!    MAP4                        Cubic interpolation/remapping
+!    MAP1                        Parabolic interpolation/remapping
 !    SOLVIT                      LU decomposition linear equation solver
 !    LINTER                      Linear interpolation utility
 !
 !  I/O & PARSING
 !    READIN                      Read and parse all input control cards
 !    SCALE_MODEL                 Rescale existing model to new Teff/logg
-!    FREEFF                      Free-format floating point reader
-!    FREEFR                      Free-format real number reader
-!    NEXTWORD                    Free-format word reader (returns character string)
-!    DUMP_ARRAY                  Debug array print utility
+!    NEXT_TOKEN                  Pull next blank-delimited token from a card
 !
 !=========================================================================
 
@@ -157,7 +153,11 @@
 MODULE mod_parameters
 
   IMPLICIT NONE
-  INTEGER, PARAMETER :: kw = 80        ! Number of atmospheric depth points
+  ! kw : max depth points in the model atmosphere; static dimension of all
+  !      depth-indexed arrays (T(kw), RHOX(kw), TAUSTD(kw), ...).  Runtime
+  !      NRHOX must satisfy NRHOX <= kw.  ATLAS standardizes onto kw layers
+  !      via SCALE_MODEL/TCORR using the TAU1LG/STEPLG log-tau grid.
+  INTEGER, PARAMETER :: kw = 80
   INTEGER, PARAMETER :: mion = 1006    ! Number of ion species
   INTEGER, PARAMETER :: maxmol = 200   ! Maximum number of molecules
   INTEGER, PARAMETER :: max1 = maxmol + 1
@@ -1008,14 +1008,11 @@ MODULE mod_atlas_data
   ! --- Radiative flux and flux derivatives ---
   REAL(8)  :: FLUX = 0.0d0, FLXERR(kw) = 0.0d0, FLXDRV(kw) = 0.0d0, FLXRAD(kw)
 
-  ! --- Free-format input parser state ---
-  INTEGER :: NUMCOL, LETCOL, LAST, MORE, IFFAIL, MAXPOW
-
   ! --- Current frequency point ---
   REAL(8)  :: FREQ, FREQLG, EHVKT(kw), STIM(kw), BNU(kw), WAVE, WAVENO
 
   ! --- Frequency set for opacity distribution functions ---
-  REAL(8)  :: WAVESET(30000), RCOSET(30000)
+  REAL(8) :: WAVESET(30000), RCOSET(30000)
   INTEGER :: NULO, NUHI, NUMNU = 0, NUSTEP
 
   ! --- Hydrogen bound-free opacity tables ---
@@ -1029,11 +1026,11 @@ MODULE mod_atlas_data
 
   ! ROSSTAB interpolation mode:
   !   1 = original bilinear (4-quadrant nearest neighbor)
-  !   2 = Shepard (K-nearest, inverse-distance weighted, p=3)
+  !   2 = Shepard (K-nearest, inverse-distance weighted, p=2; default)
   INTEGER :: IROSSTAB = 1
 
   ! --- Molecular equilibrium ---
-  REAL(8)  :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
+  REAL(8) :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
   INTEGER :: IFEQUA(101), KCOMPS(maxloc), LOCJ(max1), IDEQUA(maxeq)
   INTEGER :: NEQUA, NEQUA1, NEQNEQ, NUMMOL, NLOC
 
@@ -1042,7 +1039,7 @@ MODULE mod_atlas_data
 
   ! --- Line data integer header words ---
   INTEGER    :: IWL
-  INTEGER(2)  :: IELION, IELO, IGFLOG, IGR, IGS, IGW
+  INTEGER(2) :: IELION, IELO, IGFLOG, IGR, IGS, IGW
 
   ! --- Isotope fractional abundances ---
   REAL(8)  :: ISOTOPE(10, 2, mion)
@@ -1220,8 +1217,7 @@ MODULE mod_atlas_data
 
   ! --- Continuous opacity table ---
   !
-  ! WAVETAB: hardcoded wavelength grid (nm), 361 points from 9.09 nm to
-  ! 400 um.  Compile-time constant; consumers may use it directly.
+  ! WAVETAB: hardcoded wavelength grid (nm), 361 points from 9.09 nm to 400 um
   !
   ! IWAVETAB: log-encoded integer index of each wavelength on the master
   ! 0.0001-dex line-list grid (RATIOLG = log(1 + 1/2e6)).  Filled by
@@ -1540,7 +1536,6 @@ SUBROUTINE PUTOUT(MODE)
   ! --- Local variables ---
   REAL(8)  :: HSURF, TAUEND
   REAL(8)  :: HLAM, HLAMLG, HLAMMG, HNULG, HNUMG
-  REAL(8)  :: FLXCNVRATIO(kw)
   REAL(8)  :: SURFIN(20)       ! Note: SURFIN accumulation was disabled in original
                                ! code (opacity-sampling replaced frequency groups).
                                ! SURFI from JOSH holds the actual surface intensity.
@@ -1677,24 +1672,6 @@ SUBROUTINE PUTOUT(MODE)
                / (I3, 1P11E11.3))
        
        ENDIF
-
-      ! Compute convective flux fraction at each depth
-      DO J = 1, NRHOX
-        IF (IFCORR .EQ. 0) FLXRAD(J) = FLUX - FLXCNV(J)
-        FLXCNVRATIO(J) = FLXCNV(J) / (FLXCNV(J) + FLXRAD(J))
-      END DO
-
-      ! Full model atmosphere table to unit 66
-      WRITE(66, 542) (J, RHOX(J), T(J), P(J), XNE(J), RHO(J), ABROSS(J), &
-        HEIGHT(J), TAUROS(J), FLXCNVRATIO(J), ACCRAD(J), FLXERR(J), FLXDRV(J), &
-        J=1,NRHOX)
-542   FORMAT('0', 35X, 'ELECTRON', 11X, &
-        'ROSSELAND    HEIGHT   ROSSELAND   FRACTION  RADIATIVE', &
-        '         PERCENT FLUX', / &
-        '       RHOX      TEMP    PRESSURE    NUMBER', &
-        '    DENSITY      MEAN       (KM)      DEPTH', &
-        '    CONV FLUX  ACCELERATION', &
-        '   ERROR   DERIV', / (I3, 1PE10.3, 0PF9.1, 1P8E11.3, 2P2E11.3))
 
     END IF  ! IFPRNT
 
@@ -2013,6 +1990,23 @@ SUBROUTINE TCORR(MODE, RCOWT)
              / (FLXRAD(J) + CNVFLX(J) * 1.5D0 * DLTDLP(J) * DDEL(J))
   END DO
 
+  ! Diagnostic: TCORR drives GFLUX -> 0, not FLXERR -> 0.  In the deep CZ
+  ! the two differ by a factor (FLXRAD+CNVFLX) / (FLXRAD+1.5*CNVFLX*∇·∆),
+  ! which can be ~1.5-3.  Print both so we can tell whether the residual
+  ! we're chasing is a real flux imbalance or just diagnostic scaling.
+  IF (IFPRNT(ITER) .NE. 0) THEN
+    DO J = 75, 80, 1
+      IF (J .EQ. 75 .OR. J .EQ. 78 .OR. J .EQ. 80) THEN
+        WRITE(6, '(A,I3,A,I3,3(A,ES11.3))') &
+          ' TCORR_DIAG iter=', ITER, ' J=', J, &
+          '  FLXERR%=',  (FLXRAD(J) + CNVFLX(J) - FLUX) / FLUX * 100.0D0, &
+          '  GFLUX=',    GFLUX(J), &
+          '  ratio=',    (FLXRAD(J) + CNVFLX(J)) / &
+                         (FLXRAD(J) + CNVFLX(J)*1.5D0*DLTDLP(J)*DDEL(J))
+      END IF
+    END DO
+  END IF
+
   CALL INTEG(TAUROS, GFLUX, DTAU, NRHOX, 0.0D0)
   DO J = 1, NRHOX
     DTAU(J) = DTAU(J) / G(J)
@@ -2180,17 +2174,26 @@ SUBROUTINE TCORR(MODE, RCOWT)
     OLDT1(J) = T1(J)
   END DO
 
-  ! Diagnostic output (after damping, so T1 reflects what is actually applied)
+  ! Diagnostic output (after damping, so T1 reflects what is actually applied).
+  ! One unified per-iteration table merging the former *.tcorr correction
+  ! diagnostics with the *.iter atmospheric structure columns.
   IF (IFPRNT(ITER) .NE. 0) THEN
-    WRITE(67, 100) (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), &
-                    DTSURF(J), DTFLUX(J), DTCONV(J), T1(J), HRATIO(J), &
-                    FLXERR(J), FLXDRV(J), DLTDLP(J), GRDADB(J), J=1,NRHOX)
-100 FORMAT('0', 2X, 'lgTAUROS', 6X, 'T', 6X, &
-      'DTLAMB   DTSURF   DTFLUX   DTCONV', 5X, &
-      'T1   CONV/TOTAL      ERROR     DERIV   NABLA  NABLA_AD', / &
-      (I3, F8.3, F10.1, 5F9.1, 1X, 1PE11.3, 1X, &
-       0P, 2F10.3, 2F8.4))
-    flush(67)
+    WRITE(66, 100) &
+         (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), DTSURF(J), &
+          DTFLUX(J), DTCONV(J), T1(J), FLXERR(J), FLXDRV(J), &
+          DLTDLP(J), GRDADB(J), HRATIO(J), P(J), XNE(J), HEIGHT(J), &
+          ACCRAD(J), J=1,NRHOX)
+100 FORMAT(&
+      '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX  DTCONV     T1', &
+      '      ERROR       DERIV   NABLA NABLA_AD     CONV/TOT', &
+      '        P           XNE       HEIGHT     ACCRAD' / &
+      '                  K        K       K       K       K       K', &
+      '          %           %                              ', &
+      '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
+      (I3, F8.3, F10.1, 5F8.1, &
+       1X,ES11.2, 1X,ES11.2, 2F8.3, 1X,ES11.2, &
+       1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
+    flush(66)
   END IF
 
   !---------------------------------------------------------------------
@@ -3342,30 +3345,37 @@ SUBROUTINE SOLVIT(A, N, B, IPIVOT)
 END SUBROUTINE SOLVIT
 
 !=========================================================================
-! SUBROUTINE DUMP_ARRAY(LABEL, ARR, N)
+! SUBROUTINE LINTER(XOLD, YOLD, NOLD, XNEW, YNEW)
 !
-!   Print a labeled array to standard output (unit 6) for diagnostics.
-!   Used for error dumps (e.g., negative pressure in HSE) and iteration
-!   summaries.
+!   Single-point linear interpolation in a monotonically increasing table.
 !
-!   Prints LABEL followed by ARR(1..N) in exponential format, 10 values
-!   per line.  For scalar diagnostics, pass the scalar directly with N=1
-!   (Fortran passes by reference, so W reads it as ARR(1)).
+!   Given a table (XOLD, YOLD) of NOLD points with XOLD increasing,
+!   interpolates to find YNEW at the single point XNEW.  Extrapolates
+!   using the nearest interval if XNEW is outside the table range.
 !=========================================================================
 
-SUBROUTINE DUMP_ARRAY(LABEL, ARR, N)
+SUBROUTINE LINTER(XOLD, YOLD, NOLD, XNEW, YNEW)
 
   IMPLICIT NONE
 
-  CHARACTER(*), INTENT(IN) :: LABEL
-  REAL(8),       INTENT(IN) :: ARR(*)
-  INTEGER,      INTENT(IN) :: N
+  INTEGER, INTENT(IN)  :: NOLD
+  REAL(8), INTENT(IN)  :: XOLD(NOLD), YOLD(NOLD)
+  REAL(8), INTENT(IN)  :: XNEW
+  REAL(8), INTENT(OUT) :: YNEW
 
   INTEGER :: I
 
-  WRITE(6, '(A6,1P10E12.4 / (7X,10E12.4))') LABEL, (ARR(I), I=1,N)
+  ! Find the bracketing interval
+  DO I = 2, NOLD
+    IF (XNEW .LT. XOLD(I)) EXIT
+  END DO
+  IF (I .GT. NOLD) I = NOLD
 
-END SUBROUTINE DUMP_ARRAY
+  ! Linear interpolation (or extrapolation at boundaries)
+  YNEW = YOLD(I-1) + (YOLD(I) - YOLD(I-1)) &
+       / (XOLD(I) - XOLD(I-1)) * (XNEW - XOLD(I-1))
+
+END SUBROUTINE LINTER
 
 !=========================================================================
 ! FUNCTION ROSSTAB(TEMP, PRESSURE, V)
@@ -3388,7 +3398,10 @@ END SUBROUTINE DUMP_ARRAY
 !         bilinear interpolation if all populated, inverse-distance
 !         weighted fallback otherwise.
 !     2 = Shepard: K=12 nearest neighbors, weighted average with
-!         w = 1/(d^2 + eps)^(p/2), p=3. Smooth (C1) interpolation.
+!         w = 1/(d^2 + eps), eps=1e-4. Genuinely smooth blending —
+!         multiple neighbors contribute meaningfully even when one
+!         is the closest, unlike the p=3/eps=1e-12 form which
+!         collapses to nearest-neighbor near stored points.
 !=========================================================================
 
 FUNCTION ROSSTAB(TEMP, PRESSURE, V)
@@ -3409,9 +3422,18 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
   INTEGER, SAVE :: NROSS = 0        ! number of entries in table
 
   ! --- Shepard parameters ---
-  INTEGER, PARAMETER :: KFIT = 12          ! nearest neighbors
-  REAL(8),  PARAMETER :: SHEP_PHALF = 1.5D0 ! p/2 where p=3
-  REAL(8),  PARAMETER :: SHEP_EPS = 1.0D-12 ! softening
+  ! KFIT       : number of nearest neighbors used in the weighted average
+  ! SHEP_PHALF : p/2 in the weight  W = 1 / (d^2 + eps)^(p/2).  p=2 gives
+  !              a true 1/d^2 kernel that blends multiple neighbors smoothly;
+  !              p=3 (the F77 default) collapses to nearest-neighbor behavior
+  !              near stored points and was indistinguishable from bilinear.
+  ! SHEP_EPS   : softening, in normalized (T,P) units where the table spans
+  !              roughly [0,1] x [0,1].  Typical neighbor spacing is
+  !              ~1/sqrt(NROSS) ~ 0.02, so EPS ~ 1e-4 ensures the kernel
+  !              stays smooth without being dominated by the nearest point.
+  INTEGER, PARAMETER :: KFIT       = 12
+  REAL(8),  PARAMETER :: SHEP_PHALF = 1.0D0
+  REAL(8),  PARAMETER :: SHEP_EPS   = 1.0D-4
 
   ! --- Local variables ---
   REAL(8)  :: TEMPLOG, PRESSLOG      ! normalized query coordinates
@@ -3554,7 +3576,7 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
     END IF
 
   ! -----------------------------------------------------------------
-  ! IROSSTAB = 2: Shepard (K-nearest, p=3)
+  ! IROSSTAB = 2: Shepard (K-nearest, p=2)
   ! -----------------------------------------------------------------
   ELSE
 
@@ -3609,51 +3631,64 @@ END FUNCTION ROSSTAB
 !                  PTURB_in, VTURB_in, GRAV_in, NUMTAU)
 !
 ! Compute total pressure from T(tau) by integrating hydrostatic
-! equilibrium on a log-spaced optical depth grid.
+! equilibrium on a log-spaced Rosseland optical-depth grid.
 !
-! Given a temperature profile T(tau) and a Rosseland opacity lookup
-! table (ROSSTAB), this routine iteratively solves for the total
-! pressure at each depth point by integrating:
+! Physics
+! -------
+! Hydrostatic equilibrium in column-mass form is dP/dRHOX = g, and
+! Rosseland optical depth obeys dTAU = kappa_Ross * dRHOX, giving
 !
-!   d(ln P_total) / d(ln tau) = g / (kappa_Ross * P_total) * tau
+!   d(ln P_total) / d(ln tau) = g * tau / (kappa_Ross * P_total).
 !
-! which is the hydrostatic equilibrium equation in log-tau form:
-!   dP/dRHOX = g  and  dTAU = kappa * dRHOX
-!   → dP = g * dTAU / kappa  → d(ln P) = g*tau/(kappa*P) * d(ln tau)
+! Gas pressure is extracted from total pressure by subtracting the
+! radiation- and turbulence-pressure offsets relative to the surface:
 !
-! The integration uses Adams-Bashforth multistep predictors:
-!   J = 1:      direct from surface: P_total = g * tau / kappa
-!   J = 2-4:    linear extrapolation from previous point
-!   J > 4:      4th-order Adams-Bashforth predictor
-! followed by corrector iterations (predictor-corrector) until
-! convergence to 5e-5 in ln(P) or MAX_CORRECTOR iterations.
+!   P_gas(J) = P_total(J) + (P_rad(1) - P_rad(J))
+!                         + (P_turb(1) - P_turb(J)).
 !
-! At each depth, the gas pressure is extracted from total pressure:
-!   P_gas = P_total + (P_rad(1) - P_rad(J)) + (P_turb(1) - P_turb(J))
-! which accounts for the fact that radiation and turbulent pressures
-! are defined relative to their surface values.
+! The Rosseland opacity kappa_Ross(T, P_gas) comes from the ROSSTAB
+! lookup, which is populated and refined by the outer ATLAS iteration.
 !
-! The Rosseland opacity kappa_Ross(T, P_gas) is obtained from the
-! interpolation table ROSSTAB, which accumulates (T, P, kappa) data
-! from previous iterations.
+! Algorithm
+! ---------
+! Predictor for ln(P_total) at depth J:
+!   J = 1     surface analytic estimate, P_total = g * tau / kappa
+!   J = 2..4  linear extrapolation from previous point
+!   J >= 5    4th-order Adams-Bashforth predictor
 !
-! Stability features:
-!   - Surface bootstrap: re-solves J=1 if initial opacity guess was
-!     off by more than a factor of 2
-!   - Under-relaxation: detects corrector oscillations (error not
-!     decreasing) and reduces step size to ensure convergence
-!   - DPLOG clamping: d(ln P)/d(ln tau) clamped to [0, DPLOG_MAX]
-!     to prevent unphysical pressure jumps
-!   - Convergence failure warning: diagnostic printed if corrector
-!     hits iteration limit
+! Corrector iterations: at each pass, recompute opacity from the
+! current ln(P) iterate, evaluate the AB derivative, then update via
+!   J = 1     re-evaluate analytic surface estimate
+!   J = 2..4  trapezoidal corrector
+!   J >= 5    4th-order Adams-Moulton corrector
+! and apply weighted relaxation: PLOG = (1-w)*PLOG + w*PNEW.
 !
-! Requirements:
-!   - TAU array must have uniform log spacing: TAU(J+1)/TAU(J) = const
-!   - ROSSTAB table must be populated before calling
+! Convergence criterion: |PNEW - PLOG| <= CONV_TOL in ln(P).  If the
+! corrector stops decreasing the error (cycle / kink near a ROSSTAB
+! cell boundary), the relaxation weight is escalated stepwise to damp
+! the oscillation.  If the corrector still hits MAX_CORRECTOR, we
+! accept the best iterate seen during the loop and warn.
 !
-! Arguments:
+! Stability features
+! ------------------
+!   - Surface bootstrap (J=1): if the converged opacity differs from
+!     the initial guess by more than OPACITY_REBOOT, re-solve J=1
+!     once with the better opacity to avoid corrupting the AB history.
+!   - Negative gas pressure floor: if the corrector overshoots so
+!     P_gas <= 0, clamp P_gas to a small fraction of P_total so
+!     ROSSTAB returns a large kappa, which drives DPLOG up and the
+!     next iterate down.
+!   - DPLOG clamping: d(ln P)/d(ln tau) bounded to [0, DPLOG_MAX].
+!   - Best-iterate fallback: track the smallest |PNEW-PLOG| seen and,
+!     if MAX_CORRECTOR is hit, return the iterate that achieved it.
+!
+! Requirements
+!   - TAU must have uniform log spacing: TAU(J+1)/TAU(J) = const
+!   - ROSSTAB must be populated before calling
+!
+! Arguments
 !   T_in(NUMTAU)     — temperature at each depth (input)
-!   TAU(NUMTAU)      — Rosseland optical depth grid (input, log-spaced)
+!   TAU(NUMTAU)      — Rosseland optical-depth grid (input, log-spaced)
 !   ABSTD(NUMTAU)    — Rosseland opacity at each depth (output)
 !   PTOTAL(NUMTAU)   — total pressure at each depth (output)
 !   P_out(NUMTAU)    — gas pressure at each depth (output)
@@ -3682,34 +3717,38 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
   REAL(8),  INTENT(IN)    :: GRAV_in
 
   ! --- Tuning parameters ---
-  INTEGER, PARAMETER :: MAX_CORRECTOR  = 1000
-  REAL(8),  PARAMETER :: CONV_TOL       = 5.0D-5   ! convergence in ln(P)
-  REAL(8),  PARAMETER :: DPLOG_MAX      = 10.0D0   ! max d(ln P) per step
-  REAL(8),  PARAMETER :: OPACITY_REBOOT = 2.0D0    ! opacity ratio triggering surface redo
-  INTEGER, PARAMETER :: RELAX_TRIGGER  = 4        ! stall count before under-relaxation
-  REAL(8),  PARAMETER :: RELAX_FACTOR   = 0.3D0    ! relaxation weight when oscillating
-  ! Note: WARN_AFTER_ITER (used to gate the corrector-failure warning) is
-  ! a module-level PARAMETER in mod_atlas_data, shared with CONVEC.
+  INTEGER, PARAMETER :: MAX_CORRECTOR     = 50      ! corrector iteration cap
+  REAL(8),  PARAMETER :: CONV_TOL          = 1.0D-4  ! convergence: |dPLOG|
+  REAL(8),  PARAMETER :: DPLOG_MAX         = 10.0D0  ! max d(ln P) per depth step
+  REAL(8),  PARAMETER :: OPACITY_REBOOT    = 2.0D0   ! kappa ratio triggering surface redo
+  INTEGER, PARAMETER :: STALL_DECREASE    = 3       ! N>this before stall detection starts
+  INTEGER, PARAMETER :: RELAX_TRIGGER     = 4       ! stall count → escalate relaxation
+  REAL(8),  PARAMETER :: STALL_RATIO       = 0.9D0   ! ERROR > ratio*PREV_ERROR ⇒ stalled
+  ! Relaxation schedule: 0.5 (normal) → 0.3 → 0.1 → 0.05 as stalling persists.
+  REAL(8),  PARAMETER :: RELAX_LADDER(4)   = (/ 0.5D0, 0.3D0, 0.1D0, 0.05D0 /)
+  ! WARN_AFTER_ITER (used to gate the corrector-failure warning) is a
+  ! module-level PARAMETER in mod_atlas_data, shared with CONVEC.
 
   ! --- Local variables ---
-  REAL(8)  :: DLGTAU              ! log spacing: ln(TAU(2)/TAU(1))
-  REAL(8)  :: PLOG                ! current ln(P_total) estimate
-  REAL(8)  :: PNEW               ! corrected ln(P_total)
-  REAL(8)  :: DPLOG              ! d(ln P)/d(ln tau) * DLGTAU at current point
-  REAL(8)  :: ERROR              ! |PNEW - PLOG| convergence measure
-  REAL(8)  :: PREV_ERROR         ! previous corrector error
-  REAL(8)  :: ABSTD1_INIT        ! initial surface opacity guess (for bootstrap)
-  REAL(8)  :: RELAX              ! relaxation weight for current step
-  INTEGER :: N_STALL            ! count of stalled corrector steps
+  REAL(8) :: DLGTAU              ! log spacing: ln(TAU(2)/TAU(1))
+  REAL(8) :: PLOG                ! current ln(P_total) iterate
+  REAL(8) :: PNEW                ! corrected ln(P_total)
+  REAL(8) :: DPLOG               ! d(ln P)/d(ln tau) * DLGTAU at current iterate
+  REAL(8) :: ERROR               ! |PNEW - PLOG| this corrector step
+  REAL(8) :: PREV_ERROR          ! ERROR from the previous step
+  REAL(8) :: BEST_ERROR          ! smallest ERROR seen this depth (best-iterate fallback)
+  REAL(8) :: BEST_PLOG           ! ln(P) value that achieved BEST_ERROR
+  REAL(8) :: ABSTD1_INIT         ! initial surface opacity guess (for bootstrap)
+  REAL(8) :: RELAX               ! relaxation weight for the current step
+  INTEGER :: N_STALL             ! count of consecutive stalled corrector steps
+  INTEGER :: RELAX_LEVEL         ! index into RELAX_LADDER (1=normal, 4=heaviest damping)
 
-  ! Adams-Bashforth history (previous 4 points)
-  REAL(8)  :: PLOG1, PLOG2, PLOG3, PLOG4
-  REAL(8)  :: DPLOG1, DPLOG2, DPLOG3
+  ! Adams-Bashforth history (previous four depth points)
+  REAL(8) :: PLOG1, PLOG2, PLOG3, PLOG4
+  REAL(8) :: DPLOG1, DPLOG2, DPLOG3
 
   INTEGER :: J, N
   LOGICAL :: CONVERGED
-
-  ! --- External functions ---
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING TTAUP'
 
@@ -3750,42 +3789,39 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
     END IF
 
     ! --- Corrector iterations ---
-    ERROR      = 1.0D0
-    PREV_ERROR = 1.0D0
-    N          = 0
-    CONVERGED  = .FALSE.
-    N_STALL    = 0
+    ERROR       = 1.0D0
+    PREV_ERROR  = 1.0D0
+    BEST_ERROR  = huge(1.0D0)
+    BEST_PLOG   = PLOG
+    N           = 0
+    CONVERGED   = .FALSE.
+    N_STALL     = 0
+    RELAX_LEVEL = 1
 
     DO
-      ! Convert ln(P_total) → total pressure → gas pressure → opacity
+      ! ln(P_total) → P_total → P_gas → opacity → DPLOG
       PTOTAL(J) = exp(PLOG)
-
-      ! Gas pressure: subtract radiation and turbulent pressure changes
-      ! relative to their surface values
-      P_out(J) = PTOTAL(J) + (PRAD_in(1) - PRAD_in(J)) &
+      P_out(J)  = PTOTAL(J) + (PRAD_in(1) - PRAD_in(J)) &
                             + (PTURB_in(1) - PTURB_in(J))
 
+      ! If the iterate overshoots and P_gas goes non-positive, floor it
+      ! to a small fraction of P_total.  ROSSTAB then returns a large
+      ! kappa, which inflates DPLOG and pulls the next iterate down.
       IF (P_out(J) .LE. 0.0D0) THEN
-        ! Gas pressure went negative — corrector guess for P_total is too low.
-        ! Floor P_gas to a small fraction of P_total so the opacity lookup
-        ! returns a large kappa, which drives DPLOG upward and self-corrects.
         P_out(J) = PTOTAL(J) * 1.0D-4
         IF (P_out(J) .LE. 0.0D0) P_out(J) = 1.0D-10
       END IF
 
-      ! Look up Rosseland opacity from the interpolation table
       ABSTD(J) = ROSSTAB(T_in(J), P_out(J), VTURB_in(J))
 
-      ! Hydrostatic equilibrium derivative
+      ! Hydrostatic-equilibrium derivative, clamped to a physical range.
       DPLOG = GRAV_in / ABSTD(J) * TAU(J) / PTOTAL(J) * DLGTAU
-
-      ! Clamp to prevent unphysical pressure jumps
       DPLOG = max(0.0D0, min(DPLOG_MAX, DPLOG))
 
       N = N + 1
-      IF (N .EQ. 1) CYCLE    ! first pass: go straight to corrector
+      IF (N .EQ. 1) CYCLE    ! need DPLOG before we can correct
 
-      ! --- Corrector: update ln(P) ---
+      ! --- Corrector: form PNEW from history + current DPLOG ---
       IF (J .EQ. 1) THEN
         PNEW = log(GRAV_in / ABSTD(1) * TAU(1))
       ELSE IF (J .LE. 4) THEN
@@ -3801,36 +3837,52 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
       PREV_ERROR = ERROR
       ERROR = abs(PNEW - PLOG)
 
-      ! Detect stalling: error not decreasing meaningfully
-      IF (N .GT. 3 .AND. ERROR .GT. 0.9D0 * PREV_ERROR) THEN
+      ! Track best iterate seen, in case we don't converge.
+      IF (ERROR .LT. BEST_ERROR) THEN
+        BEST_ERROR = ERROR
+        BEST_PLOG  = PNEW
+      END IF
+
+      ! Stall detection: the error stopped decreasing meaningfully.
+      ! Each stalled step climbs the relaxation ladder one rung; each
+      ! "real" decrease drops a rung (clamped to RELAX_LEVEL = 1).
+      IF (N .GT. STALL_DECREASE .AND. ERROR .GT. STALL_RATIO * PREV_ERROR) THEN
         N_STALL = N_STALL + 1
+        IF (N_STALL .GE. RELAX_TRIGGER .AND. RELAX_LEVEL .LT. SIZE(RELAX_LADDER)) THEN
+          RELAX_LEVEL = RELAX_LEVEL + 1
+          N_STALL = 0      ! give the new damping a chance before re-escalating
+        END IF
       ELSE
         N_STALL = max(N_STALL - 1, 0)
       END IF
-
-      ! Choose relaxation weight:
-      !   Normal: average old and new (0.5), same as original code
-      !   Oscillating: bias toward old value to damp oscillation
-      IF (N_STALL .GE. RELAX_TRIGGER) THEN
-        RELAX = RELAX_FACTOR
-      ELSE
-        RELAX = 0.5D0
-      END IF
+      RELAX = RELAX_LADDER(RELAX_LEVEL)
       PLOG = (1.0D0 - RELAX) * PLOG + RELAX * PNEW
 
       IF (ERROR .LE. CONV_TOL) THEN
         CONVERGED = .TRUE.
         EXIT
       END IF
-      IF (N .GT. MAX_CORRECTOR) EXIT
+      IF (N .GE. MAX_CORRECTOR) EXIT
     END DO
 
-    ! Warn on convergence failure (suppressed during the first
-    ! WARN_AFTER_ITER-1 iterations while ROSSTAB is filling up).
-    IF (.NOT. CONVERGED .AND. ITER .GE. WARN_AFTER_ITER .AND. J .GE. 3) THEN
-      WRITE(6, '(A,I4,A,ES10.3,A,I5)') &
-        ' TTAUP WARNING: corrector did not converge at J=', J, &
-        ', error=', ERROR, ', iter=', N
+    ! On non-convergence, accept the best iterate seen and recompute
+    ! the derived quantities so the AB history is consistent with it.
+    IF (.NOT. CONVERGED) THEN
+      PLOG      = BEST_PLOG
+      PTOTAL(J) = exp(PLOG)
+      P_out(J)  = PTOTAL(J) + (PRAD_in(1) - PRAD_in(J)) &
+                            + (PTURB_in(1) - PTURB_in(J))
+      IF (P_out(J) .LE. 0.0D0) P_out(J) = max(PTOTAL(J)*1.0D-4, 1.0D-10)
+      ABSTD(J) = ROSSTAB(T_in(J), P_out(J), VTURB_in(J))
+      DPLOG    = GRAV_in / ABSTD(J) * TAU(J) / PTOTAL(J) * DLGTAU
+      DPLOG    = max(0.0D0, min(DPLOG_MAX, DPLOG))
+
+      ! Warn (suppressed early in ATLAS iteration while ROSSTAB fills).
+      IF (ITER .GE. WARN_AFTER_ITER .AND. J .GE. 3) THEN
+        WRITE(6, '(A,I3,A,ES10.3,A,ES10.3,A,I3,A,F4.2)') &
+          ' TTAUP: J=', J, ', best |dlnP|=', BEST_ERROR, &
+          ' (last=', ERROR, '), iter=', N, ', relax=', RELAX
+      END IF
     END IF
 
     ! --- Surface bootstrap ---
@@ -3870,32 +3922,58 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
 END SUBROUTINE TTAUP
 
 
-
-!=======================================================================
-! READIN: Read and parse all input data
-!=======================================================================
+!=========================================================================
+! SUBROUTINE READIN(MODE)
+!
+! Read and parse all ATLAS12/SYNTHE input control cards, populating the
+! shared model-atmosphere state in mod_atlas_data and finalizing derived
+! quantities (mean molecular weight, number densities, log T, etc.).
+!
+! Two driver modes select the input source:
+!   MODE = 1   ATLAS12: open INPUT_MODEL_FILE on unit 3 to read the
+!              starting model, then continue parsing override keywords
+!              from the same stream.
+!   MODE = 20  SYNTHE:  caller has already opened the model file on
+!              unit 5; this routine forces SURFACE FLUX, single
+!              iteration, full PRINT/PUNCH, and parses the rest.
+! In both modes READMOL is called first to load molecular equilibrium
+! data, then a card loop dispatches on the leading keyword:
+!
+!   TEFF        — effective temperature (K)
+!   GRAVITY     — surface gravity (linear or log10)
+!   ABUNDANCE   — SCALE / CHANGE / ABSOLUTE / RELATIVE / TABLE
+!   READ DECK[6]— atmospheric structure deck (NRHOX layers)
+!   TURBULENCE  — ON (4 microturbulent params) / OFF
+!   SURFACE     — INTENSITY (NMU mu-angles, possibly continued) / FLUX / OFF
+!   BEGIN       — terminator; finalize and return
+!
+! Card scanning uses NEXT_TOKEN to pull blank-delimited tokens from the
+! current card; numeric tokens are parsed with a list-directed internal
+! read at the call site.
+!
+! Finalization: unlogged abundances are converted to log10, fractional
+! abundances XABUND are computed at every depth, mean molecular weight
+! WTMOLE, mass density RHO, and the temperature/Planck workspaces
+! (TK, HKT, HCKT, TKEV, TLOG) are filled in for all NRHOX layers.
+!=========================================================================
 
 SUBROUTINE READIN(MODE)
 
   IMPLICIT NONE
 
   INTEGER, INTENT(IN) :: MODE
-!     MODE=1  COMPUTE A MODEL (ATLAS12: reads input_model.dat + stdin)
-!     MODE=20 READ A MODEL FOR SYNTHESIS (SYNTHE: caller opens file on unit 5)
 
   ! Local scalars
-  REAL(8)  :: XSCALELOG
-  INTEGER :: I, IZ
-  INTEGER :: J, MU
-  INTEGER :: IOS_CARD, IOS_OPEN
-  LOGICAL :: FIRST_KW
-  CHARACTER(20) :: KEYWORD
+  REAL(8)        :: XSCALELOG
+  INTEGER        :: I, IZ, J, MU
+  INTEGER        :: COL                  ! cursor: next column to scan in CARD
+  INTEGER        :: IOS_CARD, IOS_OPEN
+  LOGICAL        :: EOL                  ! end-of-card flag from NEXT_TOKEN
+  CHARACTER(20)  :: KEYWORD, TOKEN
+  CHARACTER(132) :: CARD
+  CHARACTER(74)  :: TITLEBUF
 
-  CHARACTER(1) :: CARD(132)
-
-  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING READIN'
-
-  IF (MODE .EQ. 1) THEN
+    IF (MODE .EQ. 1) THEN
     !-------------------------------------------------------------------
     ! ATLAS12 path: read model from INPUT_MODEL_FILE, then stdin overrides
     !-------------------------------------------------------------------
@@ -3930,98 +4008,78 @@ SUBROUTINE READIN(MODE)
     CALL READMOL
   END IF
 
-  LAST=133
-  MAXPOW=38
-
   !---------------------------------------------------------------------
-  ! Main card-reading loop
+  ! Main card-reading loop. Each card is scanned by repeatedly pulling
+  ! blank-delimited tokens with NEXT_TOKEN; numeric tokens are parsed
+  ! with a list-directed internal read.
   !---------------------------------------------------------------------
   card_loop: DO
-    MORE = 0
-    LETCOL = 1
-    READ(INPUTDATA, '(132A1)', IOSTAT=IOS_CARD) CARD
-    IF (IOS_CARD .NE. 0) EXIT card_loop
 
-    !-------------------------------------------------------------------
-    ! Keyword parsing loop (multiple keywords per card)
-    !-------------------------------------------------------------------
-    KEYWORD = NEXTWORD(CARD)
-    NUMCOL = LETCOL
-    FIRST_KW = .TRUE.
+    READ(INPUTDATA, '(A)', IOSTAT=IOS_CARD) CARD
+    IF (IOS_CARD .NE. 0) EXIT card_loop
+    COL = 1
 
     keyword_loop: DO
-      IF (.NOT. FIRST_KW) THEN
-        ! Get next keyword from same card
-        LETCOL = MAX(LETCOL, NUMCOL)
-        MORE = 1
-        KEYWORD = NEXTWORD(CARD)
-        IF (IFFAIL .EQ. 1) EXIT keyword_loop
-        MORE = 0
-        NUMCOL = LETCOL
-      END IF
-      FIRST_KW = .FALSE.
+      CALL NEXT_TOKEN(CARD, COL, KEYWORD, EOL)
+      IF (EOL) EXIT keyword_loop
 
       !-----------------------------------------------------------------
       ! TEFF
       !-----------------------------------------------------------------
-      IF (trim(KEYWORD) .EQ. 'TEFF') THEN
-        TEFF = FREEFF(CARD)
+      IF (TRIM(KEYWORD) .EQ. 'TEFF') THEN
+        CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)
+        READ(TOKEN, *) TEFF
         FLUX = SIGMA_SB / FOURPI * TEFF**4
         CYCLE keyword_loop
 
       !-----------------------------------------------------------------
       ! GRAVITY
       !-----------------------------------------------------------------
-      ELSE IF (trim(KEYWORD) .EQ. 'GRAVITY') THEN
-        GRAV = FREEFF(CARD)
-        IF (GRAV .LT. 10.0D0) GRAV = 10.0D0**(GRAV)
+      ELSE IF (TRIM(KEYWORD) .EQ. 'GRAVITY') THEN
+        CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)
+        READ(TOKEN, *) GRAV
+        IF (GRAV .LT. 10.0D0) GRAV = 10.0D0**GRAV
         GLOG = LOG10(GRAV)
         CYCLE keyword_loop
 
       !-----------------------------------------------------------------
       ! ABUNDANCE (sub-keywords: SCALE, CHANGE, ABSOLUTE, RELATIVE, TABLE)
       !-----------------------------------------------------------------
-      ELSE IF (trim(KEYWORD) .EQ. 'ABUNDANCE') THEN
-        KEYWORD = NEXTWORD(CARD)
-        ! SCALE
-        IF (trim(KEYWORD) .EQ. 'SCALE') THEN
-          NUMCOL = LETCOL
-          XSCALE = FREEFF(CARD)
+      ELSE IF (TRIM(KEYWORD) .EQ. 'ABUNDANCE') THEN
+        CALL NEXT_TOKEN(CARD, COL, KEYWORD, EOL)
+
+        IF (TRIM(KEYWORD) .EQ. 'SCALE') THEN
+          CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)
+          READ(TOKEN, *) XSCALE
           IF (XSCALE .GT. 0.0D0) XSCALELOG = LOG10(XSCALE)
           DO IZ = 3, 99
             XRELATIVE(IZ) = XSCALELOG
           END DO
           XSCALE = 1.0D0
           CYCLE keyword_loop
-        ! CHANGE
-        ELSE IF (trim(KEYWORD) .EQ. 'CHANGE') THEN
-          MORE = 1
+
+        ELSE IF (TRIM(KEYWORD) .EQ. 'CHANGE' .OR. &
+                 TRIM(KEYWORD) .EQ. 'ABSOLUTE' .OR. &
+                 TRIM(KEYWORD) .EQ. 'RELATIVE') THEN
+          ! Read (Z, value) pairs to end-of-card; each variant differs
+          ! only in which array gets the value and whether XRELATIVE
+          ! is reset.
           DO
-            IZ = FREEFF(CARD)
-            IF (IFFAIL .EQ. 1) EXIT keyword_loop
-            ABUND(IZ) = FREEFF(CARD)
-            IF (IZ .GT. 2 .AND. ABUND(IZ) .GT. 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)
+            IF (EOL) EXIT keyword_loop
+            READ(TOKEN, *) IZ
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)
+            IF (EOL) EXIT keyword_loop
+            IF (TRIM(KEYWORD) .EQ. 'RELATIVE') THEN
+              READ(TOKEN, *) XRELATIVE(IZ)
+            ELSE
+              READ(TOKEN, *) ABUND(IZ)
+              IF (IZ .GT. 2 .AND. ABUND(IZ) .GT. 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
+              IF (TRIM(KEYWORD) .EQ. 'ABSOLUTE') XRELATIVE(IZ) = 0.0D0
+            END IF
           END DO
-        ! ABSOLUTE
-        ELSE IF (trim(KEYWORD) .EQ. 'ABSOLUTE') THEN
-          MORE = 1
-          DO
-            IZ = FREEFF(CARD)
-            IF (IFFAIL .EQ. 1) EXIT keyword_loop
-            ABUND(IZ) = FREEFF(CARD)
-            IF (IZ .GT. 2 .AND. ABUND(IZ) .GT. 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
-            XRELATIVE(IZ) = 0.0D0
-          END DO
-        ! RELATIVE
-        ELSE IF (trim(KEYWORD) .EQ. 'RELATIVE') THEN
-          MORE = 1
-          DO
-            IZ = FREEFF(CARD)
-            IF (IFFAIL .EQ. 1) EXIT keyword_loop
-            XRELATIVE(IZ) = FREEFF(CARD)
-          END DO
-        ! TABLE
-        ELSE IF (trim(KEYWORD) .EQ. 'TABLE') THEN
+
+        ELSE IF (TRIM(KEYWORD) .EQ. 'TABLE') THEN
           READ(INPUTDATA, '(7X,F10.6,10X,F10.6/(5(7X,F7.3,F6.3)))') &
             ABUND(1), ABUND(2), (ABUND(IZ), XRELATIVE(IZ), IZ=3,99)
           DO IZ = 3, 99
@@ -4029,48 +4087,48 @@ SUBROUTINE READIN(MODE)
           END DO
           XSCALE = 1.0D0
           EXIT keyword_loop
+
         ELSE
-          WRITE(6, '(A,A)') ' ABUNDANCE: unknown sub-keyword: ', trim(KEYWORD)
+          WRITE(6, '(A,A)') ' ABUNDANCE: unknown sub-keyword: ', TRIM(KEYWORD)
           CALL EXIT(1)
         END IF
 
       !-----------------------------------------------------------------
       ! READ (sub-keyword: DECK/DECK6)
       !-----------------------------------------------------------------
-      ELSE IF (trim(KEYWORD) .EQ. 'READ') THEN
-        KEYWORD = NEXTWORD(CARD)
-        NUMCOL = LETCOL
+      ELSE IF (TRIM(KEYWORD) .EQ. 'READ') THEN
+        CALL NEXT_TOKEN(CARD, COL, KEYWORD, EOL)
 
-        ! DECK / DECK6
-        IF (trim(KEYWORD) .EQ. 'DECK' .OR. trim(KEYWORD) .EQ. 'DECK6') THEN
-          NRHOX = FREEFF(CARD)
+        IF (TRIM(KEYWORD) .EQ. 'DECK' .OR. TRIM(KEYWORD) .EQ. 'DECK6') THEN
+          CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)
+          READ(TOKEN, *) NRHOX
+          ! Each layer is a fresh card with 7 (or more) blank-delimited values
+          ! in fixed order: RHOX, T, P, XNE, ABROSS, ACCRAD, VTURB.  Column 6
+          ! is loaded into PRAD temporarily and reassigned after DECK6.
           DO J = 1, NRHOX
-            NUMCOL = 1
-            READ(INPUTDATA, '(132A1)') CARD
-            RHOX(J) = FREEFF(CARD)
-            T(J) = FREEFF(CARD)
-            MORE = 1
-            P(J) = FREEFF(CARD)
-            XNE(J) = FREEFF(CARD)
-            ABROSS(J) = FREEFF(CARD)
-            ! Column 6 is ACCRAD (labelled PRAD temporarily)
-            PRAD(J) = FREEFF(CARD)
-            VTURB(J) = FREEFF(CARD)
-            MORE = 0
+            READ(INPUTDATA, '(A)') CARD
+            COL = 1
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) RHOX(J)
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) T(J)
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) P(J)
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) XNE(J)
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) ABROSS(J)
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) PRAD(J)
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) VTURB(J)
           END DO
-          IF (RHOX(1) .LT. 0.0D0) THEN
-            RHOX = 10.0D0**(RHOX)
-          END IF
+          IF (RHOX(1) .LT. 0.0D0) RHOX = 10.0D0**RHOX
           PRADK0 = 0.0D0
           PTURB0 = PTURB(1)
           PCON = 0.0D0
           PZERO = PCON + PRADK0 + PTURB0
           CALL INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
-          IF (trim(KEYWORD) .EQ. 'DECK6') THEN
-            ! DECK6: read additional PRADK0 card
-            READ(INPUTDATA, '(132A1)') CARD
-            NUMCOL = 1
-            PRADK0 = FREEFF(CARD)
+          IF (TRIM(KEYWORD) .EQ. 'DECK6') THEN
+            ! DECK6 adds a card of the form  "PRADK <value>"
+            READ(INPUTDATA, '(A)') CARD
+            COL = 1
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)   ! "PRADK" label
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)   ! the value
+            READ(TOKEN, *) PRADK0
             ACCRAD = PRAD
             CALL INTEG(RHOX, ACCRAD, PRAD, NRHOX, ACCRAD(1)*RHOX(1))
             PRADK = PRAD + PRADK0
@@ -4078,37 +4136,36 @@ SUBROUTINE READIN(MODE)
           EXIT keyword_loop
 
         ELSE
-          WRITE(6, '(A,A)') ' READ: unknown sub-keyword: ', trim(KEYWORD)
+          WRITE(6, '(A,A)') ' READ: unknown sub-keyword: ', TRIM(KEYWORD)
           CALL EXIT(1)
         END IF
 
       !-----------------------------------------------------------------
       ! BEGIN — end of model file; exit card loop for finalization
       !-----------------------------------------------------------------
-      ELSE IF (trim(KEYWORD) .EQ. 'BEGIN') THEN
+      ELSE IF (TRIM(KEYWORD) .EQ. 'BEGIN') THEN
         IF (INPUTDATA .EQ. 3) CLOSE(UNIT=3)
         EXIT card_loop
 
       !-----------------------------------------------------------------
       ! TURBULENCE (sub-keywords: ON, OFF)
       !-----------------------------------------------------------------
-      ELSE IF (trim(KEYWORD) .EQ. 'TURBULENCE') THEN
-        KEYWORD = NEXTWORD(CARD)
-        IF (trim(KEYWORD) .EQ. 'ON') THEN
+      ELSE IF (TRIM(KEYWORD) .EQ. 'TURBULENCE') THEN
+        CALL NEXT_TOKEN(CARD, COL, KEYWORD, EOL)
+        IF (TRIM(KEYWORD) .EQ. 'ON') THEN
           IFTURB = 1
-          NUMCOL = LETCOL
-          TRBFDG = FREEFF(CARD)
-          TRBPOW = FREEFF(CARD)
-          TRBSND = FREEFF(CARD)
-          TRBCON = FREEFF(CARD)
-        ELSE IF (trim(KEYWORD) .EQ. 'OFF') THEN
+          CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) TRBFDG
+          CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) TRBPOW
+          CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) TRBSND
+          CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) TRBCON
+        ELSE IF (TRIM(KEYWORD) .EQ. 'OFF') THEN
           IFTURB = 0
           TRBFDG = 0.0D0
           TRBPOW = 0.0D0
           TRBSND = 0.0D0
           TRBCON = 0.0D0
         ELSE
-          WRITE(6, '(A,A)') ' TURBULENCE: unknown sub-keyword: ', trim(KEYWORD)
+          WRITE(6, '(A,A)') ' TURBULENCE: unknown sub-keyword: ', TRIM(KEYWORD)
           CALL EXIT(1)
         END IF
         CYCLE keyword_loop
@@ -4116,20 +4173,27 @@ SUBROUTINE READIN(MODE)
       !-----------------------------------------------------------------
       ! SURFACE (sub-keywords: INTENSITY, FLUX, OFF)
       !-----------------------------------------------------------------
-      ELSE IF (trim(KEYWORD) .EQ. 'SURFACE') THEN
-        KEYWORD = NEXTWORD(CARD)
-        IF (trim(KEYWORD) .EQ. 'INTENSITY') THEN
-          NMU = FREEFF(CARD)
+      ELSE IF (TRIM(KEYWORD) .EQ. 'SURFACE') THEN
+        CALL NEXT_TOKEN(CARD, COL, KEYWORD, EOL)
+        IF (TRIM(KEYWORD) .EQ. 'INTENSITY') THEN
+          CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL); READ(TOKEN, *) NMU
           DO MU = 1, NMU
-            ANGLE(MU) = FREEFR(CARD)
+            ! Pull next mu-angle; on end-of-card, read a continuation.
+            CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)
+            IF (EOL) THEN
+              READ(INPUTDATA, '(A)') CARD
+              COL = 1
+              CALL NEXT_TOKEN(CARD, COL, TOKEN, EOL)
+            END IF
+            READ(TOKEN, *) ANGLE(MU)
           END DO
           IFSURF = 2
-        ELSE IF (trim(KEYWORD) .EQ. 'FLUX') THEN
+        ELSE IF (TRIM(KEYWORD) .EQ. 'FLUX') THEN
           IFSURF = 1
-        ELSE IF (trim(KEYWORD) .EQ. 'OFF') THEN
+        ELSE IF (TRIM(KEYWORD) .EQ. 'OFF') THEN
           IFSURF = 0
         ELSE
-          WRITE(6, '(A,A)') ' SURFACE: unknown sub-keyword: ', trim(KEYWORD)
+          WRITE(6, '(A,A)') ' SURFACE: unknown sub-keyword: ', TRIM(KEYWORD)
           CALL EXIT(1)
         END IF
         CYCLE keyword_loop
@@ -4144,19 +4208,16 @@ SUBROUTINE READIN(MODE)
     END DO keyword_loop
   END DO card_loop
 
-  ! ===================================================================
-  ! FINALIZATION — compute derived quantities
-  ! ===================================================================
+  !---------------------------------------------------------------------
+  ! Finalization: convert abundances, fill XABUND/YABUND, mean molecular
+  ! weight, and the temperature/Planck workspaces at every depth.
+  !---------------------------------------------------------------------
   IF (ABUND(1) .LT. 0.0D0) ABUND(1) = 10.0D0**ABUND(1)
   IF (ABUND(2) .LT. 0.0D0) ABUND(2) = 10.0D0**ABUND(2)
   DO IZ = 3, 99
     IF (ABUND(IZ) .GT. 0.0D0) ABUND(IZ) = LOG10(ABUND(IZ))
   END DO
-  ! Write abbreviated list of abundances
-  !WRITE(6, '(/" TEFF",F7.0,"   LOGG",F8.4/' // &
-  !     '"   1",A2,F10.6,"     2",A2,F10.6/(5(I4,A2,F7.2,F5.2)))') &
-  !     TEFF, GLOG, ELEM(1), ABUND(1), ELEM(2), ABUND(2), &
-  !   (IZ, ELEM(IZ), ABUND(IZ), XRELATIVE(IZ), IZ=3,32)
+
   DO J = 1, NRHOX
     DO IZ = 3, 99
       XABUND(J,IZ) = 10.0D0**(ABUND(IZ) + XRELATIVE(IZ))
@@ -4168,54 +4229,54 @@ SUBROUTINE READIN(MODE)
       WTMOLE(J) = WTMOLE(J) + XABUND(J,IZ) * ATMASS(IZ)
     END DO
   END DO
+
   YABUND(1) = ABUND(1)
   YABUND(2) = ABUND(2)
   DO IZ = 3, 99
     YABUND(IZ) = ABUND(IZ) + XRELATIVE(IZ)
   END DO
+
   DO J = 1, NRHOX
-    TK(J) = KBOL * T(J)
-    HKT(J) = HPLANCK / TK(J)
-    HCKT(J) = HKT(J) * CLIGHT
-    TKEV(J) = KBOL_EV * T(J)
-    TLOG(J) = LOG(T(J))
-    XNATOM(J) = P(J) / TK(J) - XNE(J)
-    RHO(J) = XNATOM(J) * WTMOLE(J) * AMU
+    TK(J)       = KBOL * T(J)
+    HKT(J)      = HPLANCK / TK(J)
+    HCKT(J)     = HKT(J) * CLIGHT
+    TKEV(J)     = KBOL_EV * T(J)
+    TLOG(J)     = LOG(T(J))
+    XNATOM(J)   = P(J) / TK(J) - XNE(J)
+    RHO(J)      = XNATOM(J) * WTMOLE(J) * AMU
     IF (IFTURB .GT. 0) PTURB(J) = 0.5D0 * RHO(J) * VTURB(J)**2
     CHARGESQ(J) = XNE(J)
   END DO
 
   ! Auto-generate title from mixing length
-  BLOCK
-    CHARACTER(74) :: TITLEBUF
-    WRITE(TITLEBUF, '(A,F5.2)') 'ATLAS12 l/H=', MIXLTH
-    DO I = 1, 74
-      TITLE(I) = TITLEBUF(I:I)
-    END DO
-  END BLOCK
+  WRITE(TITLEBUF, '(A,F5.2)') 'ATLAS12 l/H=', MIXLTH
+  DO I = 1, 74
+    TITLE(I) = TITLEBUF(I:I)
+  END DO
 
 END SUBROUTINE READIN
 
 
-!=======================================================================
+!=========================================================================
 ! SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
 !
-! Regrid the current model onto a standard uniform log-tau grid and
+! Regrid the current model onto the standard uniform log-tau grid and
 ! optionally rescale to a new Teff and/or log g.
 !
-! The tau grid is defined by three parameters (hardcoded below):
-!   NDEPTHS  — number of depth points (80)
+! The tau grid is defined by:
+!   kw       — number of depth points (compile-time, see mod_parameters)
 !   TAU1LG   — log10 of smallest Rosseland optical depth (-6.875)
 !   STEPLG   — log10 step between successive depth points (0.125)
-! This gives tau from 10^{-6.875} to 10^{+2.875} in 80 steps.
+! With kw=80 this gives tau from 10^{-6.875} to 10^{+2.875}.
 !
-! The routine:
-!   1. Builds the new tau grid
-!   2. Integrates ABROSS to get TAUROS from the current model
-!   3. Interpolates all structure variables onto the new grid
-!   4. If Teff/logg differ from current values, rescales T, Prad,
-!      and recomputes hydrostatic equilibrium
-!=======================================================================
+! Step 1: build TAUSTD.
+! Step 2: integrate ABROSS to get TAUROS from the current model.
+! Step 3: interpolate all structure variables onto TAUSTD.
+! Step 4: if (TEFF_NEW, LOGG_NEW) differ from the current values,
+!         rescale T, Prad, and recompute hydrostatic equilibrium.
+!
+! Calling convention: pass TEFF_NEW = 0 to regrid only (skip Step 4).
+!=========================================================================
 
 SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
 
@@ -4223,69 +4284,59 @@ SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
 
   REAL(8), INTENT(IN) :: TEFF_NEW, LOGG_NEW
 
-  ! --- Tau grid parameters ---
-  ! NDEPTHS: number of depth points in the output model
-  ! TAU1LG and STEPLG are module-level variables (mod_atlas_data),
-  ! also used by TCORR to rebuild the grid during iterations.
-  ! The deepest point is at log10(tau) = TAU1LG + (NDEPTHS-1)*STEPLG
-  INTEGER, PARAMETER :: NDEPTHS = 80
+  REAL(8) :: GNEW
+  INTEGER :: I, J, IZ
 
-  ! Local work arrays for interpolation
-  REAL(8)  :: DUM1(kw), DUM2(kw), DUM3(kw), DUM4(kw)
-  REAL(8)  :: DUM5(kw), DUM6(kw), DUM7(kw), DUM8(kw)
-  REAL(8)  :: GNEW
-  INTEGER :: I, J, IDUM
-
-  ! Convert logg to linear gravity
   GNEW = 10.0D0**LOGG_NEW
 
   ! --- Step 1: Build new uniform log-tau grid ---
-  DO J = 1, NDEPTHS
-    TAUSTD(J) = 10.0D0**(TAU1LG + (J-1)*STEPLG)
+  DO I = 1, kw
+    TAUSTD(I) = 10.0D0**(TAU1LG + (I-1)*STEPLG)
   END DO
 
   ! --- Step 2: Integrate ABROSS to get TAUROS from current model ---
   CALL INTEG(RHOX, ABROSS, TAUROS, NRHOX, ABROSS(1)*RHOX(1))
 
   ! --- Step 3: Interpolate all structure variables onto new grid ---
-  IDUM = MAP1(TAUROS, RHOX,   NRHOX, TAUSTD, DUM1, NDEPTHS)
-  IDUM = MAP1(TAUROS, T,      NRHOX, TAUSTD, DUM2, NDEPTHS)
-  IDUM = MAP1(TAUROS, P,      NRHOX, TAUSTD, DUM3, NDEPTHS)
-  IDUM = MAP1(TAUROS, XNE,    NRHOX, TAUSTD, DUM4, NDEPTHS)
-  IDUM = MAP1(TAUROS, ABROSS, NRHOX, TAUSTD, DUM5, NDEPTHS)
-  IDUM = MAP1(TAUROS, PRAD,   NRHOX, TAUSTD, DUM6, NDEPTHS)
-  IDUM = MAP1(TAUROS, VTURB,  NRHOX, TAUSTD, DUM7, NDEPTHS)
-  IDUM = MAP1(TAUROS, BMIN,   NRHOX, TAUSTD, DUM8, NDEPTHS)
-  DO J = 1, NDEPTHS
-    RHOX(J)   = DUM1(J)
-    T(J)      = DUM2(J)
-    P(J)      = DUM3(J)
-    XNE(J)    = DUM4(J)
-    ABROSS(J) = DUM5(J)
-    PRAD(J)   = DUM6(J)
-    PRADK(J)  = PRAD(J) + PRADK0
-    VTURB(J)  = DUM7(J)
-    BMIN(J)   = DUM8(J)
-  END DO
+  CALL REMAP(RHOX)
+  CALL REMAP(T)
+  CALL REMAP(P)
+  CALL REMAP(XNE)
+  CALL REMAP(ABROSS)
+  CALL REMAP(PRAD)
+  CALL REMAP(VTURB)
+  CALL REMAP(BMIN)
   DO I = 1, 6
-    IDUM = MAP1(TAUROS, BHYD(1,I), NRHOX, TAUSTD, DUM1, NDEPTHS)
-    DO J = 1, NDEPTHS
-      BHYD(J,I) = DUM1(J)
+    CALL REMAP(BHYD(:, I))
+  END DO
+  PRADK  = PRAD + PRADK0
+  NRHOX  = kw
+  TAUROS = TAUSTD
+
+  ! Refill the depth-derived arrays for all kw slots.  READIN's finalization
+  ! only populated 1..NRHOX_in (which may be < kw); now that the physical
+  ! state spans 1..kw, we need WTMOLE/XABUND/RHO/etc. to match.
+  DO J = 1, kw
+    DO IZ = 3, 99
+      XABUND(J,IZ) = 10.0D0**(ABUND(IZ) + XRELATIVE(IZ))
+    END DO
+    XABUND(J,1) = ABUND(1)
+    XABUND(J,2) = ABUND(2)
+    WTMOLE(J) = 0.0D0
+    DO IZ = 1, 99
+      WTMOLE(J) = WTMOLE(J) + XABUND(J,IZ) * ATMASS(IZ)
     END DO
   END DO
-  NRHOX = NDEPTHS
 
-  ! --- Step 4: Rescale to new Teff/logg if different ---
-  IF (TEFF_NEW .EQ. 0.0D0) RETURN
-  IF (TEFF_NEW .EQ. TEFF .AND. GNEW .EQ. GRAV) RETURN
-  IF (TEFF_NEW .LT. TEFF+1.0D0 .AND. TEFF_NEW .GT. TEFF-1.0D0 .AND. &
-      GNEW .LT. GRAV*1.001D0 .AND. GNEW .GT. GRAV*0.999D0) RETURN
+  ! --- Step 4: Rescale to new Teff/logg if meaningfully different ---
+  IF (TEFF_NEW .EQ. 0.0D0) RETURN                      ! sentinel: regrid only
+  IF (ABS(TEFF_NEW - TEFF) .LT. 1.0D0 .AND. &
+      ABS(GNEW - GRAV) / GRAV .LT. 1.0D-3) RETURN
 
-  TAUROS = TAUSTD
   T      = T * TEFF_NEW / TEFF
   PTURB  = 0.0D0
-  PRADK  = PRADK * (TEFF_NEW/TEFF)**4
-  PRAD   = PRAD  * (TEFF_NEW/TEFF)**4
+  PRADK  = PRADK  * (TEFF_NEW/TEFF)**4
+  PRAD   = PRAD   * (TEFF_NEW/TEFF)**4
   PRADK0 = PRADK0 * (TEFF_NEW/TEFF)**4
   PZERO  = PCON + PRADK0 + PTURB0
   TEFF   = TEFF_NEW
@@ -4296,394 +4347,71 @@ SUBROUTINE SCALE_MODEL(TEFF_NEW, LOGG_NEW)
   RHOX   = PTOTAL / GRAV
   PTOTAL = PTOTAL + PZERO
 
-END SUBROUTINE SCALE_MODEL
-
-!=======================================================================
-! FREEFR: Free-format real number reader
-!=======================================================================
-
-FUNCTION FREEFR(CARD)
-
-  IMPLICIT NONE
-  CHARACTER(1), INTENT(INOUT) :: CARD(*)
-  REAL(8) :: FREEFR
-  INTEGER :: I, L
-
-  MORE = 1
-  FREEFR = FREEFF(CARD)
-  IF (IFFAIL .EQ. 0) RETURN
-  L = LAST - 1
-  READ(INPUTDATA, 1) (CARD(I), I=1, L)
-    1 FORMAT(132A1)
-  NUMCOL = 1
-  FREEFR = FREEFF(CARD)
-  RETURN
-
-END FUNCTION FREEFR
-
-
-!=========================================================================
-! FUNCTION FREEFF(CARD)
-!
-! Free-format floating-point number reader. Scans CARD starting at module
-! variable NUMCOL, parses a number (with optional sign, decimal point,
-! and E-exponent), and returns it as real*8.
-!
-! Recognized formats: 123  -45.6  1.23E4  .5E-3  7,  etc.
-! Delimiters: blank or comma.
-!
-! Module variables updated:
-!   NUMCOL  — advanced past the number (or past LAST on failure)
-!   IFFAIL  — set to 1 if end-of-card reached without finding a number
-!=========================================================================
-
-FUNCTION FREEFF(CARD)
-
-  IMPLICIT NONE
-
-  CHARACTER(1), INTENT(IN) :: CARD(*)
-  REAL(8) :: FREEFF
-
-  ! Digit lookup table: 0-9
-  CHARACTER(1), PARAMETER :: DIGIT(10) = (/ &
-    '0','1','2','3','4','5','6','7','8','9' /)
-
-  ! Parser states
-  INTEGER, PARAMETER :: ST_INTEGER  = 1  ! before decimal point
-  INTEGER, PARAMETER :: ST_FRACTION = 2  ! after decimal point
-  INTEGER, PARAMETER :: ST_EXPSIGN  = 3  ! after E (expecting sign or digit)
-  INTEGER, PARAMETER :: ST_EXPDIGIT = 4  ! exponent digits
-
-  CHARACTER(1) :: C
-  REAL(8)  :: ANSWER, ASIGN
-  INTEGER :: I, N, NCOL, NPT, NPOWER, ISIGN, IF0, STATE
-
-  ! Initialize
-  IFFAIL = 0
-  IF (NUMCOL .GT. LAST) THEN
-    IFFAIL = 1
-    IF (MORE .GT. 0) THEN
-      FREEFF = 0.0D0
-      RETURN
-    END IF
-    WRITE(6, '(A/(1X,131A1))') '1FREEFF HAS READ OFF THE END', &
-      (CARD(I), I = 1, LAST)
-    CALL EXIT(1)
-  END IF
-
-  ANSWER = 0.0D0
-  ASIGN  = 1.0D0
-  ISIGN  = 1
-  NPT    = 0
-  IF0    = 0
-  N      = 0
-  STATE  = ST_INTEGER
-
-  !---------------------------------------------------------------------
-  ! Main scan loop
-  !---------------------------------------------------------------------
-  scan_loop: DO NCOL = NUMCOL, LAST
-    C = CARD(NCOL)
-
-    SELECT CASE (STATE)
-
-    !-----------------------------------------------------------------
-    ! State 1: Integer part (before decimal point)
-    !-----------------------------------------------------------------
-    CASE (ST_INTEGER)
-      IF (C .EQ. ' ') THEN
-        IF (N .EQ. 0) THEN
-          CALL freeff_reset()
-          CYCLE scan_loop
-        END IF
-        ! Blank after digits — return integer value
-        FREEFF = ANSWER * ASIGN
-        NUMCOL = NCOL + 1
-        RETURN
-      END IF
-      ! Check for digit
-      DO I = 1, 10
-        IF (C .EQ. DIGIT(I)) THEN
-          N = N + 1
-          ANSWER = 10.0D0 * ANSWER + dble(I - 1)
-          CYCLE scan_loop
-        END IF
-      END DO
-      ! Check for decimal point
-      IF (C .EQ. '.') THEN
-        STATE = ST_FRACTION
-        CYCLE scan_loop
-      END IF
-      ! Check for comma (delimiter)
-      IF (C .EQ. ',') THEN
-        IF (N .EQ. 0) THEN
-          ! Reset — comma before any digits
-          CALL freeff_reset()
-          CYCLE scan_loop
-        END IF
-        FREEFF = ANSWER * ASIGN
-        NUMCOL = NCOL + 1
-        RETURN
-      END IF
-      ! Check for minus sign
-      IF (C .EQ. '-') THEN
-        IF (N .EQ. 0) THEN
-          ASIGN = -1.0D0
-          CYCLE scan_loop
-        END IF
-        ! Minus after digits — reset
-        CALL freeff_reset()
-        CYCLE scan_loop
-      END IF
-      ! Unrecognized character — reset
-      CALL freeff_reset()
-
-    !-----------------------------------------------------------------
-    ! State 2: Fractional part (after decimal point)
-    !-----------------------------------------------------------------
-    CASE (ST_FRACTION)
-      ! Check for digit
-      DO I = 1, 10
-        IF (C .EQ. DIGIT(I)) THEN
-          N = N + 1
-          NPT = NPT + 1
-          ANSWER = 10.0D0 * ANSWER + dble(I - 1)
-          CYCLE scan_loop
-        END IF
-      END DO
-      IF (C .EQ. 'E') THEN
-        STATE = ST_EXPSIGN
-        CYCLE scan_loop
-      END IF
-      IF (C .EQ. '-') THEN
-        ! Minus after decimal digits — treat as exponent sign
-        ISIGN = -1
-        NPOWER = 0
-        STATE = ST_EXPDIGIT
-        CYCLE scan_loop
-      END IF
-      IF (C .EQ. '+') THEN
-        NPOWER = 0
-        STATE = ST_EXPDIGIT
-        CYCLE scan_loop
-      END IF
-      IF (C .EQ. ' ' .OR. C .EQ. ',') THEN
-        IF (N .EQ. 0) THEN
-          CALL freeff_reset()
-          CYCLE scan_loop
-        END IF
-        FREEFF = ANSWER * ASIGN / 10.0D0**NPT
-        NUMCOL = NCOL + 1
-        RETURN
-      END IF
-      ! Unrecognized — reset
-      CALL freeff_reset()
-
-    !-----------------------------------------------------------------
-    ! State 3: After E (expecting sign or first exponent digit)
-    !-----------------------------------------------------------------
-    CASE (ST_EXPSIGN)
-      ! Check for digit
-      DO I = 1, 10
-        IF (C .EQ. DIGIT(I)) THEN
-          NPOWER = I - 1
-          IF0 = 1
-          STATE = ST_EXPDIGIT
-          CYCLE scan_loop
-        END IF
-      END DO
-      IF (C .EQ. ' ' .OR. C .EQ. '+') THEN
-        NPOWER = 0
-        STATE = ST_EXPDIGIT
-        CYCLE scan_loop
-      END IF
-      IF (C .EQ. '-') THEN
-        ISIGN = -1
-        NPOWER = 0
-        STATE = ST_EXPDIGIT
-        CYCLE scan_loop
-      END IF
-      ! Unrecognized — reset
-      CALL freeff_reset()
-
-    !-----------------------------------------------------------------
-    ! State 4: Exponent digits
-    !-----------------------------------------------------------------
-    CASE (ST_EXPDIGIT)
-      ! Check for digit
-      DO I = 1, 10
-        IF (C .EQ. DIGIT(I)) THEN
-          NPOWER = 10 * NPOWER + I - 1
-          IF0 = 1
-          IF (NPOWER .GE. MAXPOW) THEN
-            CALL freeff_reset()
-            CYCLE scan_loop
-          END IF
-          CYCLE scan_loop
-        END IF
-      END DO
-      IF (C .EQ. ',' .OR. C .EQ. ' ') THEN
-        IF (IF0 .EQ. 0) THEN
-          CALL freeff_reset()
-          CYCLE scan_loop
-        END IF
-        FREEFF = ANSWER * ASIGN * 10.0D0**(ISIGN * NPOWER - NPT)
-        NUMCOL = NCOL + 1
-        RETURN
-      END IF
-      ! Unrecognized — reset
-      CALL freeff_reset()
-
-    END SELECT
-  END DO scan_loop
-
-  !---------------------------------------------------------------------
-  ! Fell off end of card
-  !---------------------------------------------------------------------
-  NUMCOL = LAST + 1
-  IFFAIL = 1
-  IF (MORE .GT. 0) THEN
-    FREEFF = 0.0D0
-    RETURN
-  END IF
-  WRITE(6, '(A/(1X,131A1))') '1FREEFF HAS READ OFF THE END', &
-    (CARD(I), I = 1, LAST)
-  CALL EXIT(1)
-
 CONTAINS
 
-  SUBROUTINE freeff_reset()
-    ! Reset parser to initial searching state
-    ASIGN  = 1.0D0
-    ANSWER = 0.0D0
-    ISIGN  = 1
-    NPT    = 0
-    IF0    = 0
-    N      = 0
-    STATE  = ST_INTEGER
-  END SUBROUTINE freeff_reset
+  ! Remap one depth-indexed field from the old TAUROS grid onto TAUSTD.
+  ! Both grids are taken from host association.
+  SUBROUTINE REMAP(FIELD)
+    REAL(8), INTENT(INOUT) :: FIELD(kw)
+    REAL(8) :: WORK(kw)
+    INTEGER :: IDUM
+    IDUM = MAP1(TAUROS, FIELD, NRHOX, TAUSTD, WORK, kw)
+    FIELD = WORK
+  END SUBROUTINE REMAP
 
-END FUNCTION FREEFF
+END SUBROUTINE SCALE_MODEL
 
 !=========================================================================
-! FUNCTION NEXTWORD(CARD)
+! SUBROUTINE NEXT_TOKEN(CARD, COL, TOKEN, EOL)
 !
-! Free-format word reader. Scans CARD starting at module variable LETCOL,
-! finds the next alphanumeric word, and returns it as an uppercase
-! character string (up to 20 characters).
+! Pull the next blank-delimited token from CARD, starting at column COL.
+! On return, COL is advanced past the delimiter and EOL is .TRUE. if no
+! token was found before end-of-card.
 !
-! Special case: an "E" preceded by a digit or "." and followed by a digit
-! or blank is treated as scientific notation, not a word start.
-!
-! Module variables updated:
-!   LETCOL  — advanced past the word (or past LAST on failure)
-!   IFFAIL  — set to 1 if end-of-card reached without finding a word
+! This is the single tokenizer used by READIN: keywords are identified
+! by string compare on TOKEN, numeric values by READ(TOKEN, *, ...) at
+! the call site.  Tokens longer than LEN(TOKEN) are silently truncated.
 !=========================================================================
 
-FUNCTION NEXTWORD(CARD)
+SUBROUTINE NEXT_TOKEN(CARD, COL, TOKEN, EOL)
 
   IMPLICIT NONE
 
-  CHARACTER(1), INTENT(IN) :: CARD(*)
-  CHARACTER(20) :: NEXTWORD
+  CHARACTER(LEN=*), INTENT(IN)    :: CARD
+  INTEGER,          INTENT(INOUT) :: COL
+  CHARACTER(LEN=*), INTENT(OUT)   :: TOKEN
+  LOGICAL,          INTENT(OUT)   :: EOL
 
-  CHARACTER(1) :: C
-  INTEGER :: I, NCOL, N
-  LOGICAL :: IN_WORD, SKIP_E, IS_ALPHA
+  INTEGER :: I0, I1, NCARD
 
-  ! Initialize
-  NEXTWORD = ' '
-  IFFAIL = 0
-  N = 0
-  IN_WORD = .FALSE.
+  TOKEN = ' '
+  EOL   = .FALSE.
+  NCARD = LEN(CARD)
 
-  IF (LETCOL .GT. LAST) THEN
-    IFFAIL = 1
-    IF (MORE .GT. 0) RETURN
-    WRITE(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
-      (CARD(I), I = 1, LAST)
-    CALL EXIT(1)
+  ! Skip leading blanks
+  I0 = COL
+  DO WHILE (I0 .LE. NCARD)
+    IF (CARD(I0:I0) .NE. ' ') EXIT
+    I0 = I0 + 1
+  END DO
+
+  IF (I0 .GT. NCARD) THEN
+    EOL = .TRUE.
+    COL = NCARD + 1
+    RETURN
   END IF
 
-  !---------------------------------------------------------------------
-  ! Main scan loop
-  !---------------------------------------------------------------------
-  scan_loop: DO NCOL = LETCOL, LAST
-    C = CARD(NCOL)
+  ! Find token end (next blank, or end-of-card)
+  I1 = I0
+  DO WHILE (I1 .LE. NCARD)
+    IF (CARD(I1:I1) .EQ. ' ') EXIT
+    I1 = I1 + 1
+  END DO
 
-    IF (.NOT. IN_WORD) THEN
-      !--- State: searching for word start ---
-      IF (C .EQ. ' ') CYCLE scan_loop
+  TOKEN = CARD(I0 : I1-1)
+  COL   = I1 + 1
 
-      ! Check if C is a letter (A-Z)
-      IS_ALPHA = (C .GE. 'A' .AND. C .LE. 'Z')
-      IF (.NOT. IS_ALPHA) THEN
-        ! Not a letter — reset and continue searching
-        N = 0
-        CYCLE scan_loop
-      END IF
-
-      ! Special case: is this an "E" in scientific notation?
-      IF (C .EQ. 'E' .AND. NCOL .GT. 1) THEN
-        SKIP_E = .FALSE.
-        ! Check preceding character: digit or "."
-        IF ((CARD(NCOL-1) .GE. '0' .AND. CARD(NCOL-1) .LE. '9') .OR. &
-            CARD(NCOL-1) .EQ. '.') THEN
-          ! Check following character: digit or blank
-          IF (CARD(NCOL+1) .EQ. ' ' .OR. &
-              (CARD(NCOL+1) .GE. '0' .AND. CARD(NCOL+1) .LE. '9')) THEN
-            SKIP_E = .TRUE.
-          END IF
-        END IF
-        IF (SKIP_E) THEN
-          N = 0
-          CYCLE scan_loop
-        END IF
-      END IF
-
-      ! Start a new word
-      N = 1
-      NEXTWORD(1:1) = C
-      IN_WORD = .TRUE.
-
-    ELSE
-      !--- State: inside a word ---
-      IF (C .EQ. ' ' .OR. C .EQ. '=' .OR. C .EQ. ',') THEN
-        ! Word delimiter — return the word
-        LETCOL = NCOL + 1
-        RETURN
-      END IF
-
-      ! Check if C is alphanumeric (A-Z or 0-9)
-      IS_ALPHA = (C .GE. 'A' .AND. C .LE. 'Z') .OR. &
-                 (C .GE. '0' .AND. C .LE. '9')
-      IF (.NOT. IS_ALPHA) THEN
-        ! Not alphanumeric — abandon word, reset to searching
-        NEXTWORD = ' '
-        N = 0
-        IN_WORD = .FALSE.
-        CYCLE scan_loop
-      END IF
-
-      ! Accumulate character into word (max 20 chars)
-      N = N + 1
-      IF (N .LE. 20) THEN
-        NEXTWORD(N:N) = C
-      END IF
-    END IF
-  END DO scan_loop
-
-  !---------------------------------------------------------------------
-  ! Fell off end of card without completing a word
-  !---------------------------------------------------------------------
-  LETCOL = LAST + 1
-  IFFAIL = 1
-  IF (MORE .GT. 0) RETURN
-  WRITE(6, '(A/(1X,131A1))') 'NEXTWORD HAS READ OFF THE END', &
-    (CARD(I), I = 1, LAST)
-  CALL EXIT(1)
-
-END FUNCTION NEXTWORD
+END SUBROUTINE NEXT_TOKEN
 
 !=========================================================================
 ! SUBROUTINE READMOL
@@ -7201,6 +6929,19 @@ SUBROUTINE CONVEC
       OLDDELT = DELTAT(J)
     END DO  ! IDELTAT
 
+    ! Per-iteration diagnostic at deep-CZ depths (75, 78, 80).
+    ! Goal: see whether DELTAT/ABCONV/DELTA/VCONV/raw-FLXCNV wobble
+    ! iter-to-iter in lockstep with the ERROR column residual.
+    IF (IFPRNT(ITER) .NE. 0 .AND. (J .EQ. 75 .OR. J .EQ. 78 .OR. J .EQ. 80)) THEN
+      WRITE(6, '(A,I3,A,I3,5(A,ES11.3))') &
+        ' CONVEC_DIAG iter=', ITER, ' J=', J, &
+        ' DELTAT=',  DELTAT(J), &
+        ' AB/AB_R=', ABCONV(J) / max(ABROSS(J), 1.0D-30), &
+        ' DELTA=',   DELTA, &
+        ' VCONV=',   VCONV(J), &
+        ' FLXCNV=',  FLXCNV(J)
+    END IF
+
     ! Warn on convergence failure (suppressed during the first
     ! WARN_AFTER_ITER-1 outer iterations while ROSSTAB is filling up).
     ! DSTEP is the final post-relaxation step (DELTAT_new - OLDDELT);
@@ -8895,43 +8636,6 @@ SUBROUTINE HMINOP
   RETURN
 
 END SUBROUTINE HMINOP
-
-!=========================================================================
-! SUBROUTINE LINTER
-!
-! Single-point linear interpolation in a monotonically increasing table.
-!
-! Given a table (XOLD, YOLD) of NOLD points with XOLD increasing,
-! interpolates to find YNEW at the single point XNEW. Extrapolates
-! using the nearest interval if XNEW is outside the table range.
-!=========================================================================
-
-SUBROUTINE LINTER(XOLD, YOLD, NOLD, XNEW, YNEW)
-
-  IMPLICIT NONE
-
-  ! --- Arguments ---
-  INTEGER, INTENT(IN)  :: NOLD
-  REAL(8),  INTENT(IN)  :: XOLD(NOLD), YOLD(NOLD)
-  REAL(8),  INTENT(IN)  :: XNEW
-  REAL(8),  INTENT(OUT) :: YNEW
-
-  ! --- Local variables ---
-  INTEGER :: I
-
-  ! Find the bracketing interval
-  DO I = 2, NOLD
-    IF (XNEW .LT. XOLD(I)) EXIT
-  END DO
-  IF (I .GT. NOLD) I = NOLD
-
-  ! Linear interpolation (or extrapolation at boundaries)
-  YNEW = YOLD(I-1) + (YOLD(I) - YOLD(I-1)) &
-       / (XOLD(I) - XOLD(I-1)) * (XNEW - XOLD(I-1))
-
-  RETURN
-
-END SUBROUTINE LINTER
 
 !=========================================================================
 ! SUBROUTINE HRAYOP
@@ -15294,7 +14998,7 @@ SUBROUTINE SELECTLINES
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES predicted'
   CALL EXIT(1)
 
-  581 WRITE(6, '(I12,A)') N12, ' LINES FROM LOWLINES'
+  581 WRITE(6, '(I12,A)') N12, ' lines from lowlines (predicted)'
   CLOSE(UNIT=11)
 
   !=====================================================================
@@ -15335,8 +15039,9 @@ SUBROUTINE SELECTLINES
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES observed'
   CALL EXIT(1)
 
-  5819 WRITE(6, '(I12,A)') N122, ' LINES FROM LOWLINES observed'
+  5819 WRITE(6, '(I12,A)') N122, ' lines from lowlines (observed)'
   CLOSE(UNIT=111)
+
 
   !=====================================================================
   ! (3) HILINES (unit 21)
@@ -15376,7 +15081,7 @@ SUBROUTINE SELECTLINES
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading HILINES'
   CALL EXIT(1)
 
-  681 WRITE(6, '(I12,A)') N22, ' LINES FROM HILINES'
+  681 WRITE(6, '(I12,A)') N22, ' lines from hilines'
   CLOSE(UNIT=21)
 
   !=====================================================================
@@ -15412,105 +15117,104 @@ SUBROUTINE SELECTLINES
       n_recs          = ndia)
 
     IF (ndia .EQ. 0) THEN
-      WRITE(6, '(A)') '          0 LINES FROM DIATOMICS (no lines.list or empty)'
+      WRITE(6, '(A)') '          0 lines from diatomics (no lines.list or empty)'
       DEALLOCATE(drecs)
-      GOTO 869
-    END IF
+    ELSE
 
-    ! Sort records by IWL (log-wavelength index) ascending.  Use indirect
-    ! sort to avoid moving the records themselves; downstream loop indexes
-    ! drecs(order(ii)).
-    ALLOCATE(keys(ndia), order(ndia))
-    DO ii = 1, ndia
-      keys(ii)  = NINT(LOG(drecs(ii)%wlvac_nm) / RATIOLG)
-      order(ii) = ii
-    END DO
-    CALL sort_indirect_by_int(keys, order, ndia)
-
-    NU            = 1
-    MOLCODEOLD    = 0
-    IMOL          = 0
-
-    DO ii = 1, ndia
-      jj = order(ii)
-      WLVAC_LOC = drecs(jj)%wlvac_nm
-      IWL_LOC   = keys(ii)              ! already sorted, == keys(ii)
-
-      ! Advance NU through the wavelength grid (matches legacy DO WHILE).
-      DO WHILE (IWL_LOC .GE. IWAVETAB(NU))
-        FREQ = CLIGHT_NMS / WAVETAB(NU)
-        NU = NU + 1
+      ! Sort records by IWL (log-wavelength index) ascending.  Use indirect
+      ! sort to avoid moving the records themselves; downstream loop indexes
+      ! drecs(order(ii)).
+      ALLOCATE(keys(ndia), order(ndia))
+      DO ii = 1, ndia
+        keys(ii)  = NINT(LOG(drecs(ii)%wlvac_nm) / RATIOLG)
+        order(ii) = ii
       END DO
+      CALL sort_indirect_by_int(keys, order, ndia)
 
-      MOLCODE = drecs(jj)%molcode
+      NU            = 1
+      MOLCODEOLD    = 0
+      IMOL          = 0
 
-      ! Look up species index (cache last match).
-      IF (MOLCODE .NE. MOLCODEOLD) THEN
-        MOLCODEOLD = MOLCODE
-        IMOL = 0
-        DO K = 1, NMOL
-          IF (MOLCODE .EQ. MOLCODES(K)) THEN
-            IMOL = K
-            EXIT
-          END IF
+      DO ii = 1, ndia
+        jj = order(ii)
+        WLVAC_LOC = drecs(jj)%wlvac_nm
+        IWL_LOC   = keys(ii)              ! already sorted, == keys(ii)
+
+        ! Advance NU through the wavelength grid (matches legacy DO WHILE).
+        DO WHILE (IWL_LOC .GE. IWAVETAB(NU))
+          FREQ = CLIGHT_NMS / WAVETAB(NU)
+          NU = NU + 1
         END DO
-        IF (IMOL .EQ. 0) THEN
-          WRITE(6, '(A,I6)') ' SELECTLINES: unknown diatomic MOLCODE ', MOLCODE
+
+        MOLCODE = drecs(jj)%molcode
+
+        ! Look up species index (cache last match).
+        IF (MOLCODE .NE. MOLCODEOLD) THEN
+          MOLCODEOLD = MOLCODE
+          IMOL = 0
+          DO K = 1, NMOL
+            IF (MOLCODE .EQ. MOLCODES(K)) THEN
+              IMOL = K
+              EXIT
+            END IF
+          END DO
+          IF (IMOL .EQ. 0) THEN
+            WRITE(6, '(A,I6)') ' SELECTLINES: unknown diatomic MOLCODE ', MOLCODE
+            CALL EXIT(1)
+          END IF
+        END IF
+
+        ! Pack physical quantities into LINEREC scaled-integer fields.
+        !
+        ! IGFLOG encoding subtracts ISOX(IMOL)/1000 so that the existing
+        ! line `IGFLOG = max(KGFLOG + ISOX(IMOL), 1)` below restores the
+        ! SYNTHE-side gflog + (x1+x2+fudge) physical value.
+        GFLOG_LOC = drecs(jj)%gflog_dex - ISOX(IMOL) * 1.0D-3
+        GR_LOC    = drecs(jj)%gammar_log
+        GW_LOC    = drecs(jj)%gammaw_log
+
+        IELION_LOC = MOLCODE   ! sign convention: positive (downstream uses abs)
+
+        ! Stuff module-scope LINEREC fields used by PACK_LINEDATA.
+        IWL    = IWL_LOC
+        IELION = IELION_LOC
+        IELO   = NINT(LOG10(MAX(drecs(jj)%elo_cm, 1.0D-10)) * 1000.0D0 + 16384.0D0)
+        IGFLOG = NINT(GFLOG_LOC                              * 1000.0D0 + 16384.0D0)
+        IGR    = NINT(GR_LOC                                 * 1000.0D0 + 16384.0D0)
+        IGS    = 1
+        IGW    = NINT(GW_LOC                                 * 1000.0D0 + 16384.0D0)
+
+        ! Apply selection filters (mirrors legacy case-4 logic).
+        KGFLOG = IGFLOG
+        IGFLOG = max(KGFLOG + ISOX(IMOL), 1)
+        NELION = abs(IELION / 10)
+        IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
+        CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+        IF (CENRATIO .LT. 1.0D0) CYCLE
+        tablog8 = TABLOG(IELO)
+        IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+
+        CALL PACK_LINEDATA(LINEREC)
+        NLINES_STORED = NLINES_STORED + 1
+        IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
           CALL EXIT(1)
         END IF
-      END IF
+        LINEDATA(:, NLINES_STORED) = LINEREC
+        IF (mod(ii, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+          WRITE(6, '(8I15)') ii, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+        N32 = N32 + 1
+      END DO
 
-      ! Pack physical quantities into LINEREC scaled-integer fields.
-      !
-      ! IGFLOG encoding subtracts ISOX(IMOL)/1000 so that the existing
-      ! line `IGFLOG = max(KGFLOG + ISOX(IMOL), 1)` below restores the
-      ! SYNTHE-side gflog + (x1+x2+fudge) physical value.
-      GFLOG_LOC = drecs(jj)%gflog_dex - ISOX(IMOL) * 1.0D-3
-      GR_LOC    = drecs(jj)%gammar_log
-      GW_LOC    = drecs(jj)%gammaw_log
-
-      IELION_LOC = MOLCODE   ! sign convention: positive (downstream uses abs)
-
-      ! Stuff module-scope LINEREC fields used by PACK_LINEDATA.
-      IWL    = IWL_LOC
-      IELION = IELION_LOC
-      IELO   = NINT(LOG10(MAX(drecs(jj)%elo_cm, 1.0D-10)) * 1000.0D0 + 16384.0D0)
-      IGFLOG = NINT(GFLOG_LOC                              * 1000.0D0 + 16384.0D0)
-      IGR    = NINT(GR_LOC                                 * 1000.0D0 + 16384.0D0)
-      IGS    = 1
-      IGW    = NINT(GW_LOC                                 * 1000.0D0 + 16384.0D0)
-
-      ! Apply selection filters (mirrors legacy case-4 logic).
-      KGFLOG = IGFLOG
-      IGFLOG = max(KGFLOG + ISOX(IMOL), 1)
-      NELION = abs(IELION / 10)
-      IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
-      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-      IF (CENRATIO .LT. 1.0D0) CYCLE
-      tablog8 = TABLOG(IELO)
-      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-      CALL PACK_LINEDATA(LINEREC)
-      NLINES_STORED = NLINES_STORED + 1
-      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-        CALL EXIT(1)
-      END IF
-      LINEDATA(:, NLINES_STORED) = LINEREC
-      IF (mod(ii, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-        WRITE(6, '(8I15)') ii, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-      N32 = N32 + 1
-    END DO
-
-    DEALLOCATE(drecs, keys, order)
+      DEALLOCATE(drecs, keys, order)
+      WRITE(6, '(I12,A)') N32, ' lines from diatomics'
+    END IF
   END BLOCK
-
-  WRITE(6, '(I12,A)') N32, ' LINES FROM DIATOMICS'
 
   !=====================================================================
   ! (5) TiO (unit 41)
   !=====================================================================
-  869 OPEN(UNIT=41, FILE=trim(DATADIR)//'schwenke.bin', &
+  OPEN(UNIT=41, FILE=trim(DATADIR)//'schwenke.bin', &
        STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
            ACCESS='STREAM', ERR=1869)
   NU = 1
@@ -15556,7 +15260,7 @@ SUBROUTINE SELECTLINES
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading TIOLINES'
   CALL EXIT(1)
 
-  881 WRITE(6, '(I12,A)') N42, ' LINES FROM TIOLINES'
+  881 WRITE(6, '(I12,A)') N42, ' lines from tiolines'
   CLOSE(UNIT=41)
 
   !=====================================================================
@@ -15619,7 +15323,7 @@ SUBROUTINE SELECTLINES
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H2OFAST'
   CALL EXIT(1)
 
-  1881 WRITE(6, '(I12,A)') N52, ' LINES FROM H2OFAST'
+  1881 WRITE(6, '(I12,A)') N52, ' lines from h2ofastfix'
   CLOSE(UNIT=51)
 
   !=====================================================================
@@ -15664,14 +15368,14 @@ SUBROUTINE SELECTLINES
   WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H3PLUS'
   CALL EXIT(1)
 
-  2881 WRITE(6, '(I10,A)') N62, ' LINES FROM H3PLUS'
+  2881 WRITE(6, '(I10,A)') N62, ' lines from h3plus'
   CLOSE(UNIT=61)
 
   !=====================================================================
   ! Summary
   !=====================================================================
   1882 N18 = N12 + N122 + N22 + N32 + N42 + N52 + N62
-  WRITE(6, '(I12,A)') N18, ' LINES TOTAL'
+  WRITE(6, '(I12,A)') N18, ' lines total'
   WRITE(6,*) 
   IF (NLINES_STORED .EQ. 0) THEN
     CALL EXIT(1)
@@ -15680,142 +15384,6 @@ SUBROUTINE SELECTLINES
   FLUSH(6)
   
 END SUBROUTINE SELECTLINES
-
-!=========================================================================
-! FUNCTION MAP4(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
-!
-! Piecewise quadratic interpolation with curvature-weighted blending.
-!
-! Remaps function values FOLD on grid XOLD (NOLD points) onto new grid
-! XNEW (NNEW points), storing results in FNEW.  Both grids must be
-! monotonically increasing.
-!
-! For each new point, two local quadratic fits are constructed:
-!   - "backward" through points (L-2, L-1, L)
-!   - "forward"  through points (L-1, L, L+1)
-! where L is the upper bracket index.  These are blended using weights
-! proportional to curvature: WT = |C_fwd| / (|C_fwd| + |C_bak|).
-! The blended quadratic is evaluated as f(x) = A + (B + C*x)*x.
-!
-! Edge cases:
-!   - Near start (L=2): linear interpolation/extrapolation
-!   - Near end (L=NOLD): backward quadratic only
-!   - Past end (L>NOLD): linear extrapolation from last two points
-!   - Same interval as previous point: reuse coefficients
-!   - Adjacent interval: shift (backward = previous forward)
-!
-! Returns: index of last interval used (LL-1).
-!=========================================================================
-
-FUNCTION MAP4(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)
-
-  IMPLICIT NONE
-
-  INTEGER, INTENT(IN)  :: NOLD, NNEW
-  REAL(8),  INTENT(IN)  :: XOLD(NOLD), FOLD(NOLD)
-  REAL(8),  INTENT(IN)  :: XNEW(NNEW)
-  REAL(8),  INTENT(OUT) :: FNEW(NNEW)
-  INTEGER :: MAP4
-
-  ! --- Local variables ---
-  REAL(8)  :: A, B, C, D
-  REAL(8)  :: ABAC, BBAC, CBAC
-  REAL(8)  :: AFOR, BFOR, CFOR
-  REAL(8)  :: WT
-  INTEGER :: K, L, LL, L1, L2
-
-  L  = 2
-  LL = 0
-  A  = 0.0D0
-  B  = 0.0D0
-  C  = 0.0D0
-  CBAC = 0.0D0; BBAC = 0.0D0; ABAC = 0.0D0
-  CFOR = 0.0D0; BFOR = 0.0D0; AFOR = 0.0D0
-
-  DO K = 1, NNEW
-
-    !-------------------------------------------------------------------
-    ! Bracket: find L such that XOLD(L-1) <= XNEW(K) < XOLD(L)
-    !-------------------------------------------------------------------
-    DO WHILE (L .LE. NOLD)
-      IF (XNEW(K) .LT. XOLD(L)) EXIT
-      L = L + 1
-    END DO
-
-    ! If same interval as last point, reuse coefficients
-    IF (L .EQ. LL) THEN
-      FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-      CYCLE
-    END IF
-
-    !-------------------------------------------------------------------
-    ! Past end or at start: linear interpolation/extrapolation
-    !-------------------------------------------------------------------
-    IF (L .GT. NOLD .OR. L .EQ. 2) THEN
-      L = min(NOLD, L)
-      C = 0.0D0
-      B = (FOLD(L) - FOLD(L-1)) / (XOLD(L) - XOLD(L-1))
-      A = FOLD(L) - XOLD(L) * B
-      LL = L
-      FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-      CYCLE
-    END IF
-
-    !-------------------------------------------------------------------
-    ! Interior point: construct backward and forward quadratics
-    !-------------------------------------------------------------------
-    L1 = L - 1
-
-    ! Backward quadratic through (L-2, L-1, L)
-    IF (L .LE. LL + 1 .AND. L .NE. 3) THEN
-      ! Adjacent interval: shift (backward = previous forward)
-      CBAC = CFOR
-      BBAC = BFOR
-      ABAC = AFOR
-    ELSE
-      ! Compute from scratch
-      L2 = L - 2
-      D = (FOLD(L1) - FOLD(L2)) / (XOLD(L1) - XOLD(L2))
-      CBAC = FOLD(L) / ((XOLD(L) - XOLD(L1)) * (XOLD(L) - XOLD(L2))) &
-           + (FOLD(L2) / (XOLD(L) - XOLD(L2)) &
-            - FOLD(L1) / (XOLD(L) - XOLD(L1))) / (XOLD(L1) - XOLD(L2))
-      BBAC = D - (XOLD(L1) + XOLD(L2)) * CBAC
-      ABAC = FOLD(L2) - XOLD(L2) * D + XOLD(L1) * XOLD(L2) * CBAC
-    END IF
-
-    ! At last point: use backward quadratic only
-    IF (L .GE. NOLD) THEN
-      C = CBAC
-      B = BBAC
-      A = ABAC
-      LL = L
-      FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-      CYCLE
-    END IF
-
-    ! Forward quadratic through (L-1, L, L+1)
-    D = (FOLD(L) - FOLD(L1)) / (XOLD(L) - XOLD(L1))
-    CFOR = FOLD(L+1) / ((XOLD(L+1) - XOLD(L)) * (XOLD(L+1) - XOLD(L1))) &
-         + (FOLD(L1) / (XOLD(L+1) - XOLD(L1)) &
-          - FOLD(L) / (XOLD(L+1) - XOLD(L))) / (XOLD(L) - XOLD(L1))
-    BFOR = D - (XOLD(L) + XOLD(L1)) * CFOR
-    AFOR = FOLD(L1) - XOLD(L1) * D + XOLD(L) * XOLD(L1) * CFOR
-
-    ! Curvature-weighted blending
-    WT = 0.0D0
-    IF (abs(CFOR) .NE. 0.0D0) WT = abs(CFOR) / (abs(CFOR) + abs(CBAC))
-    A = AFOR + WT * (ABAC - AFOR)
-    B = BFOR + WT * (BBAC - BFOR)
-    C = CFOR + WT * (CBAC - CFOR)
-    LL = L
-
-    FNEW(K) = A + (B + C * XNEW(K)) * XNEW(K)
-  END DO
-
-  MAP4 = LL - 1
-  RETURN
-
-END FUNCTION MAP4
 
 !=======================================================================
 ! TABVOIGT: Pretabulate Voigt profile components
@@ -15874,12 +15442,10 @@ SUBROUTINE TABVOIGT(VSTEPS, N)
   INTEGER :: I, IDUM
   REAL(8)  :: VV
 
-  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING TABVOIGT'
-
   DO I = 1, N
     H0TAB(I) = dble(I - 1) / VSTEPS
   END DO
-  IDUM = MAP4(TABVI, TABH1, NTAB, H0TAB, H1TAB, N)
+  IDUM = MAP1(TABVI, TABH1, NTAB, H0TAB, H1TAB, N)
   DO I = 1, N
     VV = (dble(I - 1) / VSTEPS)**2
     H0TAB(I) = exp(-VV)

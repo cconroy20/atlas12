@@ -23,15 +23,6 @@
 !        g. Output results
 !     3. Loop back to read next model
 !
-!   Change log (selected):
-!     17sep2015  Convective flux smoothing enabled
-!     16sep2015  Enforcing temperature minimum of 0.75*Teff
-!     27jan2015  Reformatted fort.8 output (surface flux) — C. Conroy
-!     21jan2015  Changed to 80 depths — C. Conroy
-!     04nov2009  Bugs in COMPUTE_ALL_POPS for Be, B, Ar — M. Stift
-!     22oct2009  Oxygen bug in PFSAHA — M. Stift
-!     05aug2009  van der Waals broadening by H2 in HPROF
-!     See source header for full history.
 !=========================================================================
 
 PROGRAM ATLAS12
@@ -87,6 +78,7 @@ PROGRAM ATLAS12
   !     heabnd=X   : He number fraction Y (default: from model);
   !                  H is computed as X = 1 - Y - Z for consistency
   !     abund=file : file with individual element overrides (Z  log_abund)
+  
   OUTBASE    = 'mystar'
   ABUND_FILE = ''
   INPUT_MODEL_FILE = ''
@@ -194,7 +186,6 @@ PROGRAM ATLAS12
   OPEN(UNIT=7,  FILE=TRIM(OUTBASE)//'.atm',   STATUS='REPLACE')
   OPEN(UNIT=8,  FILE=TRIM(OUTBASE)//'.flux',  STATUS='REPLACE')
   OPEN(UNIT=66, FILE=TRIM(OUTBASE)//'.iter',  STATUS='REPLACE')
-  OPEN(UNIT=67, FILE=TRIM(OUTBASE)//'.tcorr', STATUS='REPLACE')
 
   ! --- Locate data files via $ATLAS12 environment variable ---
   CALL GET_ENVIRONMENT_VARIABLE('ATLAS12', ENVVAL, ENVLEN, ENVSTAT)

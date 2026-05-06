@@ -8,9 +8,9 @@
 !
 !  Example usage:
 !
-!    ./synthe_spectrv.exe model.dat wlbeg=400 wlend=700
+!    ./synthe.exe model.dat wlbeg=400 wlend=700
 !
-!    ./synthe_spectrv.exe model.dat wlbeg=400 wlend=700 \
+!    ./synthe.exe model.dat wlbeg=400 wlend=700 \
 !                         resolu=500000 turbv=1.5 more_output=yes
 !
 !  Arguments:
@@ -25,8 +25,8 @@
 !  Units:
 !     5  input  : model atmosphere cards (CLI argument, read by READIN)
 !    11  output : ASCII spectrum <model>.spec
-!    33  output : <model>.linform (wavelength / flux / continuum / tau table) -- only when more_output=yes
-!    35  output : <model>.mol molecular number density table                   -- only when more_output=yes
+!    33  output : <model>.linform (wavelength / flux / continuum / tau table)
+!    35  output : <model>.mol molecular number density table
 !
 !  <model>.spec format, one line per wavelength point:
 !    cols  1-11 : wavelength (Angstroms),        F11.4
@@ -96,7 +96,7 @@ PROGRAM SYNTHE
 
   ! --- Run parameters set from CLI --------------------------------------
   REAL(4)   :: turbv
-  LOGICAL   :: more_output   ! emit .mol (molecular densities) and .linform (tau tables)
+  LOGICAL   :: more_output   ! print .mol (molecular densities) and .linform (tau tables)
 
   ! --- Model atmosphere header ------------------------------------------
   INTEGER   :: nedge
