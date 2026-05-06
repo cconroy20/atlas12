@@ -1755,6 +1755,20 @@ SUBROUTINE TCORR(MODE, RCOWT)
   REAL(8), PARAMETER :: RDIAGJ_FLOOR = 1.0D-30    ! prevent division by zero
   REAL(8), PARAMETER :: ABROSS_FLOOR = 1.0D-30    ! prevent division by zero
   REAL(8), PARAMETER :: DEL_FLOOR    = 1.0D-10    ! prevent division by zero in superadiabatic excess
+  ! DTLAMB is zeroed where the local convective fraction
+  !   HRATIO = CNVFLX / (CNVFLX + FLXRAD)
+  ! exceeds this threshold.  The original code gated on CNVFLX/FLXRAD
+  ! >= 1e-5 (DTLAMB off at the slightest hint of convection) AND'd with
+  ! τ_Ross >= 1 (DTLAMB off in deep radiative atmospheres of hot stars,
+  ! which is wrong physics).  τ gate removed; threshold loosened to
+  ! 1e-3 so DTLAMB stays active across more of the radiative-convective
+  ! transition.  HRATIO is bounded [0,1] and well-behaved.
+  REAL(8), PARAMETER :: HRATIO_DTLAMB_OFF = 1.0D-3
+  ! Per-iteration cap on |ΔT| applied via DTLAMB and DTSURF.  Expressed
+  ! as a fraction of Teff so the absolute clamp scales sensibly across
+  ! the HR diagram (140 K for cool dwarfs, 400 K for solar, 1000 K for
+  ! hot stars).  Historical Kurucz-lore choice: 4% (= 1/25 in F77).
+  REAL(8), PARAMETER :: MAX_DT_FRAC = 0.04D0
 
   ! --- Persistent locals (accumulate across MODE 1→2→3 calls) ---
   REAL(8), SAVE :: RJMINS(kw)   ! integrated opacity-weighted (J - S)
@@ -1788,9 +1802,8 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! --- MODE 3 locals: Lambda correction ---
   REAL(8)  :: DTLAMB(kw)        ! Lambda-iteration temperature correction
   REAL(8)  :: DTSURF(kw)        ! surface boundary correction
-  REAL(8)  :: DTCONV(kw)        ! convective flux correction (currently zero; see C2/E2)
   REAL(8)  :: T1(kw)            ! total correction
-  REAL(8)  :: TEFF25            ! clamp: Teff/25
+  REAL(8)  :: MAX_DT             ! per-iteration |ΔT| cap = MAX_DT_FRAC * Teff
   REAL(8)  :: DTSUR             ! surface correction magnitude
   REAL(8)  :: DUM(kw), TINTEG(kw), TAV
   REAL(8)  :: TONE_ARR(1), TTWO_ARR(1), XNEW_TMP(1)
@@ -1990,23 +2003,6 @@ SUBROUTINE TCORR(MODE, RCOWT)
              / (FLXRAD(J) + CNVFLX(J) * 1.5D0 * DLTDLP(J) * DDEL(J))
   END DO
 
-  ! Diagnostic: TCORR drives GFLUX -> 0, not FLXERR -> 0.  In the deep CZ
-  ! the two differ by a factor (FLXRAD+CNVFLX) / (FLXRAD+1.5*CNVFLX*∇·∆),
-  ! which can be ~1.5-3.  Print both so we can tell whether the residual
-  ! we're chasing is a real flux imbalance or just diagnostic scaling.
-  IF (IFPRNT(ITER) .NE. 0) THEN
-    DO J = 75, 80, 1
-      IF (J .EQ. 75 .OR. J .EQ. 78 .OR. J .EQ. 80) THEN
-        WRITE(6, '(A,I3,A,I3,3(A,ES11.3))') &
-          ' TCORR_DIAG iter=', ITER, ' J=', J, &
-          '  FLXERR%=',  (FLXRAD(J) + CNVFLX(J) - FLUX) / FLUX * 100.0D0, &
-          '  GFLUX=',    GFLUX(J), &
-          '  ratio=',    (FLXRAD(J) + CNVFLX(J)) / &
-                         (FLXRAD(J) + CNVFLX(J)*1.5D0*DLTDLP(J)*DDEL(J))
-      END IF
-    END DO
-  END IF
-
   CALL INTEG(TAUROS, GFLUX, DTAU, NRHOX, 0.0D0)
   DO J = 1, NRHOX
     DTAU(J) = DTAU(J) / G(J)
@@ -2016,23 +2012,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
     DTFLUX(J) = -DTAU(J) * DTDRHX(J) / ABROSS_safe
   END DO
 
-  TEFF25 = TEFF / 25.0D0
-
-  !---------------------------------------------------------------------
-  ! (C2) [REMOVED] DTFLUX attenuation in convective layers.
-  !
-  !      An earlier modernization multiplied DTFLUX by (1 - f_conv) in
-  !      convective layers to prevent the structural deep-layer flux
-  !      bias seen in cool-dwarf models from polluting DTFLUX globally.
-  !      For normal stars this killed the only flux-constancy feedback
-  !      in the deep CZ and made converged solar models ~300 K too cool
-  !      at tau ~ 100. Removed; DTFLUX now operates at full strength
-  !      everywhere, matching F77.
-  !
-  !      DTCONV is retained as a zeroed array so the section (F) sum
-  !      and the section (H) diagnostic print continue to work.
-  !---------------------------------------------------------------------
-  DTCONV(:) = 0.0D0
+  MAX_DT = MAX_DT_FRAC * TEFF
 
   !---------------------------------------------------------------------
   ! (D) DTLAMB: Lambda-iteration correction (optically thin layers)
@@ -2044,11 +2024,15 @@ SUBROUTINE TCORR(MODE, RCOWT)
   FLXERR = (FLXRAD + CNVFLX - FLUX) / FLUX * 100.0D0
   CALL DERIV(TAUROS, FLXERR, FLXDRV, NRHOX)
 
-  ! Find first layer where convection becomes significant
-  ! (used to safely bound the DTLAMB backward-damping reach)
+  ! Convective fraction at each depth (also used by the iteration-damping
+  ! logic and the .iter diagnostic output).
+  HRATIO = CNVFLX / (CNVFLX + max(FLXRAD, 1.0D-30))
+
+  ! Find first layer where convection dominates flux transport (used to
+  ! safely bound the DTLAMB backward-damping reach).
   JCONV = NRHOX + 1
   DO J = 1, NRHOX
-    IF (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) .GE. 1.0D-5 .OR. TAUROS(J) .GE. 1.0D0) THEN
+    IF (HRATIO(J) .GE. HRATIO_DTLAMB_OFF) THEN
       JCONV = J
       EXIT
     END IF
@@ -2056,7 +2040,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
 
   DO J = 1, NRHOX
     ! In radiative layers, replace flux derivative with thermal imbalance
-    IF (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) .LT. 1.0D-5) THEN
+    IF (HRATIO(J) .LT. HRATIO_DTLAMB_OFF) THEN
       ABROSS_safe = max(ABROSS(J), ABROSS_FLOOR)
       FLXDRV(J) = RJMINS(J) / ABROSS_safe / FLUX * 100.0D0
     END IF
@@ -2066,18 +2050,17 @@ SUBROUTINE TCORR(MODE, RCOWT)
               / max(abs(RDIAGJ(J)), RDIAGJ_FLOOR) * sign(1.0D0, RDIAGJ(J)) &
               * max(ABROSS(J), ABROSS_FLOOR)
 
-    ! Zero DTLAMB in convective / optically thick layers, and
-    ! damp preceding layers to ensure smooth transition
-    IF (CNVFLX(J) / max(FLXRAD(J), 1.0D-30) .GE. 1.0D-5 .OR. TAUROS(J) .GE. 1.0D0) THEN
+    ! Zero DTLAMB where convection carries a non-trivial fraction of the
+    ! flux, and damp the 5 preceding layers for a smooth transition.
+    IF (HRATIO(J) .GE. HRATIO_DTLAMB_OFF) THEN
       DTLAMB(J) = 0.0D0
-      ! Damp 5 preceding layers (with bounds check)
       DO K = 1, 5
         IF (J - K .GE. 1) DTLAMB(J - K) = DTLAMB(J - K) / 2.0D0
       END DO
     END IF
 
-    ! Clamp to ±Teff/25
-    DTLAMB(J) = max(-TEFF25, min(TEFF25, DTLAMB(J)))
+    ! Clamp to a fraction of Teff
+    DTLAMB(J) = max(-MAX_DT, min(MAX_DT, DTLAMB(J)))
   END DO
 
   !---------------------------------------------------------------------
@@ -2087,7 +2070,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !---------------------------------------------------------------------
   
   DTSUR = (FLUX - FLXRAD(1)) / FLUX * 0.25D0 * T(1)
-  DTSUR = max(-TEFF25, min(TEFF25, DTSUR))
+  DTSUR = max(-MAX_DT, min(MAX_DT, DTSUR))
 
   DUM = DTFLUX + DTLAMB
   CALL INTEG(TAUROS, DUM, TINTEG, NRHOX, 0.0D0)
@@ -2102,39 +2085,11 @@ SUBROUTINE TCORR(MODE, RCOWT)
   DTSUR = DTSUR - TAV
 
   DTSURF = DTSUR
-  HRATIO = CNVFLX / (CNVFLX + max(FLXRAD, 1.0D-30))
-
-  !---------------------------------------------------------------------
-  ! (E2) [REMOVED] Adiabatic sweep DTCONV.
-  !
-  !      An earlier modernization built DTCONV by sweeping downward from
-  !      the shallowest convective layer (the "anchor"), enforcing the
-  !      adiabatic gradient via T_adiab = T_sweep(J-1) * exp(grad_ad * dlnP).
-  !      Intent: paired with the C/C2 suppressions, this would replace
-  !      DTFLUX in the deep CZ and let the structure follow the adiabat
-  !      from the corrected anchor downward. Together with C and C2 this
-  !      was meant to address cool-dwarf convergence failures.
-  !
-  !      Failure modes that motivated removal:
-  !        - The recurrence T_sweep(J) = T_sweep(J-1) * exp(grad_ad * dlnP)
-  !          amplifies anchor errors exponentially through the deep CZ
-  !          (factor ~exp(grad_ad * sum dlnP) ~ 2-3 by tau ~ 100).
-  !        - DLNP = ln(P(J)/P(J-1)) shifts iteration-to-iteration as the
-  !          structure relaxes, injecting noise into deep T(tau) that
-  !          does not damp out.
-  !        - With C2 also active, no flux-constancy feedback remained in
-  !          the deep CZ; the model relaxed onto an internally
-  !          self-consistent but flux-incorrect adiabat, with FLXERR
-  !          large at depth even as T1 -> 0.
-  !
-  !      DTCONV stays zero (set in section C2). DTFLUX + DTLAMB + DTSURF
-  !      handle the full T-correction, as in F77.
-  !---------------------------------------------------------------------
 
   !---------------------------------------------------------------------
   ! (F) Total correction and iteration damping
   !---------------------------------------------------------------------
-  T1 = DTFLUX + DTLAMB + DTSURF + DTCONV
+  T1 = DTFLUX + DTLAMB + DTSURF
 
   ! Iteration damping: compare current correction T1 against previous
   ! iteration's correction OLDT1 to detect convergence behavior.
@@ -2180,17 +2135,17 @@ SUBROUTINE TCORR(MODE, RCOWT)
   IF (IFPRNT(ITER) .NE. 0) THEN
     WRITE(66, 100) &
          (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), DTSURF(J), &
-          DTFLUX(J), DTCONV(J), T1(J), FLXERR(J), FLXDRV(J), &
+          DTFLUX(J), T1(J), FLXERR(J), FLXDRV(J), &
           DLTDLP(J), GRDADB(J), HRATIO(J), P(J), XNE(J), HEIGHT(J), &
           ACCRAD(J), J=1,NRHOX)
 100 FORMAT(&
-      '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX  DTCONV     T1', &
+      '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
       '      ERROR       DERIV   NABLA NABLA_AD     CONV/TOT', &
       '        P           XNE       HEIGHT     ACCRAD' / &
-      '                  K        K       K       K       K       K', &
+      '                  K        K       K       K       K', &
       '          %           %                              ', &
       '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-      (I3, F8.3, F10.1, 5F8.1, &
+      (I3, F8.3, F10.1, 4F8.1, &
        1X,ES11.2, 1X,ES11.2, 2F8.3, 1X,ES11.2, &
        1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
     flush(66)
@@ -6928,19 +6883,6 @@ SUBROUTINE CONVEC
           ABS(DSTEP) .LT. 1.0D-3 * MAX(ABS(DELTAT(J)), 1.0D0)) EXIT
       OLDDELT = DELTAT(J)
     END DO  ! IDELTAT
-
-    ! Per-iteration diagnostic at deep-CZ depths (75, 78, 80).
-    ! Goal: see whether DELTAT/ABCONV/DELTA/VCONV/raw-FLXCNV wobble
-    ! iter-to-iter in lockstep with the ERROR column residual.
-    IF (IFPRNT(ITER) .NE. 0 .AND. (J .EQ. 75 .OR. J .EQ. 78 .OR. J .EQ. 80)) THEN
-      WRITE(6, '(A,I3,A,I3,5(A,ES11.3))') &
-        ' CONVEC_DIAG iter=', ITER, ' J=', J, &
-        ' DELTAT=',  DELTAT(J), &
-        ' AB/AB_R=', ABCONV(J) / max(ABROSS(J), 1.0D-30), &
-        ' DELTA=',   DELTA, &
-        ' VCONV=',   VCONV(J), &
-        ' FLXCNV=',  FLXCNV(J)
-    END IF
 
     ! Warn on convergence failure (suppressed during the first
     ! WARN_AFTER_ITER-1 outer iterations while ROSSTAB is filling up).
