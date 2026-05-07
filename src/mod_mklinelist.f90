@@ -93,7 +93,7 @@ MODULE mod_mklinelist
 
   ! --- Teff gate for cool-atmosphere molecular lines (H2O, TiO) ---------
   ! Species skipped when Teff > this, even if listed in lines.list.
-  REAL(8), PARAMETER :: TEFF_COOL_LIMIT = 5000.0D0
+  REAL(8), PARAMETER :: TEFF_COOL_LIMIT = 8000.0D0
 
 CONTAINS
 
@@ -191,7 +191,7 @@ CONTAINS
       IF (is_tio_file(mol_files(imol)) .AND. teff .GT. TEFF_COOL_LIMIT) THEN
         IF (VERBOSE .EQ. 1) &
           WRITE(6,SKIP_FMT) 'mol', 'skip', '', &
-            'Teff > 5000 K: ', TRIM(basename(mol_files(imol)))
+            'Teff > 8000 K: ', TRIM(basename(mol_files(imol)))
         CYCLE
       END IF
       n_lte_mol_before = n_lte_mol
@@ -206,7 +206,7 @@ CONTAINS
       IF (teff .GT. TEFF_COOL_LIMIT) THEN
         IF (VERBOSE .EQ. 1) &
           WRITE(6,SKIP_FMT) 'h2o', 'skip', '', &
-            'Teff > 5000 K: ', TRIM(basename(h2o_file))
+            'Teff > 8000 K: ', TRIM(basename(h2o_file))
       ELSE
         CALL read_h2o(h2o_file, wlbeg, wlend, ratiolg, ixwlbeg, &
                       lte_h2o, n_lte_h2o)

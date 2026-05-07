@@ -1078,7 +1078,7 @@ MODULE mod_atlas_data
   ! --- Flag set if SYNTHE should emit .mol/.linform output files ---
   ! Gated by the more_output CLI argument.  NMOLEC checks IFMOLOUT to
   ! decide whether to write its molecular-density table to unit 35.
-  INTEGER :: IFMOLOUT = 0
+  INTEGER  :: IFMOLOUT = 0
 
   ! --- Radiative transfer J-coefficient matrix ---
   REAL(8)  :: COEFJ(51, 51)
@@ -1088,7 +1088,7 @@ MODULE mod_atlas_data
 
   ! --- Angular quadrature ---
   REAL(8)  :: ANGLE(20), SURFI(20) = 0.0d0
-  INTEGER :: NMU = 1
+  INTEGER  :: NMU = 1
 
   ! --- Individual continuous opacity sources ---
   REAL(8)  :: AHYD(kw), AH2P(kw), AHMIN(kw), SIGH(kw)
@@ -1192,7 +1192,7 @@ MODULE mod_atlas_data
 
   ! --- Output control ---
   REAL(8)  :: PUT
-  INTEGER :: IPUT
+  INTEGER  :: IPUT
 
   ! --- Zero-point pressure and radiation field ---
   REAL(8)  :: PZERO, PCON, PRADK0, PTURB0
@@ -1203,7 +1203,7 @@ MODULE mod_atlas_data
 
   ! --- Column mass depth scale ---
   REAL(8)  :: RHOX(kw)
-  INTEGER :: NRHOX = 0
+  INTEGER  :: NRHOX = 0
 
   ! --- Mean intensity diagnostic ---
   REAL(8)  :: RJMINSNU(kw), RDIAGJNU(kw)
@@ -1213,7 +1213,7 @@ MODULE mod_atlas_data
 
   ! --- Depth integration step parameters ---
   REAL(8)  :: STEPLG = 0.125d0, TAU1LG = -6.875d0
-  INTEGER :: KRHOX = 0
+  INTEGER  :: KRHOX = 0
 
   ! --- Continuous opacity table ---
   !
@@ -1292,24 +1292,24 @@ MODULE mod_atlas_data
 
   ! --- Temperature and derived quantities ---
   REAL(8)  :: T(kw), TKEV(kw), TK(kw), HKT(kw), HCKT(kw), TLOG(kw)
-  INTEGER :: ITEMP
+  INTEGER  :: ITEMP
 
   ! --- Temperature smoothing ---
-  INTEGER :: J1SMOOTH = 0, J2SMOOTH = 0
+  INTEGER  :: J1SMOOTH = 0, J2SMOOTH = 0
   REAL(8)  :: WTJM1 = 0.3d0, WTJ = 0.4d0, WTJP1 = 0.3d0, TSMOOTH(kw)
 
   ! --- Turbulent pressure ---
   REAL(8)  :: VTURB(kw) = 0.0d0, PTURB(kw) = 0.0d0, TRBFDG = 0.0d0, &
        TRBCON = 0.0d0, TRBPOW = 0.0d0, TRBSND = 0.0d0
-  INTEGER :: IFTURB = 0
+  INTEGER  :: IFTURB = 0
 
   ! --- Wavelength grid control ---
   REAL(8)  :: WBEGIN, DELTAW
-  INTEGER :: IFWAVE = 0
+  INTEGER  :: IFWAVE = 0
 
   ! --- Current line data ---
   REAL(8)  :: WLVAC
-  INTEGER :: NELION
+  INTEGER  :: NELION
   REAL(8)  :: CGF, ELO, GAMMAR, GAMMAS, GAMMAW
 
   ! --- Depth-dependent abundances ---
@@ -1332,7 +1332,7 @@ MODULE mod_atlas_data
 
   ! Flag: set to 1 after MOLEC has read molecular data from INPUTDATA
   ! (or when NMOLEC has populated the arrays directly, skipping the read).
-  INTEGER :: MOLEC_IREAD = 0
+  INTEGER  :: MOLEC_IREAD = 0
 
   ! --- Saved number densities for equilibrium ---
   REAL(8)  :: XNSAVE(kw, maxeq)
@@ -1350,17 +1350,17 @@ MODULE mod_atlas_data
   INTEGER, PARAMETER :: NSTARK_DENS_MAX = 20      ! max density grid points
 
   TYPE :: stark_series_t
-    INTEGER :: n_lower                             ! lower quantum number
-    INTEGER :: n_upper_min, n_upper_max            ! upper quantum number range
-    INTEGER :: n_transitions                       ! = n_upper_max - n_upper_min + 1
-    INTEGER :: n_dens                              ! actual number of density points
+    INTEGER  :: n_lower                             ! lower quantum number
+    INTEGER  :: n_upper_min, n_upper_max            ! upper quantum number range
+    INTEGER  :: n_transitions                       ! = n_upper_max - n_upper_min + 1
+    INTEGER  :: n_dens                              ! actual number of density points
     REAL(8)  :: density_grid(NSTARK_DENS_MAX)       ! Ne [cm^-3]
     REAL(8)  :: temp_grid(NSTARK_TEMPS)             ! T [K]
     REAL(8)  :: log_dalpha_grid(NSTARK_DALPHA)      ! log10(Δα)
-    INTEGER, ALLOCATABLE :: max_dens_idx(:)        ! (n_transitions) highest valid density
+    INTEGER, ALLOCATABLE  :: max_dens_idx(:)        ! (n_transitions) highest valid density
     REAL(8),  ALLOCATABLE :: k_alpha(:)             ! (n_transitions) asymptotic wing constant
     REAL(8),  ALLOCATABLE :: profiles(:,:,:,:)      ! (NSTARK_DALPHA, NSTARK_TEMPS, n_dens, n_transitions)
-    LOGICAL :: loaded = .FALSE.
+    LOGICAL  :: loaded = .FALSE.
   END TYPE stark_series_t
 
   TYPE(stark_series_t), TARGET :: STEHLE_DATA(NSTARK_SERIES)
@@ -5937,16 +5937,23 @@ SUBROUTINE NMOLEC(MODE)
         !           + a0 + a1/T + a2 ln T + a3 T + a4/T^2
         ! where EQUIL(1) = D0 [eV], EQUIL(2:6) = a0..a4, and n_trans is
         ! determined from the molecule's atom/ion bookkeeping below.
-        ! This basis replaces Kurucz's earlier polynomial in T (1, T, T^2,
-        ! T^3, T^4) and is well-behaved at all temperatures (no T^4 blowup),
-        ! so the previous T<=10000 K guard is no longer needed.
+        !
+        ! T-domain guards (matching F77):
+        !   - H2:           T <= 20,000 K  (special EQUILH2 function)
+        !   - all others:   T <= 10,000 K
+        ! Above the guard, EQUILJ(JMOL) = 0, meaning "this molecule is
+        ! fully dissociated at this depth and contributes nothing to the
+        ! chemical equilibrium."  The guard is essential at hot-star
+        ! deep-atmosphere conditions: above 10,000 K the polynomial
+        ! coefficients no longer represent dissociation physics, and the
+        ! resulting K_eq values can destabilize the Newton-Raphson solver.
         ION = int((XNMOLCODE(JMOL) - aint(XNMOLCODE(JMOL))) * 100.0D0 + 0.5D0)
         EQUILJ(JMOL) = 0.0D0
 
         IF (XNMOLCODE(JMOL) .EQ. 101.0D0) THEN
           ! H2: special equilibrium function (Lester 2005 update)
           IF (T(J) .LE. 20000.0D0) EQUILJ(JMOL) = EQUILH2(T(J))
-        ELSE
+        ELSE IF (T(J) .LE. 10000.0D0) THEN
           ! General molecule: physical-form equilibrium constant.
           ! Sackur-Tetrode kinematic factor uses n_trans = NCOMP-2*ION-1,
           ! the number of free molecular -> atomic translation channels.
@@ -6729,6 +6736,7 @@ SUBROUTINE CONVEC
 
   EDENS3 = EDENS + 3.0D0 * PRADK / RHO
   RHO3 = RHO
+
   P = P / 1.001D0 * 0.999D0
 
   ! --- Perturbation 4: P - 0.1% ---
@@ -6737,6 +6745,7 @@ SUBROUTINE CONVEC
 
   EDENS4 = EDENS + 3.0D0 * PRADK / RHO
   RHO4 = RHO
+
   ! Restore saved state
   XNE    = SAVXNE
   XNATOM = SAVXNA
@@ -8380,7 +8389,6 @@ END SUBROUTINE H2PLOP
 !   where ATLAS is typically used and which the current table already
 !   covers adequately via Mathisen's tabulation of the first resonance.
 !
-! The original Kurucz code was well-chosen; no change needed.
 ! -------------------------------------------------------------------------
 !
 ! References:
@@ -13647,7 +13655,11 @@ FUNCTION STARK_MMM(N, M, J)
   frac_d = max(0.0D0, min(1.0D0, frac_d))
 
   ! ---------------------------------------------------------------
-  ! Find temperature bracket
+  ! Find temperature bracket.  Interpolate in log(T) -- the Stehle
+  ! grid is roughly factor-of-2 (i.e. log-spaced); linear-in-T put
+  ! the bracket weight on the lower endpoint and produced a visible
+  ! kink in the converged ATLAS structure at log τ where T crossed
+  ! a grid node (e.g. ~20000 K for Teff~15kK, ~40000 K for ~20kK).
   ! ---------------------------------------------------------------
   it1 = 1
   DO it1 = 1, nt - 1
@@ -13655,8 +13667,8 @@ FUNCTION STARK_MMM(N, M, J)
   END DO
   it1 = max(1, min(nt - 1, it1))
   it2 = it1 + 1
-  frac_t = (T(J) - S%temp_grid(it1)) / &
-           (S%temp_grid(it2) - S%temp_grid(it1))
+  frac_t = (LOG(T(J)) - LOG(S%temp_grid(it1))) / &
+           (LOG(S%temp_grid(it2)) - LOG(S%temp_grid(it1)))
   frac_t = max(0.0D0, min(1.0D0, frac_t))
 
   ! ---------------------------------------------------------------
@@ -14863,6 +14875,7 @@ SUBROUTINE SELECTLINES
   INTEGER :: N12, N122, N22, N32, N42, N52, N62, N18
   INTEGER :: MOLCODE, MOLCODEOLD, KGFLOG, ISO, IMOL
   INTEGER :: LINEDATA_CAP, IOS
+  INTEGER :: IOS_OPEN, IOS_READ
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING SELECTLINES'
 
@@ -14899,132 +14912,141 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   OPEN(UNIT=11, FILE=trim(DATADIR)//'gfpred29dec2014.bin', &
        STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-       ACCESS='STREAM', ERR=569)
+       ACCESS='STREAM', IOSTAT=IOS_OPEN)
+  IF (IOS_OPEN .EQ. 0) THEN
+    LINE = 0
+    lowlines_pred_loop: DO LINE = 1, MAX_LINES
+      READ(11, IOSTAT=IOS_READ) LINEREC
+      IF (IOS_READ .NE. 0) EXIT lowlines_pred_loop
+      CALL UNPACK_LINEDATA(LINEREC)
+      IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+        WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
 
-  DO LINE = 1, MAX_LINES
-    READ(11, END=581) LINEREC
-    CALL UNPACK_LINEDATA(LINEREC)
-    IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+      ! Advance wavelength bin to match line position
+      DO WHILE (IWL .GE. IWAVETAB(NU))
+        FREQ = CLIGHT_NMS / WAVETAB(NU)
+        NU = NU + 1
+      END DO
 
-    ! Advance wavelength bin to match line position
-    DO WHILE (IWL .GE. IWAVETAB(NU))
-      FREQ = CLIGHT_NMS / WAVETAB(NU)
-      ! (FREQ removed — using FREQ directly)
-      NU = NU + 1
-    END DO
+      ! Apply selection filters
+      NELION = abs(IELION / 10)
+      IF (NELION .LT. 1 .OR. NELION .GT. mion) THEN
+        IF (IDEBUG .EQ. 1) WRITE(6, '(A,I6,A,I10)') &
+          '  SELECTLINES: NELION=', NELION, ' OOB, LINE=', LINE
+        CYCLE
+      END IF
+      IF (XNFDOPMAX(NELION, NU) .LE. 1.0D-37) CYCLE
+      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+      IF (CENRATIO .LT. 1.0D0) CYCLE
+      tablog8 = TABLOG(IELO)
+      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
 
-    ! Apply selection filters
-    NELION = abs(IELION / 10)
-    IF (NELION .LT. 1 .OR. NELION .GT. mion) THEN
-      IF (IDEBUG .EQ. 1) WRITE(6, '(A,I6,A,I10)') &
-        '  SELECTLINES: NELION=', NELION, ' OOB, LINE=', LINE
-      CYCLE
-    END IF
-    IF (XNFDOPMAX(NELION, NU) .LE. 1.0D-37) CYCLE
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    IF (CENRATIO .LT. 1.0D0) CYCLE
-    tablog8 = TABLOG(IELO)
-    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-    NLINES_STORED = NLINES_STORED + 1
-    IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      NLINES_STORED = NLINES_STORED + 1
+      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+        CALL EXIT(1)
+      END IF
+      LINEDATA(:, NLINES_STORED) = LINEREC
+      IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+        WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+      N12 = N12 + 1
+    END DO lowlines_pred_loop
+    IF (LINE .GT. MAX_LINES) THEN
+      WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES predicted'
       CALL EXIT(1)
     END IF
-    LINEDATA(:, NLINES_STORED) = LINEREC
-    IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-    N12 = N12 + 1
-  END DO
-  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES predicted'
-  CALL EXIT(1)
-
-  581 WRITE(6, '(I12,A)') N12, ' lines from lowlines (predicted)'
-  CLOSE(UNIT=11)
+    WRITE(6, '(I12,A)') N12, ' lines from lowlines (predicted)'
+    CLOSE(UNIT=11)
+  END IF
 
   !=====================================================================
   ! (2) LOWLINES observed (unit 111)
   !=====================================================================
-  569 OPEN(UNIT=111, FILE=trim(DATADIR)//'lowobsat12.bin', &
+  OPEN(UNIT=111, FILE=trim(DATADIR)//'lowobsat12.bin', &
        STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-       ACCESS='STREAM', ERR=669)
+       ACCESS='STREAM', IOSTAT=IOS_OPEN)
+  IF (IOS_OPEN .EQ. 0) THEN
+    LINE = 0
+    lowlines_obs_loop: DO LINE = 1, MAX_LINES
+      READ(111, IOSTAT=IOS_READ) LINEREC
+      IF (IOS_READ .NE. 0) EXIT lowlines_obs_loop
+      CALL UNPACK_LINEDATA(LINEREC)
 
-  DO LINE = 1, MAX_LINES
-    READ(111, END=5819) LINEREC
-    CALL UNPACK_LINEDATA(LINEREC)
+      DO WHILE (IWL .GE. IWAVETAB(NU))
+        FREQ = CLIGHT_NMS / WAVETAB(NU)
+        NU = NU + 1
+      END DO
 
-    DO WHILE (IWL .GE. IWAVETAB(NU))
-      FREQ = CLIGHT_NMS / WAVETAB(NU)
-      ! (FREQ removed — using FREQ directly)
-      NU = NU + 1
-    END DO
+      NELION = abs(IELION / 10)
+      IF (XNFDOPMAX(NELION, NU) .LE. 1.0D-37) CYCLE
+      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+      IF (CENRATIO .LT. 1.0D0) CYCLE
+      tablog8 = TABLOG(IELO)
+      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
 
-    NELION = abs(IELION / 10)
-    IF (XNFDOPMAX(NELION, NU) .LE. 1.0D-37) CYCLE
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    IF (CENRATIO .LT. 1.0D0) CYCLE
-    tablog8 = TABLOG(IELO)
-    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-    NLINES_STORED = NLINES_STORED + 1
-    IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      NLINES_STORED = NLINES_STORED + 1
+      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+        CALL EXIT(1)
+      END IF
+      LINEDATA(:, NLINES_STORED) = LINEREC
+      IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+        WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+      WLVAC = exp(IWL * RATIOLG)
+      N122 = N122 + 1
+    END DO lowlines_obs_loop
+    IF (LINE .GT. MAX_LINES) THEN
+      WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES observed'
       CALL EXIT(1)
     END IF
-    LINEDATA(:, NLINES_STORED) = LINEREC
-    IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-    WLVAC = exp(IWL * RATIOLG)
-    N122 = N122 + 1
-  END DO
-  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES observed'
-  CALL EXIT(1)
-
-  5819 WRITE(6, '(I12,A)') N122, ' lines from lowlines (observed)'
-  CLOSE(UNIT=111)
+    WRITE(6, '(I12,A)') N122, ' lines from lowlines (observed)'
+    CLOSE(UNIT=111)
+  END IF
 
 
   !=====================================================================
   ! (3) HILINES (unit 21)
   !=====================================================================
-  669 OPEN(UNIT=21, FILE=trim(DATADIR)//'hilines.bin', &
+  OPEN(UNIT=21, FILE=trim(DATADIR)//'hilines.bin', &
        STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-           ACCESS='STREAM', ERR=769)
-  NU = 1
+       ACCESS='STREAM', IOSTAT=IOS_OPEN)
+  IF (IOS_OPEN .EQ. 0) THEN
+    NU = 1
+    LINE = 0
+    hilines_loop: DO LINE = 1, MAX_LINES
+      READ(21, IOSTAT=IOS_READ) LINEREC
+      IF (IOS_READ .NE. 0) EXIT hilines_loop
+      CALL UNPACK_LINEDATA(LINEREC)
 
-  DO LINE = 1, MAX_LINES
-    READ(21, END=681) LINEREC
-    CALL UNPACK_LINEDATA(LINEREC)
+      DO WHILE (IWL .GE. IWAVETAB(NU))
+        FREQ = CLIGHT_NMS / WAVETAB(NU)
+        NU = NU + 1
+      END DO
 
-    DO WHILE (IWL .GE. IWAVETAB(NU))
-      FREQ = CLIGHT_NMS / WAVETAB(NU)
-      ! (FREQ removed — using FREQ directly)
-      NU = NU + 1
-    END DO
+      NELION = abs(IELION / 10)
+      IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
+      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+      IF (CENRATIO .LT. 1.0D0) CYCLE
+      tablog8 = TABLOG(IELO)
+      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
 
-    NELION = abs(IELION / 10)
-    IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    IF (CENRATIO .LT. 1.0D0) CYCLE
-    tablog8 = TABLOG(IELO)
-    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-    NLINES_STORED = NLINES_STORED + 1
-    IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      NLINES_STORED = NLINES_STORED + 1
+      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+        CALL EXIT(1)
+      END IF
+      LINEDATA(:, NLINES_STORED) = LINEREC
+      IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+        WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+      N22 = N22 + 1
+    END DO hilines_loop
+    IF (LINE .GT. MAX_LINES) THEN
+      WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading HILINES'
       CALL EXIT(1)
     END IF
-    LINEDATA(:, NLINES_STORED) = LINEREC
-    IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-    N22 = N22 + 1
-  END DO
-  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading HILINES'
-  CALL EXIT(1)
-
-  681 WRITE(6, '(I12,A)') N22, ' lines from hilines'
-  CLOSE(UNIT=21)
+    WRITE(6, '(I12,A)') N22, ' lines from hilines'
+    CLOSE(UNIT=21)
+  END IF
 
   !=====================================================================
   ! (4) DIATOMICS — per-molecule ASCII files via lines.list manifest
@@ -15156,167 +15178,189 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   ! (5) TiO (unit 41)
   !=====================================================================
-  OPEN(UNIT=41, FILE=trim(DATADIR)//'schwenke.bin', &
-       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-           ACCESS='STREAM', ERR=1869)
-  NU = 1
+  ! Skip TiO entirely for hot stars — molecules are dissociated above
+  ! a few thousand K, so reading and packing the whole TiO list is wasted
+  ! work.  Threshold matches mod_mklinelist's TEFF_COOL_LIMIT.
+  IF (TEFF .GT. 8000.0D0) THEN
+    WRITE(6, '(A)') '           0 lines from tiolines (skip: Teff > 8000 K)'
+  ELSE
+    OPEN(UNIT=41, FILE=trim(DATADIR)//'schwenke.bin', &
+         STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+         ACCESS='STREAM', IOSTAT=IOS_OPEN)
+    IF (IOS_OPEN .EQ. 0) THEN
+      NU = 1
+      LINE = 0
+      tio_loop: DO LINE = 1, MAX_LINES
+        READ(41, IOSTAT=IOS_READ) LINEREC
+        IF (IOS_READ .NE. 0) EXIT tio_loop
+        CALL UNPACK_LINEDATA(LINEREC)
 
-  DO LINE = 1, MAX_LINES
-    READ(41, END=881) LINEREC
-    CALL UNPACK_LINEDATA(LINEREC)
+        DO WHILE (IWL .GE. IWAVETAB(NU))
+          FREQ = CLIGHT_NMS / WAVETAB(NU)
+          NU = NU + 1
+        END DO
 
-    DO WHILE (IWL .GE. IWAVETAB(NU))
-      FREQ = CLIGHT_NMS / WAVETAB(NU)
-      ! (FREQ removed — using FREQ directly)
-      NU = NU + 1
-    END DO
+        KGFLOG = IGFLOG
+        ISO = abs(IELION) - 8949
 
-    KGFLOG = IGFLOG
-    ISO = abs(IELION) - 8949
+        ! Isotope gf correction for 46Ti-50Ti
+        IF (ISO .GE. 1 .AND. ISO .LE. 5) THEN
+          IGFLOG = max(KGFLOG + TIO_ISOCORR(ISO), 1)
+        END IF
 
-    ! Isotope gf correction for 46Ti-50Ti
-    IF (ISO .GE. 1 .AND. ISO .LE. 5) THEN
-      IGFLOG = max(KGFLOG + TIO_ISOCORR(ISO), 1)
+        NELION = 895
+        IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
+        CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+        IF (CENRATIO .LT. 1.0D0) CYCLE
+        tablog8 = TABLOG(IELO)
+        IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+
+        IGS = 1
+        IGW = 9384
+        CALL PACK_LINEDATA(LINEREC)
+        NLINES_STORED = NLINES_STORED + 1
+        IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          CALL EXIT(1)
+        END IF
+        LINEDATA(:, NLINES_STORED) = LINEREC
+        IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+          WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+        N42 = N42 + 1
+      END DO tio_loop
+      IF (LINE .GT. MAX_LINES) THEN
+        WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading TIOLINES'
+        CALL EXIT(1)
+      END IF
+      WRITE(6, '(I12,A)') N42, ' lines from tiolines'
+      CLOSE(UNIT=41)
     END IF
-
-    NELION = 895
-    IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    IF (CENRATIO .LT. 1.0D0) CYCLE
-    tablog8 = TABLOG(IELO)
-    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-    IGS = 1
-    IGW = 9384
-    CALL PACK_LINEDATA(LINEREC)
-    NLINES_STORED = NLINES_STORED + 1
-    IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      CALL EXIT(1)
-    END IF
-    LINEDATA(:, NLINES_STORED) = LINEREC
-    IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-    N42 = N42 + 1
-  END DO
-  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading TIOLINES'
-  CALL EXIT(1)
-
-  881 WRITE(6, '(I12,A)') N42, ' lines from tiolines'
-  CLOSE(UNIT=41)
+  END IF
 
   !=====================================================================
   ! (6) H2O (unit 51) — special 3-integer record format
   !=====================================================================
-  1869 OPEN(UNIT=51, FILE=trim(DATADIR)//'h2ofastfix.bin', &
-       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-            ACCESS='STREAM', ERR=2869)
-  NU = 1
+  ! Same hot-star skip as TiO: H2O is fully dissociated above a few
+  ! thousand K and contributes nothing to the opacity.
+  IF (TEFF .GT. 8000.0D0) THEN
+    WRITE(6, '(A)') '           0 lines from h2ofastfix (skip: Teff > 8000 K)'
+  ELSE
+    OPEN(UNIT=51, FILE=trim(DATADIR)//'h2ofastfix.bin', &
+         STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+         ACCESS='STREAM', IOSTAT=IOS_OPEN)
+    IF (IOS_OPEN .EQ. 0) THEN
+      NU = 1
+      LINE = 0
+      h2o_loop: DO LINE = 1, MAX_LINES
+        READ(51, IOSTAT=IOS_READ) IWL, IELO, IGFLOG
+        IF (IOS_READ .NE. 0) EXIT h2o_loop
 
-  DO LINE = 1, MAX_LINES
-    READ(51, END=1881) IWL, IELO, IGFLOG
+        DO WHILE (IWL .GE. IWAVETAB(NU))
+          FREQ = CLIGHT_NMS / WAVETAB(NU)
+          ! Radiation damping from frequency
+          GAMMAR = 2.474D-22 * FREQ**2 * 0.001
+          GR = log10(dble(GAMMAR))
+          IGR = int(GR * 1000.0D0 + 16384.5D0)
+          NU = NU + 1
+        END DO
 
-    DO WHILE (IWL .GE. IWAVETAB(NU))
-      FREQ = CLIGHT_NMS / WAVETAB(NU)
-      ! (FREQ removed — using FREQ directly)
-      ! Radiation damping from frequency
-      GAMMAR = 2.474D-22 * FREQ**2 * 0.001
-      GR = log10(dble(GAMMAR))
-      IGR = int(GR * 1000.0D0 + 16384.5D0)
-      NU = NU + 1
-    END DO
+        ! Determine isotope from signs of IELO and IGFLOG
+        IF (IELO .GT. 0 .AND. IGFLOG .GT. 0) THEN
+          ISO = 1      ! 1H1H16O
+        ELSE IF (IELO .GT. 0) THEN
+          ISO = 2      ! 1H1H17O
+        ELSE IF (IGFLOG .GT. 0) THEN
+          ISO = 3      ! 1H1H18O
+        ELSE
+          ISO = 4      ! 1H2H16O
+        END IF
 
-    ! Determine isotope from signs of IELO and IGFLOG
-    IF (IELO .GT. 0 .AND. IGFLOG .GT. 0) THEN
-      ISO = 1      ! 1H1H16O
-    ELSE IF (IELO .GT. 0) THEN
-      ISO = 2      ! 1H1H17O
-    ELSE IF (IGFLOG .GT. 0) THEN
-      ISO = 3      ! 1H1H18O
-    ELSE
-      ISO = 4      ! 1H2H16O
+        IELION = -(9399 + ISO)
+        ELO = dble(abs(IELO))
+        KGFLOG = abs(IGFLOG)
+        IGFLOG = max(KGFLOG + H2O_ISOCORR(ISO), 1)
+
+        NELION = 940
+        IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
+        CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+        IF (CENRATIO .LT. 1.0D0) CYCLE
+        IF (CENRATIO * exp(-ELO * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+
+        IELO = int(log10(ELO) * 1000.0D0 + 16384.5D0)
+        IGS = 1
+        IGW = 9384
+        CALL PACK_LINEDATA(LINEREC)
+        NLINES_STORED = NLINES_STORED + 1
+        IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          CALL EXIT(1)
+        END IF
+        LINEDATA(:, NLINES_STORED) = LINEREC
+        IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+          WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+        N52 = N52 + 1
+      END DO h2o_loop
+      IF (LINE .GT. MAX_LINES) THEN
+        WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H2OFAST'
+        CALL EXIT(1)
+      END IF
+      WRITE(6, '(I12,A)') N52, ' lines from h2ofastfix'
+      CLOSE(UNIT=51)
     END IF
-
-    IELION = -(9399 + ISO)
-    ELO = dble(abs(IELO))
-    KGFLOG = abs(IGFLOG)
-    IGFLOG = max(KGFLOG + H2O_ISOCORR(ISO), 1)
-
-    NELION = 940
-    IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    IF (CENRATIO .LT. 1.0D0) CYCLE
-    IF (CENRATIO * exp(-ELO * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-    IELO = int(log10(ELO) * 1000.0D0 + 16384.5D0)
-    IGS = 1
-    IGW = 9384
-    CALL PACK_LINEDATA(LINEREC)
-    NLINES_STORED = NLINES_STORED + 1
-    IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-      CALL EXIT(1)
-    END IF
-    LINEDATA(:, NLINES_STORED) = LINEREC
-    IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-      WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-    N52 = N52 + 1
-  END DO
-  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H2OFAST'
-  CALL EXIT(1)
-
-  1881 WRITE(6, '(I12,A)') N52, ' lines from h2ofastfix'
-  CLOSE(UNIT=51)
+  END IF
 
   !=====================================================================
   ! (7) H3+ (unit 61)
   !=====================================================================
-  2869 OPEN(UNIT=61, FILE=trim(DATADIR)//'h3plus.dat', &
+  OPEN(UNIT=61, FILE=trim(DATADIR)//'h3plus.dat', &
        STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-            ACCESS='STREAM', ERR=1882)
-  NU = 1
+       ACCESS='STREAM', IOSTAT=IOS_OPEN)
+  IF (IOS_OPEN .EQ. 0) THEN
+    NU = 1
+    LINE = 0
+    h3plus_loop: DO LINE = 1, MAX_LINES
+      READ(61, IOSTAT=IOS_READ) LINEREC
+      IF (IOS_READ .NE. 0) EXIT h3plus_loop
+      CALL UNPACK_LINEDATA(LINEREC)
 
-  DO LINE = 1, MAX_LINES
-    READ(61, END=2881) LINEREC
-    CALL UNPACK_LINEDATA(LINEREC)
+      DO WHILE (IWL .GE. IWAVETAB(NU))
+        FREQ = CLIGHT_NMS / WAVETAB(NU)
+        NU = NU + 1
+      END DO
 
-    DO WHILE (IWL .GE. IWAVETAB(NU))
-      FREQ = CLIGHT_NMS / WAVETAB(NU)
-      ! (FREQ removed — using FREQ directly)
-      NU = NU + 1
-    END DO
+      KGFLOG = IGFLOG
+      IGFLOG = max(KGFLOG - 1272, 1)
 
-    KGFLOG = IGFLOG
-    IGFLOG = max(KGFLOG - 1272, 1)
+      NELION = 895
+      IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
+      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+      IF (CENRATIO .LT. 1.0D0) CYCLE
+      tablog8 = TABLOG(IELO)
+      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
 
-    NELION = 895
-    IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
-    CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-    IF (CENRATIO .LT. 1.0D0) CYCLE
-    tablog8 = TABLOG(IELO)
-    IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-    IGS = 1
-    IGW = 9384
-    CALL PACK_LINEDATA(LINEREC)
-    NLINES_STORED = NLINES_STORED + 1
-    IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-      WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      IGS = 1
+      IGW = 9384
+      CALL PACK_LINEDATA(LINEREC)
+      NLINES_STORED = NLINES_STORED + 1
+      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+        CALL EXIT(1)
+      END IF
+      LINEDATA(:, NLINES_STORED) = LINEREC
+      N62 = N62 + 1
+    END DO h3plus_loop
+    IF (LINE .GT. MAX_LINES) THEN
+      WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H3PLUS'
       CALL EXIT(1)
     END IF
-    LINEDATA(:, NLINES_STORED) = LINEREC
-    N62 = N62 + 1
-  END DO
-  WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H3PLUS'
-  CALL EXIT(1)
-
-  2881 WRITE(6, '(I10,A)') N62, ' lines from h3plus'
-  CLOSE(UNIT=61)
+    WRITE(6, '(I10,A)') N62, ' lines from h3plus'
+    CLOSE(UNIT=61)
+  END IF
 
   !=====================================================================
   ! Summary
   !=====================================================================
-  1882 N18 = N12 + N122 + N22 + N32 + N42 + N52 + N62
+  N18 = N12 + N122 + N22 + N32 + N42 + N52 + N62
   WRITE(6, '(I12,A)') N18, ' lines total'
   WRITE(6,*) 
   IF (NLINES_STORED .EQ. 0) THEN
@@ -15783,7 +15827,7 @@ SUBROUTINE XLINOP
         WMERGE = 1.0D7 / (1.0D7 / WLVAC - EMERGE(J) * Z**2)
         WMAX = max(WMERGE, WSHIFT)
         CON = XSECTG * XNFP(J, NELION) * exp(-ELO * HCKT(J)) / RHO(J)
-        DO IW = NU, NU + 1000
+        DO IW = NU, min(NU + 1000, NUMNU)
           IF (WMAX .LT. WAVESET(IW)) EXIT
           XLINES(J, IW) = XLINES(J, IW) + CON
         END DO
