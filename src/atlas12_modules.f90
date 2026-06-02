@@ -1074,7 +1074,50 @@ MODULE mod_atlas_data
   ! --- Flag set to use Hummer & Mihalas (1988) occupation probability
   !     weighting in the H I partition function ---
   LOGICAL :: USE_HM_OCCUPATION_PROBABILITY = .TRUE.
-  
+
+  ! --- MLT bubble opacity quadrature ---------------------------------------
+  ! When .TRUE. (new default), CONVEC computes ABCONV via a 4-point harmonic
+  ! mean of ROSSTAB sampled at T +/- DELTAT and T +/- DELTAT/3 -- a composite
+  ! midpoint quadrature of the harmonic-mean opacity across the bubble's
+  ! linear T profile.  The historical ATLAS9/12 scheme was a 2-point harmonic
+  ! mean at the bubble endpoints (T +/- DELTAT); that admitted period-4 limit
+  ! cycles in the inner DELTAT iteration whenever T+DELTAT straddled a sharp
+  ! kappa(T) feature (e.g. H I ionization in the solar superficial CZ).
+  ! Setting this flag .FALSE. restores byte-identical legacy behaviour.
+  ! NOTE: the effective mixing length alpha was historically calibrated under
+  ! the 2-point scheme; switching to 4-point shifts ABCONV in the superficial
+  ! CZ by a few percent and may require a small alpha re-calibration for solar
+  ! models.
+  LOGICAL :: USE_4POINT_MLT = .TRUE.
+
+  ! --- MARCS-style gradient-balance correction in CZ layers (opt-in) ------
+  ! When .TRUE., after N_HYBRID_SWITCH iterations of Kurucz-style TCORR,
+  ! run a global Newton-Raphson step on
+  !   R(j) = w(j) * (FLXRAD(j) + FLXCNV(j) - FLUX) / FLUX
+  ! where w(j) is a smoothstep ramp in HRATIO from DTGRAD_HR_LO to
+  ! DTGRAD_HR_HI.  Radiative depths see w = 0 and the Jacobian diagonal
+  ! is regularized to keep dT(j) = 0 there; CZ depths drive the flux
+  ! residual to zero.  Returned step is blended into the Kurucz T1 with
+  ! the same smoothstep so radiative / transition layers keep their
+  ! Kurucz correction.
+  LOGICAL :: USE_DTGRAD              = .FALSE.
+  INTEGER, PARAMETER :: N_HYBRID_SWITCH        = 4        ! TCORR warm-start iters
+  REAL(8), PARAMETER :: NEWTON_DT_REL          = 0.01D0   ! per-step clamp on |dT|/T
+  REAL(8), PARAMETER :: NEWTON_DT_FRAC         = 3.0D-3   ! finite-diff perturbation in log T
+  INTEGER, PARAMETER :: NEWTON_REBUILD_EVERY   = 30       ! Jacobian rebuild cadence (age cap)
+  INTEGER, PARAMETER :: NEWTON_BANDWIDTH       = 4        ! Jacobian half-bandwidth
+  REAL(8), PARAMETER :: NEWTON_REBUILD_DT_REL  = 0.03D0   ! adaptive rebuild trigger
+  REAL(8), PARAMETER :: NEWTON_POOR_RATIO      = 0.9D0    ! ||R||/||R0|| above this counts as poor progress
+  INTEGER, PARAMETER :: NEWTON_POOR_STREAK     = 2        ! rebuild after this many consecutive poor iters
+  REAL(8), PARAMETER :: DTGRAD_HR_LO          = 0.50D0    ! smoothstep start (pure Kurucz below)
+  REAL(8), PARAMETER :: DTGRAD_HR_HI          = 0.90D0    ! smoothstep end (pure Newton above)
+  ! Boundary cutoffs: outermost / deepest layers are structurally
+  ! unconvergeable (one-sided gradients, surface BC artifacts, deep
+  ! MLT pathologies).  Excluding them from R keeps Newton focused on
+  ! depths it can actually fix.
+  INTEGER, PARAMETER :: DTGRAD_J_LO           = 3         ! exclude depths 1 .. DTGRAD_J_LO-1
+  INTEGER, PARAMETER :: DTGRAD_J_HI_OFFSET    = 2         ! exclude depths NRHOX-DTGRAD_J_HI_OFFSET+1 .. NRHOX
+
   ! --- Flag set if SYNTHE should emit .mol/.linform output files ---
   ! Gated by the more_output CLI argument.  NMOLEC checks IFMOLOUT to
   ! decide whether to write its molecular-density table to unit 35.
@@ -1207,6 +1250,69 @@ MODULE mod_atlas_data
 
   ! --- Mean intensity diagnostic ---
   REAL(8)  :: RJMINSNU(kw), RDIAGJNU(kw)
+
+  ! --- Frequency-integrated opacity-weighted (J - S), accumulated by
+  !     TCORR(MODE=2) and consumed by TCORR(MODE=3) and the Newton
+  !     residual extractor GET_TCORR_RESIDUALS.  Promoted from a SAVEd
+  !     local in TCORR so the Newton path can read it without re-running
+  !     the radiative transfer. ---
+  REAL(8) :: RJMINS(kw)
+
+  ! --- Newton-Jacobian state snapshot (populated by NEWTON_SAVE_STATE,
+  !     consumed by NEWTON_RESTORE_STATE). ---
+  REAL(8) :: NEWT_T(kw),  NEWT_TLOG(kw), NEWT_TKEV(kw)
+  REAL(8) :: NEWT_TK(kw), NEWT_HKT(kw),  NEWT_HCKT(kw)
+  REAL(8) :: NEWT_XNE(kw), NEWT_XNATOM(kw), NEWT_RHO(kw), NEWT_P(kw)
+  REAL(8) :: NEWT_XNFP(kw, mion), NEWT_XNF(kw, mion), NEWT_XNH2(kw)
+  REAL(8) :: NEWT_DOPPLE(kw, mion), NEWT_XNFDOP(kw, mion)
+  REAL(8) :: NEWT_BHYD(kw, 6), NEWT_BMIN(kw)
+  REAL(8) :: NEWT_FLXRAD(kw), NEWT_FLXCNV(kw)
+  REAL(8) :: NEWT_RJMINS(kw), NEWT_ABROSS(kw)
+  REAL(8) :: NEWT_TAUROS(kw)
+  REAL(8) :: NEWT_FLXCNV0(kw), NEWT_FLXCNV1(kw)
+  REAL(8) :: NEWT_PRAD(kw)
+  REAL(8) :: NEWT_VCONV(kw)
+  REAL(8) :: NEWT_DLTDLP(kw), NEWT_GRDADB(kw)
+  REAL(8) :: NEWT_HEATCP(kw), NEWT_HSCALE(kw), NEWT_DLRDLT(kw)
+  REAL(8) :: NEWT_HEIGHT(kw)
+  REAL(8) :: NEWT_XNSAVE(kw, maxeq)
+  REAL(8) :: NEWT_XNMOL(kw, maxmol), NEWT_XNFPMOL(kw, maxmol)
+  REAL(8) :: NEWT_EDENS(kw)
+  REAL(8) :: NEWT_CHARGESQ(kw), NEWT_PTOTAL(kw)
+  REAL(8) :: NEWT_RADEN(kw), NEWT_KNU(kw), NEWT_PRADK(kw)
+  INTEGER :: NEWT_ITEMP, NEWT_IFEDNS
+  REAL(8) :: NEWT_ROSSTAB_ROSS(kw * 60)
+  REAL(8) :: NEWT_ROSSTAB_TABT(kw * 60)
+  REAL(8) :: NEWT_ROSSTAB_TABP(kw * 60)
+  REAL(8) :: NEWT_ROSSTAB_ZEROT, NEWT_ROSSTAB_ZEROP
+  REAL(8) :: NEWT_ROSSTAB_SLOPET, NEWT_ROSSTAB_SLOPEP
+  INTEGER :: NEWT_ROSSTAB_NROSS
+
+  ! Cached banded Jacobian.  NEWT_JBAND holds the unfactored matrix;
+  ! NEWT_JBAND_LU holds the in-place Crout factorization.
+  REAL(8) :: NEWT_JBAND   (2*NEWTON_BANDWIDTH + NEWTON_BANDWIDTH + 1, kw)
+  REAL(8) :: NEWT_JBAND_LU(2*NEWTON_BANDWIDTH + NEWTON_BANDWIDTH + 1, kw)
+  INTEGER :: NEWT_J_AGE   = 0
+  LOGICAL :: NEWT_J_VALID = .FALSE.
+
+  ! Adaptive-rebuild state for the cached J.
+  REAL(8) :: NEWT_T_AT_BUILD(kw)     ! T(:) when the cached J was built
+  REAL(8) :: NEWT_R_AT_BUILD(kw)     ! R(:) at that build
+  REAL(8) :: NEWT_T_PREV(kw)         ! T(:) before the most recent step
+  REAL(8) :: NEWT_R_PREV(kw)         ! R(:) at NEWT_T_PREV
+  REAL(8) :: NEWT_T_DRIFT = 0.0D0    ! cumulative max|dT/T| since last build
+  INTEGER :: NEWT_POOR_AGE = 0       ! consecutive iters with ||R||/||R0|| > NEWTON_POOR_RATIO
+
+  ! ROSSTAB persistent table -- promoted from SAVE'd locals so the
+  ! Newton snapshot can include them.
+  INTEGER, PARAMETER :: ROSSTAB_MAXTAB = kw * 60
+  REAL(8) :: ROSSTAB_ROSS(ROSSTAB_MAXTAB)
+  REAL(8) :: ROSSTAB_TABT(ROSSTAB_MAXTAB)
+  REAL(8) :: ROSSTAB_TABP(ROSSTAB_MAXTAB)
+  REAL(8) :: ROSSTAB_ZEROT, ROSSTAB_ZEROP
+  REAL(8) :: ROSSTAB_SLOPET, ROSSTAB_SLOPEP
+  INTEGER :: ROSSTAB_NROSS = 0
+
 
   ! --- Thermodynamic state (pressure, electron density, etc.) ---
   REAL(8)  :: P(kw), XNE(kw), XNATOM(kw), RHO(kw), CHARGESQ(kw)
@@ -1771,7 +1877,9 @@ SUBROUTINE TCORR(MODE, RCOWT)
   REAL(8), PARAMETER :: MAX_DT_FRAC = 0.04D0
 
   ! --- Persistent locals (accumulate across MODE 1→2→3 calls) ---
-  REAL(8), SAVE :: RJMINS(kw)   ! integrated opacity-weighted (J - S)
+  ! RJMINS is hosted at module scope (mod_atlas_data) so the Newton
+  ! residual extractor can read it without re-running the radiative
+  ! transfer; the other accumulators remain local SAVE'd state.
   REAL(8), SAVE :: RDABH(kw)    ! integrated flux divergence term
   REAL(8), SAVE :: RDIAGJ(kw)   ! integrated diagonal Lambda-operator response
   REAL(8), SAVE :: OLDT1(kw)    ! previous iteration's total correction (for damping)
@@ -1786,8 +1894,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   REAL(8)  :: DABROS(kw)        ! d(kappa_Ross)/d(RHOX)
 
   ! --- MODE 3 locals: convection ---
-  REAL(8)  :: CNVFLX(kw)        ! local copy of convective flux (smoothed)
-  REAL(8)  :: SMOOTH(kw)        ! smoothing buffer for convective flux
+  REAL(8)  :: CNVFLX(kw)        ! TCORR-local copy of CONVEC's smoothed FLXCNV
   REAL(8)  :: DDEL(kw)          ! convective response factor (1 + D/(D+DEL))/DEL
   REAL(8)  :: HRATIO(kw)        ! convective-to-total flux ratio
   REAL(8)  :: DEL, VCO, FLUXCO, TAUB, CNVFL
@@ -1806,6 +1913,14 @@ SUBROUTINE TCORR(MODE, RCOWT)
   REAL(8)  :: MAX_DT             ! per-iteration |ΔT| cap = MAX_DT_FRAC * Teff
   REAL(8)  :: DTSUR             ! surface correction magnitude
   REAL(8)  :: DUM(kw), TINTEG(kw), TAV
+
+  ! --- Newton-hybrid scratch ---
+  REAL(8)  :: R_NEWT_DIAG(kw)   ! residual for the R_NEWT column in *.iter
+  REAL(8)  :: NEWTON_DT(kw)     ! Newton step output from NEWTON_TCORR_STEP
+  REAL(8)  :: X, W_GRAD         ! HRATIO smoothstep weight
+  LOGICAL  :: NEWTON_ACCEPTED
+  LOGICAL  :: NEWTON_APPLIED    ! .TRUE. iff Newton step was accepted this call
+
   REAL(8)  :: TONE_ARR(1), TTWO_ARR(1), XNEW_TMP(1)
 
   ! --- MODE 3 locals: RHOX correction / remapping ---
@@ -1897,28 +2012,20 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! MODE 3: Compute and apply temperature corrections
   !=====================================================================
 
+  NEWTON_APPLIED = .FALSE.
+
   ! --- Compute needed derivatives ---
   CALL DERIV(RHOX, T, DTDRHX, NRHOX)
   CALL DERIV(RHOX, DLTDLP, DDLT, NRHOX)
   CALL DERIV(RHOX, ABROSS, DABROS, NRHOX)
 
   !---------------------------------------------------------------------
-  ! (A) Prepare smoothed convective flux
+  ! (A) Local copy of the convective flux for the DTFLUX/DTLAMB machinery.
+  ! CONVEC already applied the 1-2-1 smoothing pass; we don't re-smooth.
   !---------------------------------------------------------------------
   DO J = 1, NRHOX
     CNVFLX(J) = 0.0D0
     IF (IFCONV .EQ. 1 .AND. J .GE. 3) CNVFLX(J) = FLXCNV(J)
-  END DO
-
-  ! 1-2-1 smoothing filter on convective flux (interior points)
-  DO J = 2, NRHOX - 1
-    SMOOTH(J) = 0.25D0 * CNVFLX(J-1) + 0.50D0 * CNVFLX(J) + 0.25D0 * CNVFLX(J+1)
-  END DO
-  ! Asymmetric boundary kernel at deepest layer: 75-25 split
-  SMOOTH(NRHOX) = 0.75D0 * CNVFLX(NRHOX) + 0.25D0 * CNVFLX(NRHOX-1)
-  DO J = 2, NRHOX
-    CNVFLX(J) = SMOOTH(J)
-    FLXCNV(J) = CNVFLX(J)
   END DO
 
   !---------------------------------------------------------------------
@@ -2091,6 +2198,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !---------------------------------------------------------------------
   T1 = DTFLUX + DTLAMB + DTSURF
 
+
   ! Iteration damping: compare current correction T1 against previous
   ! iteration's correction OLDT1 to detect convergence behavior.
   !   Same sign, shrinking  -> accelerate by 1.25x (monotone convergence)
@@ -2133,53 +2241,118 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! One unified per-iteration table merging the former *.tcorr correction
   ! diagnostics with the *.iter atmospheric structure columns.
   IF (IFPRNT(ITER) .NE. 0) THEN
+    CALL GET_TCORR_RESIDUALS(R_NEWT_DIAG)
     WRITE(66, 100) &
          (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), DTSURF(J), &
           DTFLUX(J), T1(J), FLXERR(J), FLXDRV(J), &
+          1.0D2 * R_NEWT_DIAG(J), &
           DLTDLP(J), GRDADB(J), HRATIO(J), P(J), XNE(J), HEIGHT(J), &
           ACCRAD(J), J=1,NRHOX)
 100 FORMAT(&
       '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
-      '      ERROR       DERIV   NABLA NABLA_AD     CONV/TOT', &
+      '      ERROR       DERIV    R_NEWT   NABLA NABLA_AD     CONV/TOT', &
       '        P           XNE       HEIGHT     ACCRAD' / &
       '                  K        K       K       K       K', &
-      '          %           %                              ', &
+      '          %           %         %                            ', &
       '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
       (I3, F8.3, F10.1, 4F8.1, &
-       1X,ES11.2, 1X,ES11.2, 2F8.3, 1X,ES11.2, &
+       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
        1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
     flush(66)
   END IF
 
   !---------------------------------------------------------------------
-  ! (G) Compute RHOX correction to maintain constant TAUROS grid
-  !     Uses finite-difference: run TTAUP with T and T+DT, compare
-  !     total pressures to infer needed RHOX adjustment.
+  ! (G) MARCS-style gradient-balance step in convective layers
+  !
+  ! NEWTON_TCORR_STEP solves
+  !   R(j) = w(j) * (FLXRAD(j) + FLXCNV(j) - FLUX) / FLUX = 0
+  ! where w(j) is an HRATIO smoothstep ramp; radiative depths see w = 0
+  ! and the Jacobian diagonal is regularized to keep dT(j) = 0 there.
+  ! The returned NEWTON_DT(j) is nonzero only in CZ depths and is
+  ! blended into the Kurucz T1 here so radiative and transition layers
+  ! keep their Kurucz correction.  Newton mutates T in place inside the
+  ! step routine; we undo that here so the "T = T + T1" below re-applies
+  ! the blended correction cleanly.
   !---------------------------------------------------------------------
-  
-  DO J = 1, NRHOX
-    TPLUS(J)  = T(J) + T1(J)
-    TAUSTD(J) = 10.0D0**(TAU1LG + (J - 1) * STEPLG)
-  END DO
-
-  IDUM = MAP1(TAUROS, T,    NRHOX, TAUSTD, TNEW1,  NRHOX)
-  IDUM = MAP1(TAUROS, PRAD, NRHOX, TAUSTD, PRDNEW, NRHOX)
-  CALL TTAUP(TNEW1, TAUSTD, AB1, PTOT1, P1, PRDNEW, PTURB, VTURB, GRAV, NRHOX)
-
-  IDUM = MAP1(TAUROS, TPLUS, NRHOX, TAUSTD, TNEW2, NRHOX)
-  CALL TTAUP(TNEW2, TAUSTD, AB2, PTOT2, P2, PRDNEW, PTURB, VTURB, GRAV, NRHOX)
-
-  PPP = (PTOT2 - PTOT1) / PTOT1
-  IDUM = MAP1(TAUSTD, PPP, NRHOX, TAUROS, RRR, NRHOX)
-  DRHOX = RRR * RHOX
+  IF (USE_DTGRAD .AND. ITER .GE. N_HYBRID_SWITCH) THEN
+     CALL NEWTON_TCORR_STEP(NEWTON_DT, NEWTON_ACCEPTED)
+     IF (NEWTON_ACCEPTED) THEN
+        DO J = 1, NRHOX
+           IF (J .LT. DTGRAD_J_LO .OR. J .GT. NRHOX - DTGRAD_J_HI_OFFSET) THEN
+              W_GRAD = 0.0D0     ! edge depths: pure Kurucz
+           ELSE
+              X      = (HRATIO(J) - DTGRAD_HR_LO) / (DTGRAD_HR_HI - DTGRAD_HR_LO)
+              X      = max(0.0D0, min(1.0D0, X))
+              W_GRAD = X * X * (3.0D0 - 2.0D0 * X)
+           END IF
+           T1(J)  = (1.0D0 - W_GRAD) * T1(J) + W_GRAD * NEWTON_DT(J)
+        END DO
+        T = T - NEWTON_DT       ! undo Newton's in-place mutation; T1
+                                ! below re-applies the blended step
+        NEWTON_APPLIED = .TRUE.
+     END IF
+  END IF
 
   !---------------------------------------------------------------------
-  ! (H) Apply temperature correction
+  ! (H) Compute RHOX correction to maintain constant TAUROS grid
+  !     Uses finite-difference: run TTAUP with T and T+T1, compare
+  !     total pressures to infer needed RHOX adjustment.  The linearized
+  !     update is a small-perturbation approximation; for a Newton step
+  !     (rms ~ 100 K) it can scale RHOX by tens of percent and corrupt
+  !     the next iter.  Skip when Newton applied; the next outer iter
+  !     rebuilds hydrostatic equilibrium from scratch.
   !---------------------------------------------------------------------
-  
-   !apply damping to the temperature correction
-  ! T1(J) = sign(min(abs(T1(J)), 0.02D0 * T(J)), T1(J))
-   T = T + T1
+
+  IF (NEWTON_APPLIED) THEN
+    DRHOX = 0.0D0
+    DO J = 1, NRHOX
+      TAUSTD(J) = 10.0D0**(TAU1LG + (J - 1) * STEPLG)
+    END DO
+  ELSE
+    DO J = 1, NRHOX
+      TPLUS(J)  = T(J) + T1(J)
+      TAUSTD(J) = 10.0D0**(TAU1LG + (J - 1) * STEPLG)
+    END DO
+
+    IDUM = MAP1(TAUROS, T,    NRHOX, TAUSTD, TNEW1,  NRHOX)
+    IDUM = MAP1(TAUROS, PRAD, NRHOX, TAUSTD, PRDNEW, NRHOX)
+    CALL TTAUP(TNEW1, TAUSTD, AB1, PTOT1, P1, PRDNEW, PTURB, VTURB, GRAV, NRHOX)
+
+    IDUM = MAP1(TAUROS, TPLUS, NRHOX, TAUSTD, TNEW2, NRHOX)
+    CALL TTAUP(TNEW2, TAUSTD, AB2, PTOT2, P2, PRDNEW, PTURB, VTURB, GRAV, NRHOX)
+
+    PPP = (PTOT2 - PTOT1) / PTOT1
+    IDUM = MAP1(TAUSTD, PPP, NRHOX, TAUROS, RRR, NRHOX)
+    DRHOX = RRR * RHOX
+  END IF
+
+  !---------------------------------------------------------------------
+  ! (I) Apply T1 to T (re-applies the Newton step; first-time apply for Kurucz)
+  !---------------------------------------------------------------------
+  T = T + T1
+
+  ! When Newton applied a step, return early.  All the downstream code
+  ! below (smoothing, monotonicity clamp, DRHOX, MAP1 remap to TAUSTD)
+  ! is designed for small Kurucz corrections of a few K and assumes the
+  ! TAUROS grid computed by ROSS(3) at the top of this iter is still
+  ! self-consistent with the now-updated T.  For a 100+ K Newton step
+  ! this assumption breaks: MAP1 from the stale TAUROS to TAUSTD jumbles
+  ! the structure (a (TAUROS_old, T_new) pair is physically inconsistent),
+  ! and the next iter's RT pass produces R = 1e+15 garbage.
+  ! Skip the remap entirely; the next outer iteration's atlas12c will
+  ! rebuild hydrostatic equilibrium, populations, and TAUROS from
+  ! scratch, naturally absorbing the Newton step.
+  IF (NEWTON_APPLIED) THEN
+     ! Refresh thermodynamic depth vectors for the just-applied T so the
+     ! next outer-iter RT pass starts from a consistent state.
+     TK   = KBOL    * T
+     HKT  = HPLANCK / TK
+     HCKT = HKT     * CLIGHT
+     TKEV = KBOL_EV * T
+     TLOG = LOG(T)
+     ITEMP = ITEMP + 1
+     RETURN
+  END IF
 
   ! Optional smoothing
   IF (J1SMOOTH .GT. 0) THEN
@@ -2203,7 +2376,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! T(J) = max(T(J),0.7*TEFF)
 
   !---------------------------------------------------------------------
-  ! (I) Recompute thermodynamic quantities from corrected T
+  ! (J) Recompute thermodynamic quantities from corrected T
   !---------------------------------------------------------------------
    
   IFUDGE = 0
@@ -2217,7 +2390,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
   IF (IFUDGE .EQ. 1) RETURN
 
   !---------------------------------------------------------------------
-  ! (J) Apply RHOX correction and remap atmosphere onto standard
+  ! (K) Apply RHOX correction and remap atmosphere onto standard
   !     Rosseland optical depth grid TAUSTD
   !---------------------------------------------------------------------
   RHOX = RHOX + DRHOX
@@ -2271,6 +2444,874 @@ SUBROUTINE TCORR(MODE, RCOWT)
   RETURN
 
 END SUBROUTINE TCORR
+
+!=========================================================================
+! SUBROUTINE GET_TCORR_RESIDUALS(R)
+!
+! Read out the flux-constancy residual at the current state for the
+! global Newton solver:
+!   R(J) = (FLXRAD(J) + FLXCNV(J) - FLUX) / FLUX
+! Frequency-integrated quantities have already been accumulated by
+! TCORR(2,...) during the wavelength loop in atlas12c, so this is a
+! pure read; it does NOT trigger a new radiative-transfer pass.
+!=========================================================================
+SUBROUTINE GET_TCORR_RESIDUALS(R)
+
+  IMPLICIT NONE
+
+  REAL(8), INTENT(OUT) :: R(kw)
+
+  REAL(8), PARAMETER :: FLUX_FLOOR = 1.0D-30
+  REAL(8) :: F_safe
+  INTEGER :: J
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING GET_TCORR_RESIDUALS'
+
+  F_safe = max(FLUX, FLUX_FLOOR)
+  DO J = 1, NRHOX
+    R(J) = (FLXRAD(J) + FLXCNV(J) - FLUX) / F_safe
+  END DO
+
+END SUBROUTINE GET_TCORR_RESIDUALS
+
+!=========================================================================
+! SUBROUTINE RUN_RT_PASS(EMIT_DIAG)
+!
+! Run one radiative-transfer pass at the current state: line opacities,
+! mode-1 initialization, the wavelength loop (KAPP/JOSH/TCORR-2/RADIAP-2
+! /ROSS-2), but NOT the mode-3 finalize (which would mutate T).
+!
+! EMIT_DIAG = .TRUE.  : main iteration loop (with PUTOUT diagnostics).
+! EMIT_DIAG = .FALSE. : Newton Jacobian probe (no diagnostic side effects).
+!
+! Assumes COMPUTE_ALL_POPS, ENERGY_DENSITY, and DOPPLER-width setup have
+! already been done at the current state.  KAPCONT and SELECTLINES are
+! frozen at iter=1 in both call paths.
+!=========================================================================
+SUBROUTINE RUN_RT_PASS(EMIT_DIAG)
+
+  IMPLICIT NONE
+
+  LOGICAL, INTENT(IN) :: EMIT_DIAG
+
+  REAL(8) :: FREQ15, RCOWT
+  INTEGER :: NU, J
+  LOGICAL :: found_negative
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING RUN_RT_PASS'
+
+  ! --- Compute line opacities ---
+  CALL LINOP1
+  CALL XLINOP
+
+  ! --- Initialize frequency-integral accumulators (mode 1) ---
+  IF (IFCORR .EQ. 1) CALL TCORR(1, 0.0D0)
+  CALL ROSS(1, 0.0D0)
+  CALL RADIAP(1, 0.0D0)
+  IF (NLTEON .EQ. 1) CALL STATEQ(1, 0.0D0)
+
+  IF (EMIT_DIAG) CALL PUTOUT(1)
+
+  ! --- Frequency integration ---
+  DO NU = NULO, NUHI, NUSTEP
+
+    WAVE   = WAVESET(NU)
+    FREQ   = CLIGHT_NMS / WAVE
+    WAVENO = 1.0D7 / WAVE
+    RCOWT  = RCOSET(NU)
+    FREQLG = LOG(FREQ)
+
+    FREQ15 = FREQ / 1.0D15
+    EHVKT = EXP(-FREQ * HKT)
+    STIM  = 1.0D0 - EHVKT
+    BNU   = BNU_PREFAC * FREQ15**3 * EHVKT / STIM
+
+    CALL KAPP
+
+    ALINES = XLINES(:, NU) * STIM
+    ALINE  = ALINE + ALINES
+
+    CALL JOSH(IFSCAT, IFSURF)
+
+    ! Floor unphysical negatives to keep accumulators sane
+    found_negative = .FALSE.
+    DO J = 1, NRHOX
+      IF (SNU(J) .LT. 0.0D0 .OR. JNU(J) .LT. 0.0D0 .OR. HNU(J) .LT. 0.0D0) THEN
+        found_negative = .TRUE.
+        EXIT
+      END IF
+    END DO
+    IF (found_negative) THEN
+      JNU = MAX(JNU, 1.0D-99)
+      SNU = MAX(SNU, 1.0D-99)
+      HNU = MAX(HNU, 1.0D-99)
+    END IF
+
+    ! Accumulate frequency integrals (mode 2)
+    IF (IFSURF .EQ. 0) THEN
+      IF (IFCORR .EQ. 1) CALL TCORR(2, RCOWT)
+      CALL RADIAP(2, RCOWT)
+      CALL ROSS(2, RCOWT)
+      IF (NLTEON .EQ. 1) CALL STATEQ(2, RCOWT)
+    END IF
+
+    IF (EMIT_DIAG) CALL PUTOUT(4)
+
+  END DO
+
+END SUBROUTINE RUN_RT_PASS
+
+!=========================================================================
+! SUBROUTINE NEWTON_RUN_PROBE
+!
+! Run a complete residual evaluation suitable for the Newton Jacobian
+! probe: frequency-loop RT pass, ROSS(3), RADIAP(3), COMPUTE_HEIGHT,
+! and CONVEC in MLT-only mode.  Used by BUILD_NEWTON_JACOBIAN and
+! NEWTON_TCORR_STEP's line search.  CONVEC's iteration-history
+! post-processing (smoothing, overshoot) is skipped because it depends
+! on state we cannot consistently snapshot.
+!=========================================================================
+SUBROUTINE NEWTON_RUN_PROBE
+
+  IMPLICIT NONE
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING NEWTON_RUN_PROBE'
+
+  CALL RUN_RT_PASS(.FALSE.)
+  IF (IFSURF .EQ. 0) THEN
+    CALL ROSS(3, 0.0D0)
+    CALL RADIAP(3, 0.0D0)
+    CALL COMPUTE_HEIGHT
+    ! Full CONVEC (with post-processing) so probe FLXCNV matches
+    ! atlas12c's pipeline.  FLXCNV0/FLXCNV1 are in the state snapshot.
+    IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC(.FALSE.)
+  END IF
+
+END SUBROUTINE NEWTON_RUN_PROBE
+
+!=========================================================================
+! Newton-Jacobian state save / restore / perturbation utilities.
+!
+! Save/restore is a matched pair: every NEWTON_SAVE_STATE must be paired
+! with exactly one NEWTON_RESTORE_STATE before the next save.  Between
+! them, NEWTON_PERTURB_T may be called any number of times; each call
+! mutates current state in place and does not implicitly restore.
+!
+! State saved: thermodynamics (T, TLOG, TKEV, TK, HKT, HCKT), populations
+! (XNE, XNATOM, RHO, P, XNFP, XNF, XNH2, XNMOL, XNFPMOL), Doppler widths
+! (DOPPLE, XNFDOP), NLTE departures (BHYD, BMIN), frequency-integral
+! accumulators (FLXRAD, FLXCNV, RJMINS, ABROSS), CONVEC post-processing
+! state (FLXCNV0, FLXCNV1), Newton-cached J state, ROSSTAB table state,
+! pressure/radiation auxiliaries, and ITEMP (cache invalidation counter).
+!=========================================================================
+SUBROUTINE NEWTON_SAVE_STATE
+
+  IMPLICIT NONE
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING NEWTON_SAVE_STATE'
+
+  NEWT_T        = T
+  NEWT_TLOG     = TLOG
+  NEWT_TKEV     = TKEV
+  NEWT_TK       = TK
+  NEWT_HKT      = HKT
+  NEWT_HCKT     = HCKT
+  NEWT_XNE      = XNE
+  NEWT_XNATOM   = XNATOM
+  NEWT_RHO      = RHO
+  NEWT_P        = P
+  NEWT_XNFP     = XNFP
+  NEWT_XNF      = XNF
+  NEWT_XNH2     = XNH2
+  NEWT_DOPPLE   = DOPPLE
+  NEWT_XNFDOP   = XNFDOP
+  NEWT_BHYD     = BHYD
+  NEWT_BMIN     = BMIN
+  NEWT_FLXRAD   = FLXRAD
+  NEWT_FLXCNV   = FLXCNV
+  NEWT_RJMINS   = RJMINS
+  NEWT_ABROSS   = ABROSS
+  NEWT_TAUROS   = TAUROS
+  NEWT_FLXCNV0  = FLXCNV0
+  NEWT_FLXCNV1  = FLXCNV1
+  NEWT_PRAD     = PRAD
+  NEWT_VCONV    = VCONV
+  NEWT_DLTDLP   = DLTDLP
+  NEWT_GRDADB   = GRDADB
+  NEWT_HEATCP   = HEATCP
+  NEWT_HSCALE   = HSCALE
+  NEWT_DLRDLT   = DLRDLT
+  NEWT_HEIGHT   = HEIGHT
+  NEWT_XNSAVE   = XNSAVE
+  NEWT_XNMOL    = XNMOL
+  NEWT_XNFPMOL  = XNFPMOL
+  NEWT_EDENS    = EDENS
+  NEWT_CHARGESQ = CHARGESQ
+  NEWT_PTOTAL   = PTOTAL
+  NEWT_RADEN    = RADEN
+  NEWT_KNU      = KNU
+  NEWT_PRADK    = PRADK
+  NEWT_ITEMP    = ITEMP
+  NEWT_IFEDNS   = IFEDNS
+  NEWT_ROSSTAB_ROSS   = ROSSTAB_ROSS
+  NEWT_ROSSTAB_TABT   = ROSSTAB_TABT
+  NEWT_ROSSTAB_TABP   = ROSSTAB_TABP
+  NEWT_ROSSTAB_ZEROT  = ROSSTAB_ZEROT
+  NEWT_ROSSTAB_ZEROP  = ROSSTAB_ZEROP
+  NEWT_ROSSTAB_SLOPET = ROSSTAB_SLOPET
+  NEWT_ROSSTAB_SLOPEP = ROSSTAB_SLOPEP
+  NEWT_ROSSTAB_NROSS  = ROSSTAB_NROSS
+
+END SUBROUTINE NEWTON_SAVE_STATE
+
+!=========================================================================
+SUBROUTINE NEWTON_RESTORE_STATE
+
+  IMPLICIT NONE
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING NEWTON_RESTORE_STATE'
+
+  T        = NEWT_T
+  TLOG     = NEWT_TLOG
+  TKEV     = NEWT_TKEV
+  TK       = NEWT_TK
+  HKT      = NEWT_HKT
+  HCKT     = NEWT_HCKT
+  XNE      = NEWT_XNE
+  XNATOM   = NEWT_XNATOM
+  RHO      = NEWT_RHO
+  P        = NEWT_P
+  XNFP     = NEWT_XNFP
+  XNF      = NEWT_XNF
+  XNH2     = NEWT_XNH2
+  DOPPLE   = NEWT_DOPPLE
+  XNFDOP   = NEWT_XNFDOP
+  BHYD     = NEWT_BHYD
+  BMIN     = NEWT_BMIN
+  FLXRAD   = NEWT_FLXRAD
+  FLXCNV   = NEWT_FLXCNV
+  RJMINS   = NEWT_RJMINS
+  ABROSS   = NEWT_ABROSS
+  TAUROS   = NEWT_TAUROS
+  FLXCNV0  = NEWT_FLXCNV0
+  FLXCNV1  = NEWT_FLXCNV1
+  PRAD     = NEWT_PRAD
+  VCONV    = NEWT_VCONV
+  DLTDLP   = NEWT_DLTDLP
+  GRDADB   = NEWT_GRDADB
+  HEATCP   = NEWT_HEATCP
+  HSCALE   = NEWT_HSCALE
+  DLRDLT   = NEWT_DLRDLT
+  HEIGHT   = NEWT_HEIGHT
+  XNSAVE   = NEWT_XNSAVE
+  XNMOL    = NEWT_XNMOL
+  XNFPMOL  = NEWT_XNFPMOL
+  EDENS    = NEWT_EDENS
+  CHARGESQ = NEWT_CHARGESQ
+  PTOTAL   = NEWT_PTOTAL
+  RADEN    = NEWT_RADEN
+  KNU      = NEWT_KNU
+  PRADK    = NEWT_PRADK
+  IFEDNS   = NEWT_IFEDNS
+  ROSSTAB_ROSS   = NEWT_ROSSTAB_ROSS
+  ROSSTAB_TABT   = NEWT_ROSSTAB_TABT
+  ROSSTAB_TABP   = NEWT_ROSSTAB_TABP
+  ROSSTAB_ZEROT  = NEWT_ROSSTAB_ZEROT
+  ROSSTAB_ZEROP  = NEWT_ROSSTAB_ZEROP
+  ROSSTAB_SLOPET = NEWT_ROSSTAB_SLOPET
+  ROSSTAB_SLOPEP = NEWT_ROSSTAB_SLOPEP
+  ROSSTAB_NROSS  = NEWT_ROSSTAB_NROSS
+  ! Bump (don't restore) ITEMP so opacity caches recompute against the
+  ! just-restored T at the next RT pass.
+  ITEMP    = NEWT_ITEMP + 1
+
+END SUBROUTINE NEWTON_RESTORE_STATE
+
+!=========================================================================
+! SUBROUTINE NEWTON_PERTURB_T(JLIST, NJ, DLOG)
+!
+! Perturb T(j) -> T(j) * exp(DLOG) at each depth j in JLIST(1:NJ), then
+! re-derive T-dependent depth vectors and re-solve the equation of state.
+! Bumps ITEMP so opacity caches recompute on the next RT pass.
+!=========================================================================
+SUBROUTINE NEWTON_PERTURB_T(JLIST, NJ, DLOG)
+
+  IMPLICIT NONE
+  INTEGER, INTENT(IN) :: NJ
+  INTEGER, INTENT(IN) :: JLIST(NJ)
+  REAL(8), INTENT(IN) :: DLOG
+
+  REAL(8) :: SCALE
+  INTEGER :: I, J, NELION
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING NEWTON_PERTURB_T'
+
+  SCALE = EXP(DLOG)
+
+  ! Scale T at perturbed depths.
+  DO I = 1, NJ
+    J = JLIST(I)
+    T(J)    = T(J)    * SCALE
+    TK(J)   = TK(J)   * SCALE
+    TKEV(J) = TKEV(J) * SCALE
+    TLOG(J) = TLOG(J) + DLOG
+    HKT(J)  = HKT(J)  / SCALE
+    HCKT(J) = HCKT(J) / SCALE
+  END DO
+
+  ITEMP = ITEMP + 1            ! invalidate Boltzmann caches in opacity routines
+  CALL COMPUTE_ONE_POP(0.D0, 1, XNE)
+  CALL COMPUTE_ALL_POPS
+
+  ! Refresh Doppler widths at the perturbed depths.
+  DO I = 1, NJ
+    J = JLIST(I)
+    DO NELION = 1, MION - 1
+      IF (AMASSISO(1, NELION) .LE. 0.0D0) CYCLE
+      DOPPLE(J, NELION) = SQRT(2.0D0 * TK(J) / AMASSISO(1, NELION) / AMU &
+                               + VTURB(J)**2) / CLIGHT
+      XNFDOP(J, NELION) = XNFP(J, NELION) / DOPPLE(J, NELION) / RHO(J)
+    END DO
+  END DO
+
+END SUBROUTINE NEWTON_PERTURB_T
+
+!=========================================================================
+! SUBROUTINE NEWTON_PERTURB_T_HETEROGENEOUS(JLIST, NJ, DLOG_PER_DEPTH)
+!
+! Like NEWTON_PERTURB_T but each depth in JLIST gets its own log-T scale
+! factor, taken from the matching entry of DLOG_PER_DEPTH(1:NJ).  Used
+! by the Newton line search where the scaled step varies per depth.
+!=========================================================================
+SUBROUTINE NEWTON_PERTURB_T_HETEROGENEOUS(JLIST, NJ, DLOG_PER_DEPTH)
+
+  IMPLICIT NONE
+  INTEGER, INTENT(IN) :: NJ
+  INTEGER, INTENT(IN) :: JLIST(NJ)
+  REAL(8), INTENT(IN) :: DLOG_PER_DEPTH(NJ)
+
+  REAL(8) :: SCALE
+  INTEGER :: I, J, NELION
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING NEWTON_PERTURB_T_HETEROGENEOUS'
+
+  DO I = 1, NJ
+    J = JLIST(I)
+    SCALE = EXP(DLOG_PER_DEPTH(I))
+    T(J)    = T(J)    * SCALE
+    TK(J)   = TK(J)   * SCALE
+    TKEV(J) = TKEV(J) * SCALE
+    TLOG(J) = TLOG(J) + DLOG_PER_DEPTH(I)
+    HKT(J)  = HKT(J)  / SCALE
+    HCKT(J) = HCKT(J) / SCALE
+  END DO
+
+  ITEMP = ITEMP + 1
+  CALL COMPUTE_ONE_POP(0.D0, 1, XNE)
+  CALL COMPUTE_ALL_POPS
+
+  DO I = 1, NJ
+    J = JLIST(I)
+    DO NELION = 1, MION - 1
+      IF (AMASSISO(1, NELION) .LE. 0.0D0) CYCLE
+      DOPPLE(J, NELION) = SQRT(2.0D0 * TK(J) / AMASSISO(1, NELION) / AMU &
+                               + VTURB(J)**2) / CLIGHT
+      XNFDOP(J, NELION) = XNFP(J, NELION) / DOPPLE(J, NELION) / RHO(J)
+    END DO
+  END DO
+
+END SUBROUTINE NEWTON_PERTURB_T_HETEROGENEOUS
+
+!=========================================================================
+! SUBROUTINE BUILD_NEWTON_JACOBIAN(JBAND, R0, KL, KU, LDJ, DEBUG)
+!
+! Build the banded numerical Jacobian
+!     J(i, j) = d R(i) / d T(j)          for |i - j| <= NEWTON_BANDWIDTH
+! at the current atmospheric state, via central differences in log T.
+!
+! Band-storage layout matches LAPACK dgbsv:
+!   JBAND(KL+KU+1+i-j, j) = J(i, j)      for max(1,j-KU) <= i <= min(N,j+KL)
+!
+! Cost: STRIDE = 2*KU+1 columns perturbed in parallel per pass, with +
+! and - perturbations -> 2*(2*KU+1) RT passes per build.
+!=========================================================================
+SUBROUTINE BUILD_NEWTON_JACOBIAN(JBAND, R0, KL, KU, LDJ, DEBUG)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)  :: KL, KU, LDJ
+  REAL(8), INTENT(OUT) :: JBAND(LDJ, kw)
+  REAL(8), INTENT(OUT) :: R0(kw)             ! residual at the unperturbed state
+  LOGICAL, INTENT(IN)  :: DEBUG
+
+  INTEGER, PARAMETER  :: MAX_PERTURB = kw   ! upper bound on perturbations per pass
+
+  REAL(8) :: R_PLUS(kw), R_MINUS(kw)
+  REAL(8) :: DT_LOG_J        ! actual log-T perturbation magnitude
+  REAL(8) :: TJ              ! unperturbed T(j) for normalization
+  REAL(8) :: BAND_DIAG(0:NEWTON_BANDWIDTH)  ! diagnostic max|J_{ij}| as a function of |i-j|
+  REAL(8) :: HR, X_HR, W_HR  ! HRATIO smoothstep weight at each depth
+  INTEGER :: STRIDE          ! spacing of parallel perturbations
+  INTEGER :: OFFSET, SIGN_I
+  INTEGER :: JLIST(MAX_PERTURB), NJ
+  INTEGER :: I, J, JI, BAND_I, BAND_OFFSET
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING BUILD_NEWTON_JACOBIAN'
+
+  IF (KL .NE. KU) THEN
+    WRITE(6,'(A)') ' BUILD_NEWTON_JACOBIAN: only symmetric bandwidth (KL=KU) is supported'
+    RETURN
+  END IF
+  IF (LDJ .LT. 2*KL + KU + 1) THEN
+    WRITE(6,'(A,I0,A,I0)') ' BUILD_NEWTON_JACOBIAN: LDJ must be >= 2*KL+KU+1 = ', &
+         2*KL + KU + 1, ', got ', LDJ
+    RETURN
+  END IF
+
+  STRIDE = 2 * KU + 1   ! e.g. 5 for pentadiagonal
+
+  ! ---- 1. snapshot the unperturbed state and read R0 ----
+  CALL NEWTON_SAVE_STATE
+  CALL GET_DTGRAD_RESIDUAL(R0)
+
+  JBAND = 0.0D0
+  DT_LOG_J = NEWTON_DT_FRAC
+
+  ! ---- 2. parallel perturbations ----
+  DO OFFSET = 0, STRIDE - 1
+    ! Build the depth list for this offset: {1+OFFSET, 1+OFFSET+STRIDE, ...}
+    NJ = 0
+    DO J = 1 + OFFSET, NRHOX, STRIDE
+      NJ = NJ + 1
+      JLIST(NJ) = J
+    END DO
+    IF (NJ .EQ. 0) CYCLE
+
+    ! ---- + perturbation ----
+    CALL NEWTON_RESTORE_STATE
+    CALL NEWTON_PERTURB_T(JLIST, NJ, +DT_LOG_J)
+    CALL NEWTON_RUN_PROBE
+    CALL GET_DTGRAD_RESIDUAL(R_PLUS)
+
+    ! ---- - perturbation ----
+    CALL NEWTON_RESTORE_STATE
+    CALL NEWTON_PERTURB_T(JLIST, NJ, -DT_LOG_J)
+    CALL NEWTON_RUN_PROBE
+    CALL GET_DTGRAD_RESIDUAL(R_MINUS)
+
+    ! ---- fill banded columns for this OFFSET ----
+    ! Central-difference column j of J:
+    !     J(i, j) = (R_+(i) - R_-(i)) / (2 * DT_LOG_J * T_unperturbed(j))
+    ! for i in [j-KU, j+KL] intersected with [1, NRHOX].
+    DO JI = 1, NJ
+      J  = JLIST(JI)
+      TJ = NEWT_T(J)
+      DO I = MAX(1, J - KU), MIN(NRHOX, J + KL)
+        BAND_I = KL + KU + 1 + I - J
+        JBAND(BAND_I, J) = (R_PLUS(I) - R_MINUS(I)) &
+                         / (2.0D0 * DT_LOG_J * TJ)
+      END DO
+    END DO
+  END DO
+
+  ! ---- 3. final restore ----
+  CALL NEWTON_RESTORE_STATE
+
+  ! ---- 4. diagonal regularization outside the CZ taper ----
+  ! GET_DTGRAD_RESIDUAL gates R by the HRATIO smoothstep and zeroes the
+  ! edge depths (1..DTGRAD_J_LO-1 and NRHOX-DTGRAD_J_HI_OFFSET+1..NRHOX),
+  ! so excluded depths have R = 0 and zero Jacobian rows.  Add
+  ! (1 - w_eff(j)) * I to the diagonal so the LU factor stays
+  ! non-singular: at w_eff = 0 the row becomes 1 * dT(j) = 0, at w = 1
+  ! the row is the CZ Newton equation unchanged.
+  BAND_I = KL + KU + 1
+  DO J = 1, NRHOX
+    IF (J .LT. DTGRAD_J_LO .OR. J .GT. NRHOX - DTGRAD_J_HI_OFFSET) THEN
+      W_HR = 0.0D0
+    ELSE
+      HR    = FLXCNV(J) / (FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
+      X_HR  = (HR - DTGRAD_HR_LO) / (DTGRAD_HR_HI - DTGRAD_HR_LO)
+      X_HR  = max(0.0D0, min(1.0D0, X_HR))
+      W_HR  = X_HR * X_HR * (3.0D0 - 2.0D0 * X_HR)
+    END IF
+    JBAND(BAND_I, J) = JBAND(BAND_I, J) + (1.0D0 - W_HR)
+  END DO
+
+  ! ---- diagnostic: max|J_{ij}| as a function of band offset ----
+  IF (DEBUG) THEN
+    BAND_DIAG = 0.0D0
+    DO J = 1, NRHOX
+      DO BAND_OFFSET = -KU, KL
+        I = J + BAND_OFFSET
+        IF (I .LT. 1 .OR. I .GT. NRHOX) CYCLE
+        BAND_I = KL + KU + 1 + I - J
+        BAND_DIAG(ABS(BAND_OFFSET)) = MAX(BAND_DIAG(ABS(BAND_OFFSET)), &
+                                          ABS(JBAND(BAND_I, J)))
+      END DO
+    END DO
+    WRITE(0,'(A)') ' NEWTON_JACOBIAN: max|J_ij| by |i-j|'
+    DO BAND_OFFSET = 0, KU
+      WRITE(0,'(A,I2,A,ES12.4)') &
+        '   |i-j|=', BAND_OFFSET, '   max=', BAND_DIAG(BAND_OFFSET)
+    END DO
+  END IF
+
+END SUBROUTINE BUILD_NEWTON_JACOBIAN
+
+!=========================================================================
+! Banded-matrix Crout LU + back-substitution (no pivoting).
+!
+! Storage: LAPACK band-storage layout, row major in the band:
+!   AB(KL+KU+1+i-j, j) = A(i,j)    for max(1,j-KU) <= i <= min(N,j+KL)
+! For our pentadiagonal-with-margin case (KL=KU=4) the band has
+! 2*KL+KU+1 = 13 rows; the "extra KL rows" (rows 1..KL) are workspace
+! for in-place fill-in during factorization.
+!
+! These routines are correct for any banded matrix with strictly
+! diagonally dominant rows.  The R_FLUX Jacobian satisfies that on
+! solar tests so we skip pivoting; if a non-dominant J appears, a
+! partial-pivot variant would need to be added.
+!=========================================================================
+SUBROUTINE BANDED_LU_FACTOR(AB, N, KL, KU, LDAB, INFO)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)    :: N, KL, KU, LDAB
+  REAL(8), INTENT(INOUT) :: AB(LDAB, N)
+  INTEGER, INTENT(OUT)   :: INFO
+
+  INTEGER :: J, I, K, ROW
+  REAL(8) :: PIVOT, MULT
+  INTEGER :: I_DIAG  ! row index in AB of the diagonal entry
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING BANDED_LU_FACTOR'
+
+  INFO = 0
+  I_DIAG = KL + KU + 1   ! AB(I_DIAG, j) = A(j, j)
+
+  DO J = 1, N
+    PIVOT = AB(I_DIAG, J)
+    IF (ABS(PIVOT) .LT. 1.0D-300) THEN
+      INFO = J  ! singular at column J
+      RETURN
+    END IF
+    ! Eliminate sub-diagonal entries in column J using row J.
+    DO I = 1, MIN(KL, N - J)   ! rows J+1 .. min(N, J+KL)
+      ROW = J + I
+      ! Multiplier: A(ROW, J) / A(J, J), stored at AB(I_DIAG + I, J)
+      MULT = AB(I_DIAG + I, J) / PIVOT
+      AB(I_DIAG + I, J) = MULT      ! store L's sub-diagonal in place
+
+      ! Update row ROW: A(ROW, K) -= MULT * A(J, K) for K = J+1 .. min(N, J+KU)
+      DO K = 1, MIN(KU, N - J)
+        ! AB(I_DIAG + I - K, J + K) corresponds to A(ROW, J+K)
+        ! AB(I_DIAG     - K, J + K) corresponds to A(J,   J+K)
+        AB(I_DIAG + I - K, J + K) = AB(I_DIAG + I - K, J + K) &
+                                  - MULT * AB(I_DIAG - K, J + K)
+      END DO
+    END DO
+  END DO
+
+END SUBROUTINE BANDED_LU_FACTOR
+
+!=========================================================================
+SUBROUTINE BANDED_LU_SOLVE(AB, N, KL, KU, LDAB, B)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)    :: N, KL, KU, LDAB
+  REAL(8), INTENT(IN)    :: AB(LDAB, N)
+  REAL(8), INTENT(INOUT) :: B(N)
+
+  INTEGER :: I, J, K, ROW, I_DIAG
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING BANDED_LU_SOLVE'
+
+  I_DIAG = KL + KU + 1
+
+  ! Forward substitution: solve L y = b.  L is unit-lower-triangular
+  ! with multipliers stored at AB(I_DIAG + I, J) for I in 1..KL.
+  DO J = 1, N
+    DO I = 1, MIN(KL, N - J)
+      ROW = J + I
+      B(ROW) = B(ROW) - AB(I_DIAG + I, J) * B(J)
+    END DO
+  END DO
+
+  ! Back substitution: solve U x = y.
+  DO J = N, 1, -1
+    DO K = 1, MIN(KU, N - J)
+      ! A(J, J+K) = AB(I_DIAG - K, J + K)
+      B(J) = B(J) - AB(I_DIAG - K, J + K) * B(J + K)
+    END DO
+    B(J) = B(J) / AB(I_DIAG, J)
+  END DO
+
+END SUBROUTINE BANDED_LU_SOLVE
+
+!=========================================================================
+! SUBROUTINE NEWTON_BROYDEN_UPDATE(AB, DX, DR, KL, KU, LDAB)
+!
+! Broyden's "good" rank-1 update of a banded Jacobian:
+!   J_new = J_old + ( DR - J_old * DX ) ⊗ DX / (DX · DX)
+! truncated to the existing band [|i-j| <= KU].
+!=========================================================================
+SUBROUTINE NEWTON_BROYDEN_UPDATE(AB, DX, DR, KL, KU, LDAB)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)    :: KL, KU, LDAB
+  REAL(8), INTENT(INOUT) :: AB(LDAB, kw)
+  REAL(8), INTENT(IN)    :: DX(kw), DR(kw)
+
+  REAL(8) :: J_DX(kw)             ! J_old * DX, computed via banded matvec
+  REAL(8) :: NUMER(kw)            ! DR - J_old * DX
+  REAL(8) :: DXDX                 ! DX · DX
+  INTEGER :: I_DIAG, I, J, BAND_I
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING NEWTON_BROYDEN_UPDATE'
+
+  DXDX = SUM(DX(1:NRHOX) * DX(1:NRHOX))
+  IF (DXDX .LT. 1.0D-30) RETURN   ! step too small to update meaningfully
+
+  I_DIAG = KL + KU + 1
+
+  ! ---- J_DX(i) = sum_{j: |i-j| <= KU} A(i,j) * DX(j) ----
+  J_DX = 0.0D0
+  DO J = 1, NRHOX
+    DO I = MAX(1, J - KU), MIN(NRHOX, J + KL)
+      BAND_I = I_DIAG + I - J
+      J_DX(I) = J_DX(I) + AB(BAND_I, J) * DX(J)
+    END DO
+  END DO
+
+  ! ---- NUMER = DR - J_DX ----
+  NUMER(1:NRHOX) = DR(1:NRHOX) - J_DX(1:NRHOX)
+
+  ! ---- A(i, j) += NUMER(i) * DX(j) / DXDX  for entries within the band ----
+  DO J = 1, NRHOX
+    DO I = MAX(1, J - KU), MIN(NRHOX, J + KL)
+      BAND_I = I_DIAG + I - J
+      AB(BAND_I, J) = AB(BAND_I, J) + NUMER(I) * DX(J) / DXDX
+    END DO
+  END DO
+
+END SUBROUTINE NEWTON_BROYDEN_UPDATE
+
+!=========================================================================
+! SUBROUTINE NEWTON_TCORR_STEP(DT, ACCEPTED)
+!
+! Compute and apply one Newton step of the temperature correction:
+!
+!   1. Build (or reuse / Broyden-update) the banded Jacobian J = dR/dT.
+!   2. Solve J . dT = -R for the unconstrained Newton step.
+!   3. Per-depth MARCS damping omega = 1 - 0.7 * F_conv/(F_conv+F_rad)
+!      to reduce the step inside the convection zone.
+!   4. Hard-clamp |dT|/T <= NEWTON_DT_REL element-wise.
+!   5. Backtracking line search; accept the first SCALE * STEP that
+!      reduces ||R||_2.  If none does, return DT = 0 and force a
+!      Jacobian rebuild on the next entry.
+!
+! The Jacobian is stored at module scope (NEWT_JBAND) and reused for
+! up to NEWTON_REBUILD_EVERY steps or until the cumulative T-drift
+! exceeds NEWTON_REBUILD_DT_REL.
+!=========================================================================
+SUBROUTINE NEWTON_TCORR_STEP(DT_OUT, ACCEPTED)
+
+  IMPLICIT NONE
+
+  REAL(8), INTENT(OUT) :: DT_OUT(kw)
+  LOGICAL, INTENT(OUT) :: ACCEPTED
+
+  INTEGER, PARAMETER :: KL = NEWTON_BANDWIDTH
+  INTEGER, PARAMETER :: KU = NEWTON_BANDWIDTH
+  INTEGER, PARAMETER :: LDJ = 2*KL + KU + 1
+  INTEGER, PARAMETER :: MAX_BACKTRACK = 3
+
+  REAL(8) :: R0(kw), R_TRIAL(kw)
+  REAL(8) :: NORM2_BASE, NORM2_TRIAL
+  REAL(8) :: STEP(kw)              ! the unconstrained Newton step
+  REAL(8) :: SCALE                 ! line-search step length in [0, 1]
+  REAL(8) :: T_BEFORE(kw)          ! T before applying STEP
+  REAL(8) :: DLOG_BY_DEPTH(kw)     ! per-depth log-T scale for trial
+  LOGICAL :: REBUILD_NEEDED
+  INTEGER :: J, INFO, ITRY
+  INTEGER :: JLIST_ALL(kw)
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING NEWTON_TCORR_STEP'
+
+  ACCEPTED = .FALSE.
+
+  ! ---- Read R0 first; we always need it ----
+  CALL GET_DTGRAD_RESIDUAL(R0)
+
+  ! ---- Full rebuild, Broyden update, or reuse cached J ----
+  ! Rebuild when (a) no valid cache, (b) age hits the hard cap,
+  ! (c) cumulative T drift since last build exceeds NEWTON_REBUILD_DT_REL,
+  ! or (d) ||R||/||R0|| stays above NEWTON_POOR_RATIO for NEWTON_POOR_STREAK
+  ! consecutive iters (signals the cached J is giving bad step directions).
+  REBUILD_NEEDED = .NOT. NEWT_J_VALID                      &
+              .OR. NEWT_J_AGE     .GE. NEWTON_REBUILD_EVERY &
+              .OR. NEWT_T_DRIFT   .GE. NEWTON_REBUILD_DT_REL &
+              .OR. NEWT_POOR_AGE  .GE. NEWTON_POOR_STREAK
+
+  IF (REBUILD_NEEDED) THEN
+    CALL BUILD_NEWTON_JACOBIAN(NEWT_JBAND, R0, KL, KU, LDJ, .FALSE.)
+    NEWT_J_AGE      = 0
+    NEWT_POOR_AGE   = 0
+    NEWT_J_VALID    = .TRUE.
+    NEWT_T_AT_BUILD = T
+    NEWT_R_AT_BUILD = R0
+    NEWT_T_DRIFT    = 0.0D0
+    NEWT_JBAND_LU   = NEWT_JBAND
+    CALL BANDED_LU_FACTOR(NEWT_JBAND_LU, NRHOX, KL, KU, LDJ, INFO)
+    IF (INFO .NE. 0) THEN
+      WRITE(6,'(A,I3)') ' NEWTON_TCORR_STEP: banded LU factor failed at column ', INFO
+      DT_OUT = 0.0D0
+      RETURN
+    END IF
+  ELSE IF (NEWT_J_AGE .GT. 0) THEN
+    ! Banded Broyden rank-1 update from the previous step's (Δx, Δr),
+    ! truncated to the existing band, then refactored in place.
+    CALL NEWTON_BROYDEN_UPDATE(NEWT_JBAND, T - NEWT_T_PREV, R0 - NEWT_R_PREV, &
+                               KL, KU, LDJ)
+    NEWT_JBAND_LU = NEWT_JBAND
+    CALL BANDED_LU_FACTOR(NEWT_JBAND_LU, NRHOX, KL, KU, LDJ, INFO)
+    IF (INFO .NE. 0) THEN
+      WRITE(6,'(A,I3)') ' NEWTON_TCORR_STEP: Broyden-updated LU singular at column ', INFO
+      NEWT_J_VALID = .FALSE.
+      DT_OUT = 0.0D0
+      RETURN
+    END IF
+  END IF
+  NEWT_J_AGE = NEWT_J_AGE + 1
+
+  ! ---- Save state for next call's Broyden update ----
+  NEWT_T_PREV = T
+  NEWT_R_PREV = R0
+
+  ! ---- Solve J . STEP = -R0 ----
+  STEP = -R0
+  CALL BANDED_LU_SOLVE(NEWT_JBAND_LU, NRHOX, KL, KU, LDJ, STEP)
+
+  ! ---- Per-depth MARCS-style damping omega = 1 - 0.7 * F_conv/F_total ----
+  ! omega -> 1 in radiative layers, 0.3 in fully convective layers.
+  DO J = 1, NRHOX
+    STEP(J) = STEP(J) * (1.0D0 &
+      - 0.7D0 * FLXCNV(J) / (FLXCNV(J) + MAX(FLXRAD(J), 1.0D-30)))
+  END DO
+
+  ! ---- Hard clamp |dT|/T <= NEWTON_DT_REL element-wise ----
+  DO J = 1, NRHOX
+    IF (STEP(J) .GT.  NEWTON_DT_REL * T(J)) STEP(J) =  NEWTON_DT_REL * T(J)
+    IF (STEP(J) .LT. -NEWTON_DT_REL * T(J)) STEP(J) = -NEWTON_DT_REL * T(J)
+  END DO
+
+  ! ---- Backtracking line search ----
+  ! Baseline is ||R0||^2.  Empirically this matches the
+  ! restore+probe-with-zero-perturbation residual to ~0.2% on solar
+  ! tests, so the explicit reproduce-probe is skipped.
+  CALL NEWTON_SAVE_STATE
+  T_BEFORE = NEWT_T
+
+  NORM2_BASE = SUM(R0(1:NRHOX) * R0(1:NRHOX))
+
+  SCALE = 1.0D0
+  DO ITRY = 0, MAX_BACKTRACK
+    CALL NEWTON_RESTORE_STATE
+    DO J = 1, NRHOX
+      JLIST_ALL(J) = J
+      DLOG_BY_DEPTH(J) = LOG((T_BEFORE(J) + SCALE * STEP(J)) / T_BEFORE(J))
+    END DO
+    CALL NEWTON_PERTURB_T_HETEROGENEOUS(JLIST_ALL, NRHOX, DLOG_BY_DEPTH)
+    CALL NEWTON_RUN_PROBE
+    CALL GET_DTGRAD_RESIDUAL(R_TRIAL)
+    NORM2_TRIAL = SUM(R_TRIAL(1:NRHOX) * R_TRIAL(1:NRHOX))
+
+    IF (NORM2_TRIAL .LT. NORM2_BASE) THEN
+      ACCEPTED = .TRUE.
+      EXIT
+    END IF
+
+    SCALE = SCALE * 0.5D0
+  END DO
+
+  ! One-line per-step summary on stderr.
+  IF (ACCEPTED) THEN
+    WRITE(0,'(A,I3,A,F7.4,A,ES10.3,A,ES10.3,A,F7.2,A)') &
+      ' NEWTON iter=', ITER, ' accepted scale=', SCALE, &
+      ' ||R0||=', SQRT(NORM2_BASE), ' ||R||=', SQRT(NORM2_TRIAL), &
+      ' max|dT|=', MAXVAL(ABS(SCALE * STEP(1:NRHOX))), ' K'
+  ELSE
+    WRITE(0,'(A,I3,A,ES10.3,A)') &
+      ' NEWTON iter=', ITER, ' aborted; ||R0||=', &
+      SQRT(NORM2_BASE), ' -- skipping correction this iter'
+  END IF
+  FLUSH(0)
+
+  IF (.NOT. ACCEPTED) THEN
+    ! Line search exhausted: restore the unperturbed state and take no
+    ! step this iter.  Keep the cached Jacobian -- usually an abort
+    ! reflects a small RT-pass-induced shift in R between iters, not a
+    ! truly stale J.  Bump the poor-progress counter; consecutive aborts
+    ! will trigger a rebuild via the progress monitor.
+    CALL NEWTON_RESTORE_STATE
+    DT_OUT        = 0.0D0
+    NEWT_POOR_AGE = NEWT_POOR_AGE + 1
+    RETURN
+  END IF
+
+  DT_OUT = T - T_BEFORE
+
+  ! Cumulative T drift vs last full build; triggers the next rebuild.
+  NEWT_T_DRIFT = MAXVAL(ABS(T(1:NRHOX) - NEWT_T_AT_BUILD(1:NRHOX)) &
+                      / MAX(ABS(NEWT_T_AT_BUILD(1:NRHOX)), 1.0D0))
+
+  ! Progress monitor: count consecutive iters with poor residual reduction.
+  ! Each "poor" iter increments; a clearly-improving iter resets to zero.
+  IF (NORM2_BASE .GT. 0.0D0 .AND. &
+      NORM2_TRIAL .GT. NEWTON_POOR_RATIO**2 * NORM2_BASE) THEN
+    NEWT_POOR_AGE = NEWT_POOR_AGE + 1
+  ELSE
+    NEWT_POOR_AGE = 0
+  END IF
+
+END SUBROUTINE NEWTON_TCORR_STEP
+
+!=========================================================================
+! SUBROUTINE GET_DTGRAD_RESIDUAL(R)
+!
+! Read the gradient-balance residual at the current state:
+!   R(j) = w(j) * (FLXRAD(j) + FLXCNV(j) - FLUX) / FLUX
+! where w(j) is a smoothstep ramp in HRATIO from DTGRAD_HR_LO to
+! DTGRAD_HR_HI -- so R is zero in pure radiative layers, ramps up
+! through the transition, and reads pure flux residual in fully
+! convective layers.  The ramp keeps the residual (and its Jacobian)
+! smooth across the Schwarzschild boundary.
+!
+! Assumes CONVEC has been called recently so FLXCNV is current.
+! Does NOT trigger CONVEC -- pure read.
+!=========================================================================
+SUBROUTINE GET_DTGRAD_RESIDUAL(R)
+
+  IMPLICIT NONE
+  REAL(8), INTENT(OUT) :: R(kw)
+
+  REAL(8), PARAMETER :: FLUX_FLOOR = 1.0D-30
+  REAL(8) :: F_safe, HR, X_HR, W_HR
+  INTEGER :: J
+
+  F_safe = max(FLUX, FLUX_FLOOR)
+  R(:)   = 0.0D0
+  DO J = DTGRAD_J_LO, NRHOX - DTGRAD_J_HI_OFFSET
+    HR    = FLXCNV(J) / (FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
+    X_HR  = (HR - DTGRAD_HR_LO) / (DTGRAD_HR_HI - DTGRAD_HR_LO)
+    X_HR  = max(0.0D0, min(1.0D0, X_HR))
+    W_HR  = X_HR * X_HR * (3.0D0 - 2.0D0 * X_HR)
+    R(J)  = W_HR * (FLXRAD(J) + FLXCNV(J) - FLUX) / F_safe
+  END DO
+
+END SUBROUTINE GET_DTGRAD_RESIDUAL
 
 !=========================================================================
 ! SUBROUTINE STATEQ(MODE, RCOWT)
@@ -3366,15 +4407,11 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
   REAL(8), INTENT(IN) :: TEMP, PRESSURE, V
   REAL(8)             :: ROSSTAB
 
-  ! --- Table storage (persistent across calls) ---
-  INTEGER, PARAMETER :: MAXTAB = kw * 60
-
-  REAL(8),  SAVE :: ROSS(MAXTAB)     ! log10(kappa_Ross)
-  REAL(8),  SAVE :: TABT(MAXTAB)     ! normalized log10(T)
-  REAL(8),  SAVE :: TABP(MAXTAB)     ! normalized log10(P)
-  REAL(8),  SAVE :: ZEROT, ZEROP     ! normalization offsets
-  REAL(8),  SAVE :: SLOPET, SLOPEP   ! normalization ranges
-  INTEGER, SAVE :: NROSS = 0        ! number of entries in table
+  ! Table storage is at module scope (mod_atlas_data: ROSSTAB_*) so the
+  ! Newton snapshot/restore can include it.  The Newton probe pipeline
+  ! does NOT call ROSSTAB(0,0,0) (which would append spurious entries),
+  ! and the snapshot guarantees the lookup mode sees the same table as
+  ! atlas12c's gate-evaluation call.
 
   ! --- Shepard parameters ---
   ! KFIT       : number of nearest neighbors used in the weighted average
@@ -3384,7 +4421,7 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
   !              near stored points and was indistinguishable from bilinear.
   ! SHEP_EPS   : softening, in normalized (T,P) units where the table spans
   !              roughly [0,1] x [0,1].  Typical neighbor spacing is
-  !              ~1/sqrt(NROSS) ~ 0.02, so EPS ~ 1e-4 ensures the kernel
+  !              ~1/sqrt(ROSSTAB_NROSS) ~ 0.02, so EPS ~ 1e-4 ensures the kernel
   !              stays smooth without being dominated by the nearest point.
   INTEGER, PARAMETER :: KFIT       = 12
   REAL(8),  PARAMETER :: SHEP_PHALF = 1.0D0
@@ -3420,26 +4457,26 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
 
   IF (TEMP .LE. 0.0D0) THEN
 
-    IF (NROSS .EQ. 0) THEN
-      ZEROT  = log10(T(1))
-      ZEROP  = log10(P(1))
-      SLOPET = log10(T(NRHOX)) - ZEROT
-      SLOPEP = log10(P(NRHOX)) - ZEROP
+    IF (ROSSTAB_NROSS .EQ. 0) THEN
+      ROSSTAB_ZEROT  = log10(T(1))
+      ROSSTAB_ZEROP  = log10(P(1))
+      ROSSTAB_SLOPET = log10(T(NRHOX)) - ROSSTAB_ZEROT
+      ROSSTAB_SLOPEP = log10(P(NRHOX)) - ROSSTAB_ZEROP
     END IF
 
     DO J = 1, NRHOX
-      NROSS = NROSS + 1
-      IF (NROSS .GT. MAXTAB) THEN
-        WRITE(6,*) 'ROSSTAB ERROR: table overflow, NROSS =', NROSS
-        NROSS = MAXTAB
+      ROSSTAB_NROSS = ROSSTAB_NROSS + 1
+      IF (ROSSTAB_NROSS .GT. ROSSTAB_MAXTAB) THEN
+        WRITE(6,*) 'ROSSTAB ERROR: table overflow, ROSSTAB_NROSS =', ROSSTAB_NROSS
+        ROSSTAB_NROSS = ROSSTAB_MAXTAB
         EXIT
       END IF
-      TABT(NROSS) = (log10(T(J)) - ZEROT) / SLOPET
-      TABP(NROSS) = (log10(P(J)) - ZEROP) / SLOPEP
-      ROSS(NROSS) = log10(ABROSS(J))
+      ROSSTAB_TABT(ROSSTAB_NROSS) = (log10(T(J)) - ROSSTAB_ZEROT) / ROSSTAB_SLOPET
+      ROSSTAB_TABP(ROSSTAB_NROSS) = (log10(P(J)) - ROSSTAB_ZEROP) / ROSSTAB_SLOPEP
+      ROSSTAB_ROSS(ROSSTAB_NROSS) = log10(ABROSS(J))
       IF (IDEBUG .EQ. 1) &
         WRITE(6, '(" ROSSTAB",I5,F10.1,F10.5,1PE12.3,0PF10.5,F10.5)') &
-        NROSS, T(J), TABT(NROSS), P(J), TABP(NROSS), ROSS(NROSS)
+        ROSSTAB_NROSS, T(J), ROSSTAB_TABT(ROSSTAB_NROSS), P(J), ROSSTAB_TABP(ROSSTAB_NROSS), ROSSTAB_ROSS(ROSSTAB_NROSS)
     END DO
 
     ROSSTAB = 0.0D0
@@ -3450,8 +4487,8 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
   ! MODE 2: LOOKUP
   ! =================================================================
 
-  TEMPLOG  = (log10(TEMP) - ZEROT) / SLOPET
-  PRESSLOG = (log10(PRESSURE) - ZEROP) / SLOPEP
+  TEMPLOG  = (log10(TEMP) - ROSSTAB_ZEROT) / ROSSTAB_SLOPET
+  PRESSLOG = (log10(PRESSURE) - ROSSTAB_ZEROP) / ROSSTAB_SLOPEP
 
   ! -----------------------------------------------------------------
   ! IROSSTAB = 1: Original bilinear (4-quadrant nearest neighbor)
@@ -3463,9 +4500,9 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
     RMIN_MP = 1.0D30;  IDX_MP = 0
     RMIN_MM = 1.0D30;  IDX_MM = 0
 
-    DO I = 1, NROSS
-      DT = TABT(I) - TEMPLOG
-      DP = TABP(I) - PRESSLOG
+    DO I = 1, ROSSTAB_NROSS
+      DT = ROSSTAB_TABT(I) - TEMPLOG
+      DP = ROSSTAB_TABP(I) - PRESSLOG
       RADIUS2 = DT**2 + DP**2
 
       IF (DT .GE. 0.0D0) THEN
@@ -3494,10 +4531,10 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
     IF (IDX_PP .NE. 0 .AND. IDX_PM .NE. 0 .AND. &
         IDX_MP .NE. 0 .AND. IDX_MM .NE. 0) THEN
 
-      TPP = TABT(IDX_PP);  PPP = TABP(IDX_PP);  RPP = ROSS(IDX_PP)
-      TPM = TABT(IDX_PM);  PPM = TABP(IDX_PM);  RPM = ROSS(IDX_PM)
-      TMP = TABT(IDX_MP);  PMP = TABP(IDX_MP);  RMP = ROSS(IDX_MP)
-      TMM = TABT(IDX_MM);  PMM = TABP(IDX_MM);  RMM = ROSS(IDX_MM)
+      TPP = ROSSTAB_TABT(IDX_PP);  PPP = ROSSTAB_TABP(IDX_PP);  RPP = ROSSTAB_ROSS(IDX_PP)
+      TPM = ROSSTAB_TABT(IDX_PM);  PPM = ROSSTAB_TABP(IDX_PM);  RPM = ROSSTAB_ROSS(IDX_PM)
+      TMP = ROSSTAB_TABT(IDX_MP);  PMP = ROSSTAB_TABP(IDX_MP);  RMP = ROSSTAB_ROSS(IDX_MP)
+      TMM = ROSSTAB_TABT(IDX_MM);  PMM = ROSSTAB_TABP(IDX_MM);  RMM = ROSSTAB_ROSS(IDX_MM)
 
       R_HIPRESS = ((TEMPLOG - TMP) * RPP &
         + (TPP - TEMPLOG) * RMP) / (TPP - TMP)
@@ -3523,10 +4560,10 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
       RWT = 1.0D0/DIST_PP + 1.0D0/DIST_PM &
           + 1.0D0/DIST_MP + 1.0D0/DIST_MM
 
-      R = (ROSS(max(1, IDX_PP)) / DIST_PP &
-         + ROSS(max(1, IDX_PM)) / DIST_PM &
-         + ROSS(max(1, IDX_MP)) / DIST_MP &
-         + ROSS(max(1, IDX_MM)) / DIST_MM) / RWT
+      R = (ROSSTAB_ROSS(max(1, IDX_PP)) / DIST_PP &
+         + ROSSTAB_ROSS(max(1, IDX_PM)) / DIST_PM &
+         + ROSSTAB_ROSS(max(1, IDX_MP)) / DIST_MP &
+         + ROSSTAB_ROSS(max(1, IDX_MM)) / DIST_MM) / RWT
 
     END IF
 
@@ -3539,9 +4576,9 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
     DMAX2  = 0.0D0
     KMAX   = 1
 
-    DO I = 1, NROSS
-      DT = TABT(I) - TEMPLOG
-      DP = TABP(I) - PRESSLOG
+    DO I = 1, ROSSTAB_NROSS
+      DT = ROSSTAB_TABT(I) - TEMPLOG
+      DP = ROSSTAB_TABP(I) - PRESSLOG
       RADIUS2 = DT * DT + DP * DP
 
       IF (KFOUND .LT. KFIT) THEN
@@ -3570,7 +4607,7 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
     RWT = 0.0D0
     DO K = 1, KFOUND
       W   = 1.0D0 / (DIST2(K) + SHEP_EPS) ** SHEP_PHALF
-      R   = R   + W * ROSS(KIDX(K))
+      R   = R   + W * ROSSTAB_ROSS(KIDX(K))
       RWT = RWT + W
     END DO
     R = R / RWT
@@ -6605,9 +7642,21 @@ END SUBROUTINE COMPUTE_ALL_POPS
 !   Castelli (correction to overshooting weight)
 !=========================================================================
 
-SUBROUTINE CONVEC
+SUBROUTINE CONVEC(MLT_ONLY)
 
   IMPLICIT NONE
+
+  ! When MLT_ONLY = .TRUE., return immediately after the per-depth MLT
+  ! solve (computing FLXCNV, ABCONV, VCONV, DELTAT, DLTDLP, GRDADB,
+  ! HEATCP, HSCALE, DLRDLT) and skip all iteration-history post-
+  ! processing: 1-2-1 smoothing, radiative-gap interpolation, overshoot,
+  ! surface-layer zeroing.  Used by the Newton Jacobian probe so the
+  ! Jacobian captures CONVEC's MLT response without the history-
+  ! dependent state (FLXCNV0, FLXCNV1, etc.) that the probe cannot
+  ! consistently snapshot.  The atlas12c top-level call passes .FALSE.
+  ! to keep the full historical CONVEC behaviour for the production
+  ! atmospheric structure.
+  LOGICAL, INTENT(IN) :: MLT_ONLY
 
   ! --- Local arrays: finite-difference energy density and density ---
   REAL(8) :: EDENS1(kw), EDENS2(kw)   ! E at T+, T-
@@ -6615,6 +7664,9 @@ SUBROUTINE CONVEC
   REAL(8) :: RHO1(kw),   RHO2(kw)     ! ρ at T+, T-
   REAL(8) :: RHO3(kw),   RHO4(kw)     ! ρ at P+, P-
   REAL(8) :: SAVXNE(kw),  SAVXNA(kw),  SAVRHO(kw)  ! saved state
+  REAL(8) :: SAVXNFP(kw, mion), SAVXNF(kw, mion)
+  REAL(8) :: SAVXNH2(kw)
+  REAL(8) :: SAVXNMOL(kw, maxmol), SAVXNFPMOL(kw, maxmol)
   REAL(8) :: DILUT(kw)                 ! dilution factor 1 - exp(-τ_Ross)
 
   REAL(8) :: DTDRHX(kw)    ! dT/d(RHOX) from DERIV
@@ -6642,24 +7694,66 @@ SUBROUTINE CONVEC
   REAL(8)  :: DDD           ! discriminant for cubic equation
   REAL(8)  :: DELTA         ! convective efficiency parameter
   REAL(8)  :: TERM, UP, DOWN  ! series expansion variables
-  REAL(8)  :: DPLUS, DMINUS ! opacity ratios at T±ΔT
+  REAL(8)  :: DPLUS, DMINUS ! opacity ratios at T±ΔT (legacy 2-point)
+  REAL(8)  :: DPLUS_INNER, DMINUS_INNER  ! opacity ratios at T ± ΔT/3 (4-point)
   REAL(8)  :: OLDDELT       ! previous iteration's DELTAT
   INTEGER :: ITS30         ! max opacity iterations (30 or 1)
   INTEGER :: IDELTAT       ! opacity iteration counter
 
-  ! --- Adaptive relaxation in the DELTAT iteration ---
-  ! When the linearized fixed-point map has eigenvalue more negative than
-  ! about -1.85 (a steep ionization-edge transition can produce this),
-  ! the default 0.7/0.3 mix admits a stable two-cycle that never decays.
-  ! We detect three consecutive sign-flips of (DELTAT_new - OLDDELT) and
-  ! switch to a tighter 0.2/0.8 mix, which damps eigenvalues out to ~ -9.
-  REAL(8),  PARAMETER :: OMEGA_DEFAULT  = 0.7D0   ! default new/old weight
-  REAL(8),  PARAMETER :: OMEGA_DAMPED   = 0.2D0   ! tighter weight when triggered
-  INTEGER, PARAMETER :: FLIP_TRIGGER   = 3       ! consecutive sign flips to trigger
-  REAL(8)  :: OMEGA                    ! current relaxation weight
-  REAL(8)  :: DSTEP, PREV_DSTEP        ! signed step (DELTAT_new - OLDDELT) per iter
-  INTEGER :: NFLIP                    ! consecutive sign-flip count
-  LOGICAL :: TRIGGERED                ! has stronger damping been engaged?
+  ! --- Inner DELTAT iteration: Picard + Steffensen acceleration -----------
+  ! The fixed-point map DELTAT_new = T * MIXLTH * DELTA(DELTAT_old) is smooth
+  ! in DELTAT but kappa(T+/-x*DELTAT) inherits sharp features from H I, He I,
+  ! and H- ionization edges crossed by the bubble probes.  Even with 4-point
+  ! quadrature, the linearized map at the fixed point can have eigenvalue
+  ! magnitude > 1, producing a stable repelling limit cycle that no Picard
+  ! damping can overcome.
+  !
+  ! Steffensen's method: from three Picard iterates a -> b -> c, the Aitken
+  ! extrapolation
+  !            x* = c - (c - b)^2 / (c - 2b + a)
+  ! gives the fixed point of the local affine model b = phi*a + (1-phi)*x*.
+  ! It converges quadratically near the fixed point regardless of |phi|, so
+  ! it works whether the fixed point is locally attracting or repelling.
+  ! We apply it every STEFF_EVERY Picard steps and treat each Aitken
+  ! estimate as the new starting point.
+  !
+  ! Cycle-mean exit: when the bubble probes straddle two sharp kappa(T)
+  ! features (e.g. H I + H-), no smooth-acceleration scheme converges --
+  ! the limit set is a small period-N cycle whose mean is the best
+  ! available estimate of the underlying fixed point.  Once the iteration
+  ! has produced two consecutive matching periods (i.e. a stable cycle),
+  ! we set DELTAT to the cycle mean and exit.  ABCONV at the mean is
+  ! within ~3% of either cycle-phase value; downstream propagation to
+  ! T(tau) is below 1 K (which the .iter trace confirms).
+  REAL(8), PARAMETER :: OMEGA_DEFAULT     = 0.7D0   ! Picard new/old weight
+  INTEGER, PARAMETER :: STEFF_EVERY       = 3       ! Aitken cadence (in Picard steps)
+  REAL(8), PARAMETER :: STEFF_DEN_FLOOR   = 1.0D-6  ! relative |c - 2b + a| guard
+  REAL(8), PARAMETER :: STEFF_MAX_JUMP    = 0.5D0   ! reject Aitken if |dx|/|c| > this
+  INTEGER, PARAMETER :: CYCLE_HIST        = 12      ! ring-buffer depth (covers period <= 6)
+  INTEGER, PARAMETER :: CYCLE_PMAX        = 6       ! longest cycle searched
+  INTEGER, PARAMETER :: CYCLE_PMIN_HIST   = 8       ! min iterates before searching
+  REAL(8), PARAMETER :: CYCLE_TOL_REL     = 5.0D-4  ! relative match threshold
+  REAL(8), PARAMETER :: CYCLE_AMP_REL     = 2.0D-3  ! min cycle amplitude (vs noise)
+
+  REAL(8)  :: OMEGA                              ! current relaxation weight
+  REAL(8)  :: DSTEP                              ! signed step DELTAT_new - OLDDELT
+  REAL(8)  :: STEFF_A, STEFF_B, STEFF_C          ! three most recent iterates (oldest -> newest)
+  INTEGER  :: STEFF_HAVE                         ! count of valid iterates in (A,B,C) (0..3)
+  REAL(8)  :: STEFF_DEN, STEFF_NUM, STEFF_X      ! Aitken extrapolation pieces
+  INTEGER  :: STEFF_COUNT                        ! diagnostic: # of Aitken accelerations applied
+  REAL(8)  :: HIST(CYCLE_HIST)                   ! ring buffer of recent DELTAT (most recent in (1))
+  INTEGER  :: HIST_N                             ! valid entries in HIST
+  INTEGER  :: CYCLE_PERIOD                       ! detected cycle period (0 = none)
+  REAL(8)  :: CYCLE_MEAN                         ! arithmetic mean of one cycle
+  REAL(8)  :: CYCLE_MIN, CYCLE_MAX               ! cycle amplitude bounds
+  LOGICAL  :: CYCLE_EXIT                         ! set when cycle-mean exit fires
+  INTEGER  :: II
+
+  ! --- Per-iteration trace, dumped only on warning ---
+  INTEGER, PARAMETER :: TRACE_MAX = 30
+  REAL(8) :: TR_DT(TRACE_MAX), TR_DSTEP(TRACE_MAX)
+  REAL(8) :: TR_RAT(TRACE_MAX), TR_DPLUS(TRACE_MAX), TR_DMINUS(TRACE_MAX)
+  INTEGER :: TR_N, TR_K
 
   ! --- Local scalars: overshooting ---
   REAL(8)  :: WTCNV         ! overshooting weight
@@ -6687,9 +7781,14 @@ SUBROUTINE CONVEC
   ! Save current state
   DILUT = 1.0D0 - exp(-TAUROS)
   ! DILUT(J) = PRAD(J) / PRADK(J)
-  SAVXNE = XNE
-  SAVXNA = XNATOM
-  SAVRHO = RHO
+  SAVXNE     = XNE
+  SAVXNA     = XNATOM
+  SAVRHO     = RHO
+  SAVXNFP    = XNFP
+  SAVXNF     = XNF
+  SAVXNH2    = XNH2
+  SAVXNMOL   = XNMOL
+  SAVXNFPMOL = XNFPMOL
 
   ! --- Perturbation 1: T + 0.1% ---
   TLOG = TLOG + 0.0009995003D0
@@ -6747,9 +7846,14 @@ SUBROUTINE CONVEC
   RHO4 = RHO
 
   ! Restore saved state
-  XNE    = SAVXNE
-  XNATOM = SAVXNA
-  RHO    = SAVRHO
+  XNE     = SAVXNE
+  XNATOM  = SAVXNA
+  RHO     = SAVRHO
+  XNFP    = SAVXNFP
+  XNF     = SAVXNF
+  XNH2    = SAVXNH2
+  XNMOL   = SAVXNMOL
+  XNFPMOL = SAVXNFPMOL
   P      = P / 0.999D0
 
   !=====================================================================
@@ -6815,16 +7919,35 @@ SUBROUTINE CONVEC
     ITS30 = 30
     IF (IFCONV .EQ. 0) ITS30 = 1
 
-    ! Reset adaptive-relaxation state at each depth
-    OMEGA       = OMEGA_DEFAULT
-    NFLIP       = 0
-    PREV_DSTEP  = 0.0D0
-    TRIGGERED   = .FALSE.
+    ! Reset relaxation + Steffensen + cycle-mean state at each depth
+    OMEGA        = OMEGA_DEFAULT
+    STEFF_HAVE   = 0
+    STEFF_COUNT  = 0
+    STEFF_A      = 0.0D0
+    STEFF_B      = 0.0D0
+    STEFF_C      = 0.0D0
+    HIST_N       = 0
+    CYCLE_PERIOD = 0
+    CYCLE_EXIT   = .FALSE.
+    TR_N         = 0
 
-    DO IDELTAT = 1, ITS30
-      DPLUS  = ROSSTAB(T(J) + DELTAT(J), P(J), VTURB(J)) / ROSST(J)
-      DMINUS = ROSSTAB(T(J) - DELTAT(J), P(J), VTURB(J)) / ROSST(J)
-      ABCONV(J) = 2.0D0 / (1.0D0 / DPLUS + 1.0D0 / DMINUS) * ABROSS(J)
+    PICARD: DO IDELTAT = 1, ITS30
+      ! Bubble-cross-section opacity quadrature.
+      ! Endpoint samples (always needed; trace consumes them):
+      DPLUS  = ROSSTAB(T(J) + DELTAT(J),         P(J), VTURB(J)) / ROSST(J)
+      DMINUS = ROSSTAB(T(J) - DELTAT(J),         P(J), VTURB(J)) / ROSST(J)
+      IF (USE_4POINT_MLT) THEN
+        ! 4-point composite midpoint of the harmonic-mean opacity over
+        ! the bubble cross-section (assuming linear T profile from
+        ! T - DELTAT to T + DELTAT).  Quadrature points: x = +/-1, +/-1/3.
+        DPLUS_INNER  = ROSSTAB(T(J) + DELTAT(J) / 3.0D0, P(J), VTURB(J)) / ROSST(J)
+        DMINUS_INNER = ROSSTAB(T(J) - DELTAT(J) / 3.0D0, P(J), VTURB(J)) / ROSST(J)
+        ABCONV(J) = 4.0D0 / (1.0D0 / DPLUS  + 1.0D0 / DPLUS_INNER &
+                           + 1.0D0 / DMINUS + 1.0D0 / DMINUS_INNER) * ABROSS(J)
+      ELSE
+        ! Legacy 2-point harmonic mean (Kurucz 1970s ATLAS).
+        ABCONV(J) = 2.0D0 / (1.0D0 / DPLUS + 1.0D0 / DMINUS) * ABROSS(J)
+      END IF
 
       ! Radiative damping parameter
       D = 8.0D0 * SIGMA_SB * T(J)**4 &
@@ -6863,50 +7986,124 @@ SUBROUTINE CONVEC
       FLXCNV(J) = FLUXCO * VCONV(J) * DELTA
       FLXCNV(J) = max(FLXCNV(J), 0.0D0)
 
-      ! Temperature excess of convective element
+      ! Temperature excess of convective element (Picard-relaxed update)
       DELTAT(J) = T(J) * MIXLTH * DELTA
       DELTAT(J) = min(DELTAT(J), T(J) * 0.15D0)
       DELTAT(J) = DELTAT(J) * OMEGA + OLDDELT * (1.0D0 - OMEGA)
 
-      ! Adaptive-relaxation logic: count consecutive sign-flips of the
-      ! signed step.  Hitting FLIP_TRIGGER consecutive flips means the
-      ! map has a strongly negative eigenvalue and the default OMEGA is
-      ! sustaining a limit cycle; switch to OMEGA_DAMPED and stay there.
       DSTEP = DELTAT(J) - OLDDELT
-      IF (IDELTAT .GT. 1) THEN
-        IF (DSTEP * PREV_DSTEP .LT. 0.0D0) THEN
-          NFLIP = NFLIP + 1
-        ELSE
-          NFLIP = 0
-        END IF
-        IF (.NOT. TRIGGERED .AND. NFLIP .GE. FLIP_TRIGGER) THEN
-          OMEGA     = OMEGA_DAMPED
-          TRIGGERED = .TRUE.
-        END IF
+
+      ! Record per-iteration trace (capped at TRACE_MAX).
+      IF (TR_N .LT. TRACE_MAX) THEN
+        TR_N = TR_N + 1
+        TR_DT(TR_N)     = DELTAT(J)
+        TR_DSTEP(TR_N)  = DSTEP
+        TR_RAT(TR_N)    = ABCONV(J) / ABROSS(J)
+        TR_DPLUS(TR_N)  = DPLUS
+        TR_DMINUS(TR_N) = DMINUS
       END IF
-      PREV_DSTEP = DSTEP
 
       ! Exit on convergence: either small absolute step, or small
       ! relative step at large DELTAT.
       IF (ABS(DSTEP) .LT. 0.5D0 .OR. &
           ABS(DSTEP) .LT. 1.0D-3 * MAX(ABS(DELTAT(J)), 1.0D0)) EXIT
+
+      ! Steffensen acceleration: collect three Picard iterates (a, b, c)
+      ! then extrapolate to the fixed point of the locally-affine model.
+      STEFF_A = STEFF_B
+      STEFF_B = STEFF_C
+      STEFF_C = DELTAT(J)
+      STEFF_HAVE = MIN(STEFF_HAVE + 1, 3)
+
+      IF (STEFF_HAVE .EQ. 3 .AND. MOD(IDELTAT, STEFF_EVERY) .EQ. 0) THEN
+        ! Aitken: x* = c - (c-b)^2 / (c - 2b + a).
+        STEFF_DEN = STEFF_C - 2.0D0 * STEFF_B + STEFF_A
+        IF (ABS(STEFF_DEN) .GT. STEFF_DEN_FLOOR * MAX(ABS(STEFF_C), 1.0D0)) THEN
+          STEFF_NUM = STEFF_C - STEFF_B
+          STEFF_X   = STEFF_C - STEFF_NUM * STEFF_NUM / STEFF_DEN
+          ! Sanity guard: reject wild extrapolations (negative DELTAT, or
+          ! a relative jump exceeding STEFF_MAX_JUMP).
+          IF (STEFF_X .GT. 0.0D0 .AND. &
+              ABS(STEFF_X - STEFF_C) .LT. STEFF_MAX_JUMP * MAX(ABS(STEFF_C), 1.0D0)) THEN
+            DELTAT(J)   = STEFF_X
+            OLDDELT     = STEFF_X
+            STEFF_HAVE  = 0   ! reset Aitken history; next 3 Picards reseed
+            STEFF_COUNT = STEFF_COUNT + 1
+            CYCLE PICARD
+          END IF
+        END IF
+      END IF
+
+      ! Push current iterate onto the ring buffer (most recent in HIST(1)).
+      DO II = MIN(HIST_N, CYCLE_HIST - 1), 1, -1
+        HIST(II + 1) = HIST(II)
+      END DO
+      HIST(1) = DELTAT(J)
+      HIST_N = MIN(HIST_N + 1, CYCLE_HIST)
+
+      ! Cycle-mean exit: search for smallest period N in [2..CYCLE_PMAX]
+      ! such that two consecutive periods match, i.e.
+      !   HIST(1)..HIST(N)  ~=  HIST(N+1)..HIST(2N)
+      ! The two-period requirement guards against a transient near-match.
+      ! We also require a real amplitude (max-min > CYCLE_AMP_REL * mean)
+      ! so we don't trip on slow convergence to a single value.
+      IF (HIST_N .GE. CYCLE_PMIN_HIST) THEN
+        DO II = 2, CYCLE_PMAX
+          IF (HIST_N .LT. 2 * II) CYCLE
+          IF (ALL( ABS(HIST(1:II) - HIST(II+1:2*II)) .LE. &
+                   CYCLE_TOL_REL * MAX(ABS(HIST(1)), 1.0D0) )) THEN
+            CYCLE_MIN = MINVAL(HIST(1:II))
+            CYCLE_MAX = MAXVAL(HIST(1:II))
+            CYCLE_MEAN = SUM(HIST(1:II)) / DBLE(II)
+            IF (CYCLE_MAX - CYCLE_MIN .GT. &
+                CYCLE_AMP_REL * MAX(ABS(CYCLE_MEAN), 1.0D0)) THEN
+              CYCLE_PERIOD = II
+              CYCLE_EXIT   = .TRUE.
+              EXIT
+            END IF
+          END IF
+        END DO
+        IF (CYCLE_EXIT) THEN
+          DELTAT(J) = CYCLE_MEAN
+          ! Recompute ABCONV at the cycle-mean DELTAT for downstream
+          ! consumers (FLUXCO, FLXCNV, VCONV, etc.).
+          DPLUS  = ROSSTAB(T(J) + DELTAT(J),         P(J), VTURB(J)) / ROSST(J)
+          DMINUS = ROSSTAB(T(J) - DELTAT(J),         P(J), VTURB(J)) / ROSST(J)
+          IF (USE_4POINT_MLT) THEN
+            DPLUS_INNER  = ROSSTAB(T(J) + DELTAT(J)/3.0D0, P(J), VTURB(J)) / ROSST(J)
+            DMINUS_INNER = ROSSTAB(T(J) - DELTAT(J)/3.0D0, P(J), VTURB(J)) / ROSST(J)
+            ABCONV(J) = 4.0D0 / (1.0D0/DPLUS + 1.0D0/DPLUS_INNER &
+                               + 1.0D0/DMINUS + 1.0D0/DMINUS_INNER) * ABROSS(J)
+          ELSE
+            ABCONV(J) = 2.0D0 / (1.0D0/DPLUS + 1.0D0/DMINUS) * ABROSS(J)
+          END IF
+          EXIT PICARD
+        END IF
+      END IF
+
       OLDDELT = DELTAT(J)
-    END DO  ! IDELTAT
+    END DO PICARD  ! IDELTAT
 
     ! Warn on convergence failure (suppressed during the first
     ! WARN_AFTER_ITER-1 outer iterations while ROSSTAB is filling up).
     ! DSTEP is the final post-relaxation step (DELTAT_new - OLDDELT);
     ! "(damped)" indicates the adaptive relaxation engaged.
-    IF (IDELTAT .GT. ITS30 .AND. ITER .GE. WARN_AFTER_ITER .AND. J .GE. 3) THEN
-      IF (TRIGGERED) THEN
-        WRITE(6,'(A,I3,A,F8.2,A,F8.2,A)') &
-          ' CONVEC WARNING: opacity iteration did not converge at layer ', &
-          J, '  DELTAT=', DELTAT(J), '  dDELTAT=', DSTEP, '  (damped)'
-      ELSE
-        WRITE(6,'(A,I3,A,F8.2,A,F8.2)') &
-          ' CONVEC WARNING: opacity iteration did not converge at layer ', &
-          J, '  DELTAT=', DELTAT(J), '  dDELTAT=', DSTEP
-      END IF
+    ! Cycle-mean exit is a successful termination, not a failure; only
+    ! warn when the loop actually ran to ITS30 without converging or
+    ! detecting a cycle.
+    IF (.NOT. CYCLE_EXIT .AND. IDELTAT .GT. ITS30 .AND. &
+        ITER .GE. WARN_AFTER_ITER .AND. J .GE. 3) THEN
+      WRITE(6,'(A,I3,A,F8.2,A,F8.2,A,I2,A)') &
+        ' CONVEC WARNING: opacity iteration did not converge at layer ', &
+        J, '  DELTAT=', DELTAT(J), '  dDELTAT=', DSTEP, &
+        '  (Aitken-accels=', STEFF_COUNT, ')'
+      WRITE(6,'(A)') &
+        '   k    DELTAT      dDELTAT    ABCONV/AB   DPLUS     DMINUS'
+      DO TR_K = 1, TR_N
+        WRITE(6,'(I4,F11.3,F11.3,F12.6,F11.6,F11.6)') &
+          TR_K, TR_DT(TR_K), TR_DSTEP(TR_K), TR_RAT(TR_K), &
+          TR_DPLUS(TR_K), TR_DMINUS(TR_K)
+      END DO
     END IF
 
   END DO  ! J depth loop
@@ -6915,35 +8112,21 @@ SUBROUTINE CONVEC
   ! Post-processing: smoothing, artifact removal, overshooting
   !=====================================================================
 
-  !--- Commented-out code: eliminate artifactual convection above
-  !    the main convection zone ---
-  !      DO 730 J=3,NRHOX
-  !      K=NRHOX+1-J
-  !      IF(FLXCNV(K).GT.0.)GO TO 731
-  !  730 CONTINUE
-  !      RETURN
-  !  731 DO 732 J=1,K
-  !      L=K+1-J
-  !      IF(FLXCNV(L).EQ.0.)GO TO 733
-  !  732 CONTINUE
-  !  733 DO 734 J=1,L
-  !      VCONV(J)=0.
-  !  734 FLXCNV(J)=0.
-  !--- End commented-out code ---
-
-  !--- Commented-out patch: remove numerical artifacts in upper half ---
-  !      DO 7735 J=1,NRHOX/2
-  ! 7735 FLXCNV(J)=0.
-  !--- End commented-out code ---
-
-  ! 1-2-1 smoothing of convective flux
+  ! 1-2-1 smoothing of convective flux at interior depths.  Tames the
+  ! (∇-∇_ad)^{1/2} cusp at the Schwarzschild boundary.  Deepest layer
+  ! left unsmoothed: on cool dwarfs the bottom-boundary MLT residual is
+  ! huge and a one-sided kernel would smear it into NRHOX-1.
   FLXCNV0 = FLXCNV
   DO J = 2, NRHOX - 1
     FLXCNV(J) = 0.25D0 * FLXCNV0(J - 1) + 0.50D0 * FLXCNV0(J) &
               + 0.25D0 * FLXCNV0(J + 1)
   END DO
-  ! Asymmetric boundary kernel at deepest layer: 75-25 split
-  FLXCNV(NRHOX) = 0.75D0 * FLXCNV0(NRHOX) + 0.25D0 * FLXCNV0(NRHOX - 1)
+
+  ! Early return for the Newton / DTGRAD Jacobian probe.  Skip the
+  ! remaining iteration-history post-processing (gap fill, overshoot,
+  ! surface zeroing) that depends on FLXCNV0/FLXCNV1 module state from
+  ! prior iterations.
+  IF (MLT_ONLY) RETURN
 
   ! Fill radiative gaps inside the convection zone.
   ! If layers above and below are both convective, the layer in between

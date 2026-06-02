@@ -31,12 +31,13 @@ PROGRAM ATLAS12
   IMPLICIT NONE
 
   ! --- Local variables ---
-  REAL(8)        :: VSTEPS, RCOWT
-  REAL(8)        :: EXCESS, XMAX, FREQ15
+  REAL(8)        :: VSTEPS
+  REAL(8)        :: EXCESS, XMAX
+  ! NB: FREQ15, found_negative, RCOWT used to live here; they moved to
+  !     RUN_RT_PASS along with the frequency loop body.
   REAL(8)        :: RX
   INTEGER        :: I, J, NU, ITERAT
   INTEGER        :: NUCI, NULYMAN, NUHEI, NUHEII, NUSTART
-  LOGICAL        :: found_negative
   INTEGER(8)     :: CLOCK_START, CLOCK_END, CLOCK_RATE
   INTEGER(8)     :: CLOCK_TOTAL_START
 
@@ -519,85 +520,19 @@ PROGRAM ATLAS12
       IF (ITER .EQ. 1 .AND. ITEMP .EQ. 1) CALL KAPCONT
       IF (ITER .EQ. 1 .AND. IFREADLINES .EQ. 1 .AND. ITEMP .EQ. 1) CALL SELECTLINES
 
-      ! --- Compute line opacities ---
-      CALL LINOP1
-      CALL XLINOP
-
       ! ---------------------------------------------------------------
-      ! INITIALIZE FREQUENCY INTEGRALS (mode=1: erase accumulators)
+      ! RADIATIVE TRANSFER PASS  (line opacities + frequency loop)
       ! ---------------------------------------------------------------
-      IF (IFCORR .EQ. 1) CALL TCORR(1, 0.0D0)
-      CALL ROSS(1, 0.0D0)
-      CALL RADIAP(1, 0.0D0)
-      IF (NLTEON .EQ. 1) CALL STATEQ(1, 0.0D0)
-
-      ! ---------------------------------------------------------------
-      ! FREQUENCY INTEGRATION — the heart of the calculation
-      ! ---------------------------------------------------------------
-      !   Loop over all wavelength points. At each frequency:
-      !   1. Compute Planck function and stimulated emission correction
-      !   2. Assemble total continuous opacity (KAPP)
-      !   3. Add line opacity from pre-computed tables
-      !   4. Solve the transfer equation (JOSH)
-      !   5. Accumulate flux moments for T-correction, Rosseland mean, etc.
-
-      CALL PUTOUT(1)
-
-      frequency_loop: DO NU = NULO, NUHI, NUSTEP
-
-        ! Set current wavelength and frequency
-        WAVE   = WAVESET(NU)
-        FREQ   = CLIGHT_NMS / WAVE
-        WAVENO = 1.0D7 / WAVE
-        RCOWT  = RCOSET(NU)
-        FREQLG = LOG(FREQ)
-
-        ! Compute Planck function B_nu(T) at each depth
-        FREQ15 = FREQ / 1.0D15
-        EHVKT = EXP(-FREQ * HKT)
-        STIM  = 1.0D0 - EHVKT
-        BNU   = BNU_PREFAC * FREQ15**3 * EHVKT / STIM
-
-        ! Compute continuous opacity at this frequency
-        CALL KAPP
-
-        ! Add pre-computed OS line opacity (corrected for stimulated emission).
-        ! Note: this overwrites the module-level ALINES (set by KAPP from
-        ! LINOP1) with the SELECTLINES contribution, and accumulates it
-        ! onto ALINE.  KAPP re-zeroes both on the next frequency step.
-        ALINES = XLINES(:, NU) * STIM
-        ALINE  = ALINE + ALINES
-
-        ! Solve the radiative transfer equation (Feautrier method)
-        CALL JOSH(IFSCAT, IFSURF)
-
-        ! --- Check for unphysical negative values in the solution ---
-        found_negative = .FALSE.
-        DO J = 1, NRHOX
-          IF (SNU(J) .LT. 0.0D0 .OR. JNU(J) .LT. 0.0D0 .OR. HNU(J) .LT. 0.0D0) THEN
-            found_negative = .TRUE.
-            EXIT
-          END IF
-        END DO
-
-        IF (found_negative) THEN
-           ! Floor negative values to small positive number to continue
-            JNU = MAX(JNU, 1.0D-99)
-            SNU = MAX(SNU, 1.0D-99)
-            HNU = MAX(HNU, 1.0D-99)
-        END IF
-
-        ! --- Accumulate frequency integrals (mode=2) ---
-        IF (IFSURF .EQ. 0) THEN
-          IF (IFCORR .EQ. 1) CALL TCORR(2, RCOWT)
-          CALL RADIAP(2, RCOWT)
-          CALL ROSS(2, RCOWT)
-          IF (NLTEON .EQ. 1) CALL STATEQ(2, RCOWT)
-        END IF
-
-        CALL PUTOUT(4)
-
-      END DO frequency_loop
+      !   Loops over all wavelength points.  At each frequency:
+      !     1. Planck function and stimulated emission correction
+      !     2. Continuous opacity (KAPP)
+      !     3. OS line opacity (XLINES)
+      !     4. Transfer solve (JOSH)
+      !     5. Accumulate flux moments for T-correction etc.
+      !   Factored out to atlas12_modules.RUN_RT_PASS so the same loop
+      !   can be re-run with a perturbed T to build a numerical Jacobian
+      !   for the Stage-2 hybrid Newton temperature correction.
+      CALL RUN_RT_PASS(.TRUE.)
 
       ! For surface-only mode, skip the iteration finishing steps
       IF (IFSURF .LE. 0) THEN
@@ -609,7 +544,7 @@ PROGRAM ATLAS12
         RX = ROSSTAB(0.D0, 0.D0, 0.D0)
         CALL RADIAP(3, 0.0D0)
         CALL COMPUTE_HEIGHT
-        IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC
+        IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC(.FALSE.)
         IF (IFCORR .EQ. 1)  CALL TCORR(3, 0.0D0)
         IF (NLTEON .EQ. 1)  CALL STATEQ(3, 0.0D0)
         IF (IFTURB .EQ. 1)  CALL COMPUTE_PTURB
