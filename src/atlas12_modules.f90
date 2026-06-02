@@ -8112,27 +8112,24 @@ SUBROUTINE CONVEC(MLT_ONLY)
   ! Post-processing: smoothing, artifact removal, overshooting
   !=====================================================================
 
-  ! 1-2-1 smoothing of convective flux at interior depths.  Tames the
-  ! (∇-∇_ad)^{1/2} cusp at the Schwarzschild boundary.  Deepest layer
-  ! left unsmoothed: on cool dwarfs the bottom-boundary MLT residual is
-  ! huge and a one-sided kernel would smear it into NRHOX-1.
-  FLXCNV0 = FLXCNV
-  DO J = 2, NRHOX - 1
-    FLXCNV(J) = 0.25D0 * FLXCNV0(J - 1) + 0.50D0 * FLXCNV0(J) &
-              + 0.25D0 * FLXCNV0(J + 1)
-  END DO
-
   ! Early return for the Newton / DTGRAD Jacobian probe.  Skip the
-  ! remaining iteration-history post-processing (gap fill, overshoot,
+  ! iteration-history post-processing (gap fill, smoothing, overshoot,
   ! surface zeroing) that depends on FLXCNV0/FLXCNV1 module state from
   ! prior iterations.
   IF (MLT_ONLY) RETURN
 
-  ! Fill radiative gaps inside the convection zone.
+  ! Fill radiative gaps inside the convection zone -- BEFORE smoothing.
   ! If layers above and below are both convective, the layer in between
-  ! must be too — a radiative pocket inside a convection zone is unphysical.
-  ! Find the shallowest and deepest convective layers, then fill any
-  ! zero-flux layers between them by interpolating from the boundaries.
+  ! must be too -- a radiative pocket inside a convection zone is
+  ! unphysical.  These interior gaps are marginally-subadiabatic layers
+  ! (DEL = nabla - nabla_ad slightly < 0) that the MLT loop CYCLE'd to
+  ! FLXCNV = 0.  The gap test keys on FLXCNV == 0, so it MUST run before
+  ! the 1-2-1 smoothing: smoothing bleeds neighbour flux into the zeroed
+  ! layers, leaving them at a too-low partial value (~half the neighbour
+  ! flux) that is no longer == 0, so the gap fill would skip them and the
+  ! total flux F_rad + F_cnv would fall tens of percent short there.
+  ! (This was the deep-CZ ERROR spike on cool dwarfs at the
+  ! marginally-subadiabatic interior layers.)
   JTOP = 0
   JBOT = 0
   DO J = 1, NRHOX
@@ -8144,13 +8141,11 @@ SUBROUTINE CONVEC(MLT_ONLY)
   IF (JTOP .GT. 0 .AND. JBOT .GT. JTOP + 1) THEN
     DO J = JTOP + 1, JBOT - 1
       IF (FLXCNV(J) .EQ. 0.0D0) THEN
-        ! Linear interpolation in log between nearest convective neighbors
-        ! Find nearest convective layer above
+        ! Linear interpolation between nearest convective neighbours.
         JA = J - 1
         DO WHILE (JA .GT. JTOP .AND. FLXCNV(JA) .EQ. 0.0D0)
           JA = JA - 1
         END DO
-        ! Find nearest convective layer below
         JB = J + 1
         DO WHILE (JB .LT. JBOT .AND. FLXCNV(JB) .EQ. 0.0D0)
           JB = JB + 1
@@ -8162,6 +8157,17 @@ SUBROUTINE CONVEC(MLT_ONLY)
       END IF
     END DO
   END IF
+
+  ! 1-2-1 smoothing of convective flux at interior depths.  Tames the
+  ! (∇-∇_ad)^{1/2} cusp at the Schwarzschild boundary.  Runs AFTER the
+  ! gap fill so it operates on a gap-free profile.  Deepest layer left
+  ! unsmoothed: on cool dwarfs the bottom-boundary MLT residual is huge
+  ! and a one-sided kernel would smear it into NRHOX-1.
+  FLXCNV0 = FLXCNV
+  DO J = 2, NRHOX - 1
+    FLXCNV(J) = 0.25D0 * FLXCNV0(J - 1) + 0.50D0 * FLXCNV0(J) &
+              + 0.25D0 * FLXCNV0(J + 1)
+  END DO
 
   FLXCNV0 = FLXCNV
 
