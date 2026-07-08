@@ -9515,11 +9515,22 @@ END SUBROUTINE H2PLOP
 ! Two contributions:
 !
 ! 1. Bound-free (photodetachment): H⁻ → H + e⁻
-!    Cross-section from Mathisen (1984), based on Wishart (1979) and
-!    Broad & Reinhardt (1976). Tabulated at 85 wavelength points from
-!    18 to 1643.91 nm (the photodetachment threshold at 0.7542 eV).
+!    Cross-section from McLaughlin, Stancil, Sadeghpour & Forrey (2017,
+!    J.Phys.B 50, 114001), the sum-rule-normalized recommended cross
+!    section. Resampled here onto 116 wavelength points from 18 to
+!    1643.9 nm (the photodetachment threshold at 0.7542 eV); the
+!    resampling reproduces the smooth optical/IR continuum to <0.05%.
+!    The narrow far-UV Feshbach/shape resonances (10.9-14.4 eV,
+!    ~86-114 nm) are represented by their broad envelope only — the
+!    razor-thin 10.93 eV spike (199 Mb in ~0.02 nm) is deliberately
+!    not resolved, as it is negligible for continuum work and cannot
+!    be carried by a coarse table without MAP1 ringing.
 !    Includes non-LTE departure coefficient BMIN for H⁻ population.
-!    Only contributes for lambda < 1643.91 nm (freq > 1.82365e14 Hz).
+!    Only contributes for lambda < 1643.9 nm (freq > 1.82365e14 Hz).
+!    (Previously: Mathisen 1984 / Wishart 1979 / Broad & Reinhardt
+!    1976, 85 points; that table ran ~0.1-1.4% high through the optical.
+!    Switching to McLaughlin removed a ~1% continuum offset vs Korg,
+!    which also uses McLaughlin 2017.)
 !
 ! 2. Free-free (inverse bremsstrahlung): H + e⁻ → H + e⁻ + photon
 !    From Bell & Berrington (1987, J.Phys.B 20, 801). Tabulated on a
@@ -9603,41 +9614,63 @@ SUBROUTINE HMINOP
   IMPLICIT NONE
 
   ! --- Bound-free cross-section table ---
-  ! 85 points: wavelength (nm) and sigma (1e-18 cm^2)
-  ! From Mathisen (1984) after Wishart (1979), Broad & Reinhardt (1976)
-  INTEGER, PARAMETER :: NBF = 85
+  ! 116 points: wavelength (nm) and sigma (1e-18 cm^2 = Mb)
+  ! McLaughlin, Stancil, Sadeghpour & Forrey (2017, J.Phys.B 50, 114001),
+  ! recommended H⁻ photodetachment cross section, resampled from the
+  ! authors' tabulation onto this grid (MAP1-interpolated reproduction of
+  ! the smooth optical/IR continuum to <0.05%). The narrow far-UV
+  ! resonances near 113 nm are represented by their broad envelope; the
+  ! razor-thin 10.93 eV spike is intentionally not resolved (see header).
+  !
+  ! Old table (Mathisen 1984 / Wishart 1979 / Broad & Reinhardt 1976,
+  ! 85 pts) ran ~0.1-1.4% high through the optical, causing a ~1%
+  ! continuum offset vs codes on McLaughlin (e.g. Korg). To revert,
+  ! restore the 85-point WBF/BF from git history prior to this change.
+  INTEGER, PARAMETER :: NBF = 116
 
-  REAL(8), PARAMETER :: WBF(85) = (/ &
-    18.00D0, 19.60D0, 21.40D0, 23.60D0, 26.40D0, 29.80D0, 34.30D0, &
-    40.40D0, 49.10D0, 62.60D0, 111.30D0, 112.10D0, 112.67D0, &
-    112.95D0, 113.05D0, 113.10D0, 113.20D0, 113.23D0, 113.50D0, &
-    114.40D0, 121.00D0, 139.00D0, 164.00D0, 175.00D0, 200.00D0, &
-    225.00D0, 250.00D0, 275.00D0, 300.00D0, 325.00D0, 350.00D0, &
-    375.00D0, 400.00D0, 425.00D0, 450.00D0, 475.00D0, 500.00D0, &
-    525.00D0, 550.00D0, 575.00D0, 600.00D0, 625.00D0, 650.00D0, &
-    675.00D0, 700.00D0, 725.00D0, 750.00D0, 775.00D0, 800.00D0, &
-    825.00D0, 850.00D0, 875.00D0, 900.00D0, 925.00D0, 950.00D0, &
-    975.00D0, 1000.00D0, 1025.00D0, 1050.00D0, 1075.00D0, &
-    1100.00D0, 1125.00D0, 1150.00D0, 1175.00D0, 1200.00D0, &
-    1225.00D0, 1250.00D0, 1275.00D0, 1300.00D0, 1325.00D0, &
-    1350.00D0, 1375.00D0, 1400.00D0, 1425.00D0, 1450.00D0, &
-    1475.00D0, 1500.00D0, 1525.00D0, 1550.00D0, 1575.00D0, &
-    1600.00D0, 1610.00D0, 1620.00D0, 1630.00D0, 1643.91D0 /)
+  REAL(8), PARAMETER :: WBF(116) = (/ &
+    18.000D0, 20.000D0, 22.000D0, 24.000D0, 26.000D0, 27.000D0, &
+    29.000D0, 32.000D0, 36.000D0, 40.000D0, 45.000D0, 50.000D0, &
+    56.000D0, 63.000D0, 71.000D0, 80.000D0, 90.000D0, 95.000D0, &
+    98.000D0, 101.000D0, 104.000D0, 107.000D0, 110.000D0, 112.000D0, &
+    112.900D0, 113.500D0, 114.500D0, 116.000D0, 118.000D0, 121.000D0, &
+    125.000D0, 130.000D0, 139.000D0, 150.000D0, 164.000D0, 175.000D0, &
+    185.000D0, 195.000D0, 205.000D0, 215.000D0, 230.000D0, 250.000D0, &
+    270.000D0, 290.000D0, 310.000D0, 330.000D0, 350.000D0, 370.000D0, &
+    390.000D0, 410.000D0, 430.000D0, 450.000D0, 470.000D0, 490.000D0, &
+    510.000D0, 530.000D0, 550.000D0, 570.000D0, 590.000D0, 610.000D0, &
+    630.000D0, 650.000D0, 670.000D0, 690.000D0, 710.000D0, 730.000D0, &
+    750.000D0, 770.000D0, 790.000D0, 810.000D0, 830.000D0, 850.000D0, &
+    870.000D0, 890.000D0, 910.000D0, 930.000D0, 950.000D0, 970.000D0, &
+    990.000D0, 1010.000D0, 1030.000D0, 1050.000D0, 1070.000D0, 1090.000D0, &
+    1110.000D0, 1130.000D0, 1150.000D0, 1170.000D0, 1190.000D0, 1210.000D0, &
+    1230.000D0, 1250.000D0, 1270.000D0, 1290.000D0, 1310.000D0, 1330.000D0, &
+    1350.000D0, 1370.000D0, 1390.000D0, 1410.000D0, 1430.000D0, 1450.000D0, &
+    1470.000D0, 1490.000D0, 1510.000D0, 1530.000D0, 1550.000D0, 1570.000D0, &
+    1590.000D0, 1610.000D0, 1620.000D0, 1630.000D0, 1636.000D0, 1640.000D0, &
+    1643.000D0, 1643.908D0 /)
 
-  REAL(8), PARAMETER :: BF(85) = (/ &
-    0.067D0, 0.088D0, 0.117D0, 0.155D0, 0.206D0, 0.283D0, 0.414D0, &
-    0.703D0, 1.24D0, 2.33D0, 11.60D0, 13.90D0, 24.30D0, 66.70D0, &
-    95.00D0, 56.60D0, 20.00D0, 14.60D0, 8.50D0, 7.10D0, 5.43D0, &
-    5.91D0, 7.29D0, 7.918D0, 9.453D0, 11.08D0, 12.75D0, 14.46D0, &
-    16.19D0, 17.92D0, 19.65D0, 21.35D0, 23.02D0, 24.65D0, 26.24D0, &
-    27.77D0, 29.23D0, 30.62D0, 31.94D0, 33.17D0, 34.32D0, 35.37D0, &
-    36.32D0, 37.17D0, 37.91D0, 38.54D0, 39.07D0, 39.48D0, 39.77D0, &
-    39.95D0, 40.01D0, 39.95D0, 39.77D0, 39.48D0, 39.06D0, 38.53D0, &
-    37.89D0, 37.13D0, 36.25D0, 35.28D0, 34.19D0, 33.01D0, 31.72D0, &
-    30.34D0, 28.87D0, 27.33D0, 25.71D0, 24.02D0, 22.26D0, 20.46D0, &
-    18.62D0, 16.74D0, 14.85D0, 12.95D0, 11.07D0, 9.211D0, 7.407D0, &
-    5.677D0, 4.052D0, 2.575D0, 1.302D0, 0.8697D0, 0.4974D0, &
-    0.1989D0, 0.0D0 /)
+  REAL(8), PARAMETER :: BF(116) = (/ &
+    0.062711D0, 0.088733D0, 0.1215D0, 0.16185D0, 0.20096D0, 0.24226D0, &
+    0.27946D0, 0.37309D0, 0.51588D0, 0.69903D0, 0.97524D0, 1.3002D0, &
+    1.7773D0, 2.412D0, 3.2742D0, 4.3948D0, 5.8433D0, 6.5511D0, &
+    6.2168D0, 7.3253D0, 7.4204D0, 7.9181D0, 9.3324D0, 13.779D0, &
+    70.494D0, 9.4344D0, 6.5447D0, 5.8689D0, 5.59D0, 5.4797D0, &
+    5.5211D0, 5.6881D0, 6.0546D0, 6.6065D0, 7.3875D0, 8.0071D0, &
+    8.6495D0, 9.263D0, 9.8603D0, 10.511D0, 11.525D0, 12.834D0, &
+    14.184D0, 15.585D0, 16.948D0, 18.265D0, 19.653D0, 21.06D0, &
+    22.367D0, 23.609D0, 24.876D0, 26.159D0, 27.389D0, 28.549D0, &
+    29.662D0, 30.737D0, 31.756D0, 32.704D0, 33.594D0, 34.448D0, &
+    35.271D0, 36.044D0, 36.736D0, 37.326D0, 37.814D0, 38.222D0, &
+    38.574D0, 38.884D0, 39.148D0, 39.351D0, 39.473D0, 39.505D0, &
+    39.449D0, 39.313D0, 39.11D0, 38.846D0, 38.52D0, 38.121D0, &
+    37.64D0, 37.071D0, 36.413D0, 35.677D0, 34.876D0, 34.024D0, &
+    33.131D0, 32.199D0, 31.225D0, 30.197D0, 29.104D0, 27.938D0, &
+    26.697D0, 25.388D0, 24.023D0, 22.618D0, 21.189D0, 19.747D0, &
+    18.299D0, 16.846D0, 15.387D0, 13.921D0, 12.451D0, 10.986D0, &
+    9.5374D0, 8.1184D0, 6.7411D0, 5.4135D0, 4.1436D0, 2.9456D0, &
+    1.8521D0, 0.92141D0, 0.54111D0, 0.23788D0, 0.10145D0, 0.035125D0, &
+    0.0039622D0, 0.0D0 /)
 
   ! --- Free-free cross-section table ---
   ! Bell & Berrington (1987): FF(theta_index, wave_index)
