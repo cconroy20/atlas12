@@ -166,7 +166,7 @@ Arguments:
 | `wlbeg=<nm>`          | yes      | Start wavelength in nanometers |
 | `wlend=<nm>`          | yes      | End wavelength in nanometers (> wlbeg) |
 | `resolu=<R>`          | no       | Resolving power λ/Δλ (default 300 000) |
-| `turbv=<kms>`         | no       | Extra microturbulence in km/s added in quadrature to the model value (default 0.0) |
+| `turbv=<kms>`         | no       | Microturbulence in km/s. If > 0, **replaces** the model atmosphere's microturbulence at all depths; if omitted or ≤ 0 (default 0.0), the per-layer value from the input model is used |
 | `more_output=<yes\|no>` | no     | If yes, also write `.linform` and `.mol` diagnostic files (default no).  Accepted truthy values: `yes`, `true`, `1`, `on`, `y` (case-insensitive); falsy: `no`, `false`, `0`, `off`, `n`. |
 
 The output basename is derived from the model filename by stripping the

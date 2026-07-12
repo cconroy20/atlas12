@@ -3716,7 +3716,7 @@ CONTAINS
 !  CONT_EDGE_DATA (inlined from the historical Kurucz continua.dat
 !  file).  No external file is consulted.
 ! ============================================================================
-  SUBROUTINE run_xnfpelsyn()
+  SUBROUTINE run_xnfpelsyn(turbv_cli)
 
     ! ------------------------------------------------------------------
     !  Access ATLAS state via mod_atlas_data module.
@@ -3734,6 +3734,10 @@ CONTAINS
       trbcon_a => TRBCON, trbfdg_a => TRBFDG, trbpow_a => TRBPOW, &
       trbsnd_a => TRBSND, vturb_a => VTURB, xnatom_a => XNATOM, xne_a => XNE, &
       XNF_a => XNF, XNFP_a => XNFP
+
+    ! CLI microturbulence (km/s).  If > 0, it replaces the model
+    ! atmosphere's per-layer VTURB at all depths; <= 0 keeps the model.
+    REAL(4), INTENT(IN) :: turbv_cli
 
     ! Population output arrays (local; filled by COMPUTE_ONE_POP)
     REAL(8) :: xnfh_x(kw), xnfhe_x(kw,2)
@@ -4217,6 +4221,15 @@ CONTAINS
     ! Restore IFPRES=0 so that COMPUTE_ONE_POP (Section 6) does not
     ! trigger NMOLEC internally.
     IFPRES = 0
+
+    ! ------------------------------------------------------------------
+    !  CLI microturbulence override.  A positive turbv_cli replaces the
+    !  model atmosphere's per-layer VTURB at all depths; <= 0 keeps the
+    !  model value.  Done here, before the Doppler widths are built, so
+    !  the xf_vturb copy and the atomic/molecular Doppler widths below
+    !  all use it directly.  turbv_cli is km/s; VTURB is cm/s.
+    ! ------------------------------------------------------------------
+    IF (turbv_cli .GT. 0.0) vturb_a(1:nrhox_a) = DBLE(turbv_cli) * 1.0D5
 
     ! ------------------------------------------------------------------
     !  SECTION 5.  STORE DEPTH STRUCTURE

@@ -18,7 +18,10 @@
 !    wlbeg=<nm>         (required) start wavelength in nm
 !    wlend=<nm>         (required) end wavelength in nm
 !    resolu=<R>         (optional) resolving power, default 300000
-!    turbv=<kms>        (optional) extra microturbulence in km/s, default 0.0
+!    turbv=<kms>        (optional) microturbulence in km/s.  If > 0, this
+!                       value REPLACES the model atmosphere's microturbulence
+!                       at all depths.  If omitted or <= 0 (the default 0.0),
+!                       the per-layer value from the input model is used.
 !    more_output=<v>    (optional) if yes/true/1/on, also emit the
 !                       <model>.mol and <model>.linform files.  Default no.
 !
@@ -154,7 +157,8 @@ PROGRAM SYNTHE
   !   wlbeg=<nm>       : start wavelength (required)
   !   wlend=<nm>       : end wavelength   (required)
   !   resolu=<R>       : resolving power  (optional, default 300000)
-  !   turbv=<kms>      : extra microturbulence (optional, default 0.0)
+  !   turbv=<kms>      : microturbulence; >0 replaces the model's value at
+  !                      all depths, <=0 (default) keeps the per-layer model
   !   more_output=<v>  : if yes/true/1, also emit <model>.mol (molecular
   !                      number densities) and <model>.linform (tau table).
   !                      Accepted true values: yes, true, 1, on.
@@ -257,7 +261,7 @@ PROGRAM SYNTHE
     OPEN(UNIT=35, FILE=TRIM(mol_file), STATUS='REPLACE', ACTION='WRITE')
   CALL readin(20)
   ! Keep unit 5 open: MOLEC reads from INPUTDATA(=5) on first call below.
-  CALL run_xnfpelsyn()
+  CALL run_xnfpelsyn(turbv)
   CLOSE(UNIT=5)
 
   ! --- Build line lists in memory --------------------------------------
@@ -329,8 +333,10 @@ PROGRAM SYNTHE
 
   itemp_a = 1
 
-  ! NB: CLI turbv is NOT folded into vturb_a here; it is added per depth
-  ! inside the depth loop at qdopple = SQRT(qdopple^2 + (turbv/c)^2).
+  ! NB: a positive CLI turbv REPLACES the model atmosphere's microturbulence
+  ! at all depths; this is applied inside run_xnfpelsyn (which substitutes
+  ! turbv into VTURB before building the Doppler widths).  turbv <= 0 leaves
+  ! the per-layer model value untouched.
 
   DELTAW = resolu
   NULO   = 1
@@ -410,8 +416,10 @@ PROGRAM SYNTHE
       IF (qxnfpel(i) .LT. 1.0D25) xnfpel(i) = qxnfpel(i)
     END DO
 
+    ! qdopple already carries the effective microturbulence: run_xnfpelsyn
+    ! substituted the CLI turbv into VTURB when it was positive, so both the
+    ! thermal and turbulent terms are baked into the Doppler widths here.
     DO i = 1, mw6
-      qdopple(i) = SQRT(qdopple(i)**2 + (DBLE(turbv)/CLIGHT_KMS)**2)
       dopple(i)  = qdopple(i)
       xnfpel(i)  = xnfpel(i) / rho(j)
       IF (qdopple(i) .GT. 0.0D0) THEN
