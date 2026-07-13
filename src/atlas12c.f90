@@ -69,7 +69,9 @@ PROGRAM ATLAS12
   !     Pass --help (or -h, help) to print usage and exit.
   !     input_atm  : input atmosphere model file (REQUIRED, first positional)
   !     basename   : output file base name (default 'mystar')
-  !     Output files: <basename>.atm, .flux, .taunu, .iter, .tcorr
+  !     Output files: <basename>.atm, .flux, .iter
+  !       (.iter includes the former .tcorr correction diagnostics; the
+  !        separate .taunu and .tcorr files are no longer written)
   !     numit=N    : number of iterations (default 30)
   !     vturb=X    : microturbulence in km/s (default: from model)
   !     mlt=X      : mixing length parameter (default 2.0)
@@ -606,7 +608,7 @@ CONTAINS
     WRITE(6, '(A)') ''
     WRITE(6, '(A)') 'Optional positional:'
     WRITE(6, '(A)') '  basename     Output file base name (default ''mystar'')'
-    WRITE(6, '(A)') '               Outputs: <basename>.atm, .flux, .taunu, .iter, .tcorr'
+    WRITE(6, '(A)') '               Outputs: <basename>.atm, .flux, .iter'
     WRITE(6, '(A)') ''
     WRITE(6, '(A)') 'Options (key=value):'
     WRITE(6, '(A)') '  numit=N      Number of iterations (default 30)'

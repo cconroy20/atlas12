@@ -1797,11 +1797,11 @@ SUBROUTINE PUTOUT(MODE)
     ! Model structure: column mass, T, P, N_e, kappa_Ross, g_rad, v_turb,
     !                  convective flux, convective velocity
     WRITE(7, 554) NRHOX, (RHOX(J), T(J), P(J), XNE(J), ABROSS(J), ACCRAD(J), &
-      VTURB(J), FLXCNV(J), VCONV(J), J=1,NRHOX)
+      VTURB(J), FLXCNV(J), VCONV(J), RHO(J), J=1,NRHOX)
 554 FORMAT('READ DECK6', I3, &
       '     RHOX         T         P       XNE', &
-      '     ABROSS    ACCRAD     VTURB    FLXCNV     VCONV' &
-      / (13X, 1PE12.5, 0PF10.2, 1P7E10.3))
+      '     ABROSS    ACCRAD     VTURB    FLXCNV     VCONV       RHO' &
+      / (13X, 1PE12.5, 0PF10.2, 1P8E10.3))
 
     ! Surface radiation pressure constant
     WRITE(7, '("PRADK",1PE11.4)') PRADK0

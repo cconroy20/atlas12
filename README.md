@@ -108,11 +108,17 @@ Output files:
 
 | File | Contents |
 |------|----------|
-| `<basename>.atm`   | Converged model atmosphere (T, P, κ vs. depth) |
+| `<basename>.atm`   | Converged model atmosphere. The `READ DECK6` block has one line per depth with columns: `RHOX`, `T`, `P`, `XNE`, `ABROSS` (Rosseland mean opacity κ), `ACCRAD`, `VTURB`, `FLXCNV`, `VCONV`, `RHO` (mass density, g/cm³) |
 | `<basename>.flux`  | Emergent flux vs. wavelength |
-| `<basename>.taunu` | Monochromatic optical depth profiles |
-| `<basename>.iter`  | Per-iteration summary |
-| `<basename>.tcorr` | Temperature correction diagnostics |
+| `<basename>.iter`  | Per-iteration summary, including the temperature-correction diagnostics (the former `.tcorr` columns are merged into this file) |
+
+ATLAS12 writes exactly these three files.  Earlier versions also emitted
+separate `.taunu` and `.tcorr` files; `.taunu` is no longer written, and the
+`.tcorr` temperature-correction diagnostics are now columns in `.iter`.
+
+Only the first seven DECK6 columns (`RHOX`…`VTURB`) are read back when a
+model is used as input; `FLXCNV`, `VCONV`, and `RHO` are write-only
+diagnostics for downstream use.
 
 Command-line options (keyword=value):
 
