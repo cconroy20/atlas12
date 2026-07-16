@@ -30,7 +30,7 @@
 !    U_BC_NEG                    Negative-ion partition function
 !    BC_HAS                      Coverage query (Z, ION)
 !    BC_HAS_NEG                  Coverage query (Z, negative ion)
-!    interp_log_linear_cached    Log-linear T interpolation with bracket hint
+!    interp_logu_cached          Cubic-spline ln U(ln T) lookup with bracket hint
 !
 !  --- Procedures in mod_atlas_data --------------------------------------
 !
@@ -441,6 +441,18 @@ MODULE mod_partition_functions
 
   REAL(8) :: U_NEG_TAB(NT_BC, NNEG_MAX)           ! U(T) for negative ions
   REAL(8) :: LOGU_NEG_TAB(NT_BC, NNEG_MAX)        ! ln(U) for negative ions
+  ! Natural-cubic-spline second derivatives of ln U vs ln T, precomputed
+  ! at load.  Log-LINEAR interpolation of the 42-point grid put
+  ! derivative kinks in U(T) at every node; sampled by the EOS +-0.1%
+  ! finite-difference stencil these produce spurious localized structure
+  ! in dE/dT and nabla_ad, which F_conv ~ (nabla-nabla_ad)^{3/2}
+  ! amplifies enormously in efficiently convective deep layers (the
+  ! same failure mode as the H2 partition function; see PARTFNH2).
+  ! Columns containing sentinel (non-positive) values keep zero second
+  ! derivatives, which reduces the cubic evaluation to the previous
+  ! log-linear form.
+  REAL(8) :: LOGU2_TAB(NT_BC, NZ_MAX, NION_MAX) = 0.0d0
+  REAL(8) :: LOGU2_NEG_TAB(NT_BC, NNEG_MAX)     = 0.0d0
   INTEGER :: NEG_Z(NNEG_MAX) = 0                 ! parent atom Z per slot
   LOGICAL :: HAS_NEG(NZ_MAX) = .FALSE.           ! coverage flag by Z
   INTEGER :: NEG_SLOT(NZ_MAX) = 0                ! Z -> slot index
@@ -594,8 +606,50 @@ SUBROUTINE init_bc_partition_functions()
          N_READ, ' species but file header claimed ', N_SPECIES
   END IF
 
+  ! Precompute spline coefficients for every fully-covered column
+  DO IZ = 1, NZ_MAX
+    DO ION = 1, NION_MAX
+      IF (HAS_TAB(IZ, ION)) THEN
+        IF (ALL(U_TAB(:, IZ, ION) .GT. 0.0d0)) &
+          CALL bc_spline_column(LOGU_TAB(:, IZ, ION), LOGU2_TAB(:, IZ, ION))
+      END IF
+    END DO
+  END DO
+  DO NEG_IDX = 1, NNEG_MAX
+    IF (NEG_Z(NEG_IDX) .GT. 0) THEN
+      IF (ALL(U_NEG_TAB(:, NEG_IDX) .GT. 0.0d0)) &
+        CALL bc_spline_column(LOGU_NEG_TAB(:, NEG_IDX), LOGU2_NEG_TAB(:, NEG_IDX))
+    END IF
+  END DO
+
   INITIALIZED = .TRUE.
 END SUBROUTINE init_bc_partition_functions
+
+!-----------------------------------------------------------------------
+! bc_spline_column: natural-cubic-spline second derivatives of Y on the
+! (non-uniform) LOGT_GRID abscissa.  Standard tridiagonal algorithm.
+!-----------------------------------------------------------------------
+SUBROUTINE bc_spline_column(Y, Y2)
+  REAL(8), INTENT(IN)  :: Y(NT_BC)
+  REAL(8), INTENT(OUT) :: Y2(NT_BC)
+  REAL(8) :: CWK(NT_BC), SIG, PDEN
+  INTEGER :: I
+
+  Y2(1)      = 0.0d0
+  Y2(NT_BC)  = 0.0d0
+  CWK(1)     = 0.0d0
+  DO I = 2, NT_BC - 1
+    SIG  = (LOGT_GRID(I) - LOGT_GRID(I-1)) / (LOGT_GRID(I+1) - LOGT_GRID(I-1))
+    PDEN = SIG * Y2(I-1) + 2.0d0
+    Y2(I)  = (SIG - 1.0d0) / PDEN
+    CWK(I) = ( 6.0d0 * ( (Y(I+1) - Y(I))   / (LOGT_GRID(I+1) - LOGT_GRID(I)) &
+                       - (Y(I)   - Y(I-1)) / (LOGT_GRID(I)   - LOGT_GRID(I-1)) ) &
+               / (LOGT_GRID(I+1) - LOGT_GRID(I-1)) - SIG * CWK(I-1) ) / PDEN
+  END DO
+  DO I = NT_BC - 1, 2, -1
+    Y2(I) = Y2(I) * Y2(I+1) + CWK(I)
+  END DO
+END SUBROUTINE bc_spline_column
 
 !-----------------------------------------------------------------------
 ! Parse the temperature grid line.  Expected form:
@@ -755,7 +809,8 @@ FUNCTION U_BC(IZ, ION, T) RESULT(U)
   IF (IZ .LT. 1 .OR. IZ .GT. NZ_MAX) RETURN
   IF (ION .LT. 1 .OR. ION .GT. NION_MAX) RETURN
   IF (.NOT. HAS_TAB(IZ, ION)) RETURN
-  U = interp_log_linear_cached(T, U_TAB(:, IZ, ION), LOGU_TAB(:, IZ, ION))
+  U = interp_logu_cached(T, U_TAB(:, IZ, ION), LOGU_TAB(:, IZ, ION), &
+                               LOGU2_TAB(:, IZ, ION))
 END FUNCTION U_BC
 
 !-----------------------------------------------------------------------
@@ -775,7 +830,8 @@ FUNCTION U_BC_NEG(IZ, T) RESULT(U)
   IF (.NOT. HAS_NEG(IZ)) RETURN
   SLOT = NEG_SLOT(IZ)
   IF (SLOT .LT. 1 .OR. SLOT .GT. NNEG_MAX) RETURN
-  U = interp_log_linear_cached(T, U_NEG_TAB(:, SLOT), LOGU_NEG_TAB(:, SLOT))
+  U = interp_logu_cached(T, U_NEG_TAB(:, SLOT), LOGU_NEG_TAB(:, SLOT), &
+                               LOGU2_NEG_TAB(:, SLOT))
 END FUNCTION U_BC_NEG
 
 !-----------------------------------------------------------------------
@@ -801,7 +857,9 @@ FUNCTION BC_HAS_NEG(IZ) RESULT(YES)
 END FUNCTION BC_HAS_NEG
 
 !-----------------------------------------------------------------------
-! Log-linear interpolation in T, using precomputed ln(U) values.
+! Cubic-spline interpolation of ln U vs ln T, using precomputed ln(U)
+! and spline second derivatives (zero coefficients degrade exactly to
+! the historical log-linear form).
 !
 ! Performance notes:
 !   (1) ln(U) is cached at load time -- no log() calls at runtime.
@@ -820,15 +878,17 @@ END FUNCTION BC_HAS_NEG
 !               in-U path when a grid endpoint is zero (never occurs
 !               in practice for B&C data).
 !   LOGU_ARR -- precomputed ln(U_ARR), cached at init time.
+!   LOGU2_ARR-- natural-spline d2(lnU)/d(lnT)2, precomputed at init.
 !-----------------------------------------------------------------------
-FUNCTION interp_log_linear_cached(T, U_ARR, LOGU_ARR) RESULT(U)
+FUNCTION interp_logu_cached(T, U_ARR, LOGU_ARR, LOGU2_ARR) RESULT(U)
   REAL(8), INTENT(IN) :: T
   REAL(8), INTENT(IN) :: U_ARR(NT_BC)
   REAL(8), INTENT(IN) :: LOGU_ARR(NT_BC)
+  REAL(8), INTENT(IN) :: LOGU2_ARR(NT_BC)   ! spline d2(lnU)/d(lnT)2 (0 => linear)
   REAL(8) :: U
 
   INTEGER :: LO, HI, MID
-  REAL(8)  :: LT, LT_LO, LT_HI, F, LU_LO, LU_HI
+  REAL(8)  :: LT, LT_LO, LT_HI, F, LU_LO, LU_HI, HSTEP
 
   ! Persistent hint: remember the bracket from the last call.
   INTEGER :: LAST_LO = 10
@@ -892,12 +952,17 @@ FUNCTION interp_log_linear_cached(T, U_ARR, LOGU_ARR) RESULT(U)
   IF (U_ARR(LO) .GT. 0.0d0 .AND. U_ARR(HI) .GT. 0.0d0) THEN
     LU_LO = LOGU_ARR(LO)
     LU_HI = LOGU_ARR(HI)
-    U = exp(LU_LO + F * (LU_HI - LU_LO))
+    ! Cubic-spline evaluation in ln U vs ln T; reduces exactly to the
+    ! historical log-linear form where the second derivatives are zero.
+    HSTEP = LT_HI - LT_LO
+    U = exp( (1.0d0 - F) * LU_LO + F * LU_HI &
+           + ((1.0d0 - F)**3 - (1.0d0 - F)) * LOGU2_ARR(LO) * HSTEP**2 / 6.0d0 &
+           + (F**3 - F)                     * LOGU2_ARR(HI) * HSTEP**2 / 6.0d0 )
   ELSE
     ! Fallback linear-in-U (never occurs for B&C data in practice)
     U = U_ARR(LO) + F * (U_ARR(HI) - U_ARR(LO))
   END IF
-END FUNCTION interp_log_linear_cached
+END FUNCTION interp_logu_cached
 
 END MODULE mod_partition_functions
 
@@ -1117,6 +1182,80 @@ MODULE mod_atlas_data
   ! depths it can actually fix.
   INTEGER, PARAMETER :: DTGRAD_J_LO           = 3         ! exclude depths 1 .. DTGRAD_J_LO-1
   INTEGER, PARAMETER :: DTGRAD_J_HI_OFFSET    = 2         ! exclude depths NRHOX-DTGRAD_J_HI_OFFSET+1 .. NRHOX
+
+  ! --- Efficient-convection-zone temperature constructor ("CZ constructor") --
+  ! In layers where convection is efficient (HRATIO -> 1, nabla -> nabla_ad)
+  ! the flux-constancy T correction is structurally dead: the MLT flux
+  ! response dF/dT diverges as 1/(nabla - nabla_ad), so the correction per
+  ! unit flux error goes to zero while local flux errors can reach many
+  ! hundreds of percent (cool dwarfs).  Instead of correcting T there, we
+  ! CONSTRUCT it: set the required convective flux by conservation,
+  !     F_conv = FLUX - FLXRAD,
+  ! invert the Boehm-Vitense relation for the superadiabatic excess,
+  !     DEL = DELTA + sqrt(2*D*DELTA),  DELTA = (F_conv/(FLUXCO*VCO))^(2/3)
+  ! (exact closed form of CONVEC's forward cubic; D is the radiative-loss
+  ! parameter evaluated at the known bubble excess DELTAT = T*MIXLTH*DELTA),
+  ! and correct the profile's gradient toward it (CZ_CONSTRUCT).  This
+  ! is the standard stabilization of production codes: Hubeny & Lanz
+  ! 2017 (TLUSTY Guide II, App. B2), Koester 1980, Rohrmann 2001 (white
+  ! dwarfs), Allard & Hauschildt 1995 (PHOENIX).  See README.
+  !
+  ! Gating (all must hold, else the routine is a no-op):
+  !   - layer gate:  HRATIO > CZC_HR_MIN  AND  nabla-nabla_ad < CZC_DEL_MAX.
+  !     The DEL gate keeps the constructor off the solar/cool-giant
+  !     superadiabatic peak (DEL >= 0.15 there; efficient M-dwarf deep CZs
+  !     have DEL <= ~0.02).  Marginally SUBadiabatic pinned layers inside
+  !     the CZ (DEL slightly < 0) pass the gate and are absorbed.
+  !   - block gate:  the gated block must reach NRHOX (deep efficient CZ),
+  !     with interior gate failures up to CZC_GAP_MAX layers absorbed
+  !     (TLUSTY-style hysteresis), and span at least 5 layers.
+  !   - error gate:  engage only while max |local flux error| in the block
+  !     exceeds CZC_ERR_ON percent (CZC_ERR_OFF once engaged); converged
+  !     solar/hot models never trip it and are untouched.
+  LOGICAL :: USE_CZ_CONSTRUCTOR = .TRUE.
+  ! Interior 1-2-1 smoothing of FLXCNV in CONVEC.  Historically
+  ! unconditional: it papered over per-layer MLT flux noise whose real
+  ! sources (partition-function interpolation kinks, the deepest-layer
+  ! gradient bias) are now fixed, and it biases the reported flux
+  ! balance wherever F_conv is curved.  CLI: smooth=0|1.
+  LOGICAL :: USE_FLXCNV_SMOOTH  = .TRUE.
+  REAL(8), PARAMETER :: CZC_HR_MIN   = 0.60D0   ! HRATIO acquisition gate
+  ! Per-layer blend weight: the constructor's authority rises as a
+  ! smoothstep in HRATIO over [CZC_HR_W_LO, CZC_HR_W_HI], exactly as the
+  ! Kurucz flux correction's grip fades (its response denominator
+  ! inflates with convective share).  Continuous handoff -- no seam
+  ! layer between the two controllers.  Same pattern as the Newton
+  ! blend (DTGRAD_HR_LO/HI).
+  REAL(8), PARAMETER :: CZC_HR_W_LO  = 0.50D0   ! blend weight 0 below this
+  REAL(8), PARAMETER :: CZC_HR_W_HI  = 0.85D0   ! blend weight 1 above this
+  REAL(8), PARAMETER :: CZC_DEL_MAX  = 0.05D0   ! nabla-nabla_ad layer gate
+  REAL(8), PARAMETER :: CZC_ERR_ON   = 5.0D0    ! engage above this max |FLXERR| [%]
+  REAL(8), PARAMETER :: CZC_ERR_OFF  = 2.0D0    ! stay engaged above this [%]
+  ! dT-based release: converged-in-the-CZ is declared on the step size,
+  ! not the local flux error (universal practice: PHOENIX/MARCS declare
+  ! CZ convergence on |dT| ~ 1 K).  At the 2-3 layers sitting on steep
+  ! nabla_ad(T) features, F_conv ~ DEL^{3/2} amplifies even K-scale T
+  ! changes into ~50-100% local flux swings, so a percent-level flux
+  ! gate there can never be met; once the constructor's applied steps
+  ! fall below this threshold the temperature structure is settled and
+  ! it hands off.
+  REAL(8), PARAMETER :: CZC_DT_RELEASE = 1.5D0  ! release when max applied |dT| < this [K]
+  ! Re-engagement hysteresis: after a dT-release, the block's flux
+  ! metric keeps fluttering on the code's gradient-noise floor (the
+  ! amplification 1.5/DEL makes tens of percent normal in the coolest
+  ! models even at sub-K structure changes).  Re-engage only if the
+  ! error grows past CZC_REENG_FAC times the level at release --
+  ! guards real divergence without churning on the flutter.
+  REAL(8), PARAMETER :: CZC_REENG_FAC  = 2.0D0
+  INTEGER, PARAMETER :: CZC_GAP_MAX  = 2        ! absorbable interior gate-failure run
+  INTEGER, PARAMETER :: CZC_J_MIN    = 4        ! never construct above this depth
+  INTEGER, PARAMETER :: CZC_NREFINE  = 2        ! node-gradient refinement sweeps
+  ! Step cap: keeps each applied step inside the window where the
+  ! frozen MLT/EOS coefficients remain valid (nabla_ad drifts by
+  ! ~1.2e-3 per 1 K near the deep H-ionization features, so ~25 K keeps
+  ! the induced target error below the ~1e-3 working superadiabaticity).
+  REAL(8), PARAMETER :: CZC_DT_MAX   = 25.0D0   ! per-iteration step cap [K] (global scale)
+  REAL(8), PARAMETER :: CZC_FRAD_CAP = 0.999D0  ! cap FLXRAD <= this*FLUX in F_conv target
 
   ! --- Flag set if SYNTHE should emit .mol/.linform output files ---
   ! Gated by the more_output CLI argument.  NMOLEC checks IFMOLOUT to
@@ -2294,6 +2433,15 @@ SUBROUTINE TCORR(MODE, RCOWT)
   END IF
 
   !---------------------------------------------------------------------
+  ! (G2) Efficient-CZ temperature constructor: blends the MLT-inverted
+  !      gradient correction into T1 over the gated deep-CZ block (see
+  !      CZ_CONSTRUCT).  Runs before (H) so the DRHOX remap sees the
+  !      full correction.  Skipped when a Newton step was applied
+  !      (untested interaction; USE_DTGRAD is off in production).
+  !---------------------------------------------------------------------
+  IF (.NOT. NEWTON_APPLIED) CALL CZ_CONSTRUCT(T1)
+
+  !---------------------------------------------------------------------
   ! (H) Compute RHOX correction to maintain constant TAUROS grid
   !     Uses finite-difference: run TTAUP with T and T+T1, compare
   !     total pressures to infer needed RHOX adjustment.  The linearized
@@ -2342,6 +2490,9 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! Skip the remap entirely; the next outer iteration's atlas12c will
   ! rebuild hydrostatic equilibrium, populations, and TAUROS from
   ! scratch, naturally absorbing the Newton step.
+  ! Constructor iterations do NOT take this path: with steps capped at
+  ! CZC_DT_MAX they stay within the linearized remap's regime, and the
+  ! grid tracks the structure with no remap debt accumulating.
   IF (NEWTON_APPLIED) THEN
      ! Refresh thermodynamic depth vectors for the just-applied T so the
      ! next outer-iter RT pass starts from a consistent state.
@@ -2444,6 +2595,358 @@ SUBROUTINE TCORR(MODE, RCOWT)
   RETURN
 
 END SUBROUTINE TCORR
+
+!=========================================================================
+! SUBROUTINE CZ_CONSTRUCT(T1)
+!
+! Efficient-convection-zone temperature corrector ("CZ constructor").
+! Called from TCORR mode 3 after the total correction T1 is assembled;
+! its correction is folded into T1, so the normal grid-maintenance
+! machinery sees one combined step.
+!
+! In layers where convection is efficient (HRATIO -> 1,
+! nabla -> nabla_ad) the flux-constancy T correction is structurally
+! dead: dF/dT diverges as 1/(nabla - nabla_ad), so the correction per
+! unit flux error vanishes while local errors reach hundreds of
+! percent (cool dwarfs).  The required gradient is obtained instead by
+! inverting the Boehm-Vitense relation for the superadiabatic excess
+! that carries F_req = FLUX - FLXRAD:
+!     DEL_req = DELTA + sqrt(2*D*DELTA),
+!     DELTA   = (F_req / (FLUXCO*VCO))^(2/3)
+! -- the exact closed-form inverse of CONVEC's forward cubic (both DDD
+! branches), needing no bubble-opacity iteration since DELTA fixes the
+! bubble excess directly.  The inverse is well conditioned exactly
+! where the forward correction diverges.
+!
+! The update is INCREMENTAL, formulated on intervals: each interval's
+! exact ln T / ln P slope is driven toward the midpoint-interpolated
+! target nabla_ad + DEL_req, then CZC_NREFINE sweeps nudge the
+! interval exponents until the node gradients -- measured with the
+! code's own operators -- match.  The constructor's authority is a
+! smoothstep in HRATIO, handing off continuously to the Kurucz
+! correction where convection is inefficient.  Rationale for these
+! choices is at the inline comments; engagement, release, and the
+! step cap are documented at the CZC_* parameter declarations.
+!=========================================================================
+
+SUBROUTINE CZ_CONSTRUCT(T1)
+
+  IMPLICIT NONE
+
+  REAL(8), INTENT(INOUT) :: T1(kw)
+
+  REAL(8) :: HRAT_L(kw)     ! convective flux fraction (local copy)
+  LOGICAL :: GOODJ(kw)      ! layer gate mask
+  REAL(8) :: DELREQ(kw)     ! MLT-inverted required superadiabatic excess
+  REAL(8) :: DELIN(kw)      ! measured current excess DLTDLP - GRDADB
+  REAL(8) :: TKUR(kw)       ! incoming Kurucz-corrected profile T + T1
+  REAL(8) :: TW(kw)         ! corrected working profile
+
+  REAL(8) :: F_REQ          ! required convective flux
+  REAL(8) :: FLUXCO, VCO    ! MLT coefficients (as in CONVEC)
+  REAL(8) :: DELTA          ! MLT efficiency variable
+  REAL(8) :: DELTAT_B       ! bubble temperature excess T*MIXLTH*DELTA
+  REAL(8) :: ROSST0         ! ROSSTAB at the unperturbed state
+  REAL(8) :: DPLUS, DMINUS, DPLUS_I, DMINUS_I  ! bubble opacity ratios
+  REAL(8) :: ABCONV_L       ! bubble opacity (harmonic mean)
+  REAL(8) :: DRESP          ! radiative damping parameter D
+  REAL(8) :: TAUB           ! bubble optical thickness
+  REAL(8) :: MAXERR_BLK     ! max |FLXERR| in the block [%]
+  REAL(8) :: DTMAX_BLK      ! max |TW - TKUR| in the block [K]
+  REAL(8) :: SCL            ! global step-cap scale factor
+  REAL(8) :: GBARI          ! interval increment to the ln T slope
+  REAL(8) :: SLOPIN         ! measured current interval slope dlnT/dlnP
+  REAL(8) :: GTARG          ! interval target nabla_ad,mid + DEL_req,mid
+  REAL(8) :: LNPR           ! ln(PTOTAL(J)/PTOTAL(J-1))
+  REAL(8) :: WBLND(kw)      ! per-layer HRATIO blend weight
+  REAL(8) :: GIN(kw)        ! incoming profile's node gradients
+  REAL(8) :: DTK(kw)        ! DERIV of the incoming profile
+  REAL(8) :: WINT           ! interval blend weight
+  REAL(8) :: GADJ(kw)       ! refinement corrections to interval exponents
+  REAL(8) :: DTW(kw)        ! DERIV of the constructed profile
+  REAL(8) :: ERRG(kw)       ! node-gradient mismatch in refinement sweeps
+  INTEGER :: J, JC, JC_FOUND, NGAP, K
+  LOGICAL :: ENGAGE
+
+  ! Engagement hysteresis across iterations (avoids chatter at CZC_ERR_ON)
+  LOGICAL, SAVE :: CZC_PREV_ENGAGED = .FALSE.
+  ! Sticky block-top (grow-only membership while engaged).  Correcting
+  ! a layer lowers its HRATIO; without stickiness it is evicted, pushed
+  ! back by the Kurucz correction, and re-acquired hot -- a growing
+  ! oscillation at the block top.  Once acquired, a layer stays until
+  ! it turns genuinely superadiabatic or the constructor releases.
+  ! Cf. PICASO's grow-only convection zones (Mukherjee et al. 2023).
+  INTEGER, SAVE :: JC_STICKY = 0
+  ! Consecutive engaged calls with the bottom layer out of gate.  A
+  ! transient bottom-gate flicker (e.g. an RT boundary hiccup pushing
+  ! FLXRAD(NRHOX) above FLUX for one iteration) must not force a full
+  ! release mid-flight; require the failure to persist before letting go.
+  INTEGER, SAVE :: NBOT_BAD = 0
+  ! Max |dT| applied by the previous engaged call (for dT-based release).
+  REAL(8), SAVE :: CZC_LAST_DTMAX = 1.0D30
+  ! Block error at the last dT-release (re-engagement hysteresis).
+  REAL(8), SAVE :: CZC_REL_ERR = 0.0D0
+
+  ! Fresh model (stacked-model runs): clear all engagement state.
+  IF (ITER .LE. 1) THEN
+    CZC_PREV_ENGAGED = .FALSE.
+    JC_STICKY        = 0
+    NBOT_BAD         = 0
+    CZC_LAST_DTMAX   = 1.0D30
+    CZC_REL_ERR      = 0.0D0
+  END IF
+
+  IF (.NOT. USE_CZ_CONSTRUCTOR) RETURN
+  IF (IFCONV .NE. 1 .OR. MIXLTH .LE. 0.0D0) RETURN
+  IF (NRHOX .LT. CZC_J_MIN + 5) RETURN
+
+  !---------------------------------------------------------------------
+  ! Layer gates: efficient (HRATIO) and near-adiabatic (DEL).
+  ! If CONVEC never ran, FLXCNV = 0 everywhere and no layer passes.
+  !---------------------------------------------------------------------
+  DO J = 1, NRHOX
+    HRAT_L(J) = FLXCNV(J) / (FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
+    DELIN(J)  = DLTDLP(J) - GRDADB(J)
+    GOODJ(J)  = (HRAT_L(J) .GT. CZC_HR_MIN) .AND. &
+                (DELIN(J) .LT. CZC_DEL_MAX)
+  END DO
+
+  IF (.NOT. GOODJ(NRHOX)) THEN
+    IF (CZC_PREV_ENGAGED .AND. NBOT_BAD .LT. 3) THEN
+      ! Grace period: keep the bottom layer in the block through a
+      ! transient gate failure.  Its increment target is still sane:
+      ! F_req floors at 0.001*FLUX when FLXRAD >= FLUX, pulling DEL
+      ! down, and the Koester clamp keeps FLXCNV defined.
+      NBOT_BAD = NBOT_BAD + 1
+      GOODJ(NRHOX) = .TRUE.
+    ELSE
+      IF (CZC_PREV_ENGAGED) WRITE(6, '(A)') &
+        ' CZC: released (bottom layer fails efficiency/near-adiabat gate)'
+      CZC_PREV_ENGAGED = .FALSE.
+      JC_STICKY = 0
+      NBOT_BAD  = 0
+      RETURN
+    END IF
+  ELSE
+    NBOT_BAD = 0
+  END IF
+
+  !---------------------------------------------------------------------
+  ! Block finder: walk up from the bottom, absorbing interior gate
+  ! failures up to CZC_GAP_MAX layers long (hysteresis).  JC = topmost
+  ! gate-passing layer reachable that way.
+  !---------------------------------------------------------------------
+  JC   = NRHOX
+  NGAP = 0
+  DO J = NRHOX - 1, CZC_J_MIN, -1
+    IF (GOODJ(J)) THEN
+      JC   = J
+      NGAP = 0
+    ELSE
+      NGAP = NGAP + 1
+      IF (NGAP .GT. CZC_GAP_MAX) EXIT
+    END IF
+  END DO
+  JC_FOUND = JC
+
+  ! Sticky (grow-only) membership: keep previously acquired layers in
+  ! the block, evicting only those that turned genuinely superadiabatic.
+  IF (JC_STICKY .GT. 0) JC = min(JC, max(JC_STICKY, CZC_J_MIN))
+  DO J = JC, JC_FOUND - 1
+    IF (DELIN(J) .GT. CZC_DEL_MAX) JC = J + 1
+  END DO
+
+  IF (NRHOX - JC .LT. 4) THEN      ! too thin to be the efficient deep CZ
+    IF (CZC_PREV_ENGAGED) WRITE(6, '(A)') &
+      ' CZC: released (gated block too thin)'
+    CZC_PREV_ENGAGED = .FALSE.
+    JC_STICKY = 0
+    RETURN
+  END IF
+
+  !---------------------------------------------------------------------
+  ! Error gate: engage only while the block is badly out of flux balance.
+  !---------------------------------------------------------------------
+  MAXERR_BLK = MAXVAL(ABS(FLXERR(JC:NRHOX)))
+  IF (CZC_PREV_ENGAGED) THEN
+    ENGAGE = MAXERR_BLK .GT. CZC_ERR_OFF
+    ! dT-based release (see CZC_DT_RELEASE): the structure is settled
+    ! once the applied steps are K-scale, even though flux errors at
+    ! the steep-nabla_ad feature layers never meet a percent gate.
+    IF (CZC_LAST_DTMAX .LT. CZC_DT_RELEASE) THEN
+      ENGAGE = .FALSE.
+      CZC_REL_ERR = MAXERR_BLK
+      WRITE(6, '(A,F5.2,A,1PE9.2,A)') &
+        ' CZC: released (settled, last max|dT|=', CZC_LAST_DTMAX, &
+        ' K; block maxERR%=', MAXERR_BLK, ')'
+    END IF
+  ELSE
+    ENGAGE = MAXERR_BLK .GT. max(CZC_ERR_ON, CZC_REENG_FAC * CZC_REL_ERR)
+  END IF
+  IF (CZC_PREV_ENGAGED .AND. .NOT. ENGAGE .AND. &
+      CZC_LAST_DTMAX .GE. CZC_DT_RELEASE) &
+    WRITE(6, '(A,1PE9.2,A)') ' CZC: released (block maxERR%=', &
+      MAXERR_BLK, ' below threshold)'
+  CZC_PREV_ENGAGED = ENGAGE
+  IF (.NOT. ENGAGE) THEN
+    JC_STICKY = 0
+    CZC_LAST_DTMAX = 1.0D30
+    RETURN
+  END IF
+  JC_STICKY = JC
+  CZC_REL_ERR = 0.0D0
+
+  !---------------------------------------------------------------------
+  ! Invert MLT for the required superadiabatic excess at each node.
+  !---------------------------------------------------------------------
+  DO J = JC, NRHOX
+    F_REQ  = FLUX - min(FLXRAD(J), CZC_FRAD_CAP * FLUX)
+    FLUXCO = 0.5D0 * RHO(J) * HEATCP(J) * T(J) * MIXLTH / FOURPI
+    VCO    = 0.5D0 * MIXLTH &
+           * sqrt(max(-0.5D0 * PTOTAL(J) / RHO(J) * DLRDLT(J), 0.0D0))
+
+    IF (FLUXCO .LE. 0.0D0 .OR. VCO .LE. 0.0D0) THEN
+      ! Degenerate EOS corner: zero increment (leave the layer alone).
+      DELREQ(J) = DELIN(J)
+      CYCLE
+    END IF
+
+    DELTA = (F_REQ / (FLUXCO * VCO))**(2.0D0 / 3.0D0)
+    ! Match the forward solve's bubble-excess cap DELTAT <= 0.15*T.
+    DELTA = min(DELTA, 0.15D0 / MIXLTH)
+    DELTAT_B = T(J) * MIXLTH * DELTA
+
+    ! Bubble opacity exactly as in CONVEC's forward quadrature.
+    ROSST0 = ROSSTAB(T(J), P(J), VTURB(J))
+    DPLUS  = ROSSTAB(T(J) + DELTAT_B, P(J), VTURB(J)) / ROSST0
+    DMINUS = ROSSTAB(T(J) - DELTAT_B, P(J), VTURB(J)) / ROSST0
+    IF (USE_4POINT_MLT) THEN
+      DPLUS_I  = ROSSTAB(T(J) + DELTAT_B / 3.0D0, P(J), VTURB(J)) / ROSST0
+      DMINUS_I = ROSSTAB(T(J) - DELTAT_B / 3.0D0, P(J), VTURB(J)) / ROSST0
+      ABCONV_L = 4.0D0 / (1.0D0 / DPLUS  + 1.0D0 / DPLUS_I &
+                        + 1.0D0 / DMINUS + 1.0D0 / DMINUS_I) * ABROSS(J)
+    ELSE
+      ABCONV_L = 2.0D0 / (1.0D0 / DPLUS + 1.0D0 / DMINUS) * ABROSS(J)
+    END IF
+
+    ! Radiative damping parameter D, as in CONVEC.
+    DRESP = 8.0D0 * SIGMA_SB * T(J)**4 &
+          / (ABCONV_L * HSCALE(J) * RHO(J)) &
+          / (FLUXCO * FOURPI) / VCO
+    TAUB  = ABCONV_L * RHO(J) * MIXLTH * HSCALE(J)
+    DRESP = DRESP * TAUB**2 / (2.0D0 + TAUB**2)
+    DRESP = DRESP**2 / 2.0D0
+
+    ! Exact closed-form inverse of the forward DELTA(DEL) relation.
+    DELREQ(J) = DELTA + sqrt(2.0D0 * DRESP * DELTA)
+  END DO
+
+  !---------------------------------------------------------------------
+  ! Incremental correction of the incoming profile, formulated ON
+  ! INTERVALS: each interval's exact ln T / ln P slope is driven to the
+  ! midpoint-interpolated target nabla_ad + DEL_req.  Interval space is
+  ! essential: node-measured errors averaged onto intervals leave
+  ! two-grid-wave (checkerboard) temperature defects invisible, whereas
+  ! interval slopes see them at full amplitude.  Increments (rather
+  ! than absolute integration of nabla_ad + DEL_req from an anchor) are
+  ! equally essential: nabla_ad is a steep function of T near the deep
+  ! H-ionization / H2 features (d(nabla_ad)/dT ~ 1e-3 per K), which
+  ! makes the integrated profile exponentially anchor-sensitive where
+  ! that slope is positive; the incremental form inherits the true
+  ! nabla_ad structure from the actual profile and its cumulative dT is
+  ! bounded by the actual flux discrepancy.  GRDADB stays frozen at the
+  ! measured nodes for the same reason.
+  !---------------------------------------------------------------------
+  TKUR(1:NRHOX) = T(1:NRHOX) + T1(1:NRHOX)
+  TW(1:NRHOX)   = TKUR(1:NRHOX)
+  GADJ(1:NRHOX) = 0.0D0
+
+  ! Per-layer blend weights (smoothstep in HRATIO) and the incoming
+  ! profile's node gradients (blend targets where the weight < 1).
+  DO J = max(JC - 1, 1), NRHOX
+    WINT = (HRAT_L(J) - CZC_HR_W_LO) / (CZC_HR_W_HI - CZC_HR_W_LO)
+    WINT = max(0.0D0, min(1.0D0, WINT))
+    WBLND(J) = WINT * WINT * (3.0D0 - 2.0D0 * WINT)
+  END DO
+  CALL DERIV(RHOX, TKUR, DTK, NRHOX)
+  DO J = JC, NRHOX - 1
+    GIN(J) = PTOTAL(J) / TKUR(J) / GRAV * DTK(J)
+  END DO
+  GIN(NRHOX) = log(TKUR(NRHOX) / TKUR(NRHOX - 1)) &
+             / log(PTOTAL(NRHOX) / PTOTAL(NRHOX - 1))
+
+  ! Base construction in interval space, then CZC_NREFINE node-space
+  ! refinement sweeps.  The forward MLT computes flux from NODE
+  ! gradients (DERIV's tangent averaging); on a curved profile the
+  ! interval->node map carries a smooth O(h^2 * curvature) bias which
+  ! 1.5/DEL amplifies into a broad flux-error hump in the coolest
+  ! models.  Each sweep measures the constructed profile's node
+  ! gradients with the code's own operator (DERIV interior, log-slope
+  ! endpoint as in CONVEC) and nudges the interval exponents toward
+  ! the BLENDED node targets.  Checkerboard node errors, which a
+  ! trapezoid update cannot see, cannot arise here because the base
+  ! construction pins the profile in interval space.
+  DO K = 0, CZC_NREFINE
+    DO J = JC, NRHOX
+      LNPR = log(PTOTAL(J) / PTOTAL(J - 1))
+      ! Exact current slope of this interval
+      SLOPIN = log(TKUR(J) / TKUR(J - 1)) / LNPR
+      ! Midpoint target: measured nabla_ad + required superadiabaticity
+      IF (J .EQ. JC) THEN
+        GTARG = 0.5D0 * (GRDADB(J - 1) + GRDADB(J)) + DELREQ(J)
+      ELSE
+        GTARG = 0.5D0 * (GRDADB(J - 1) + GRDADB(J)) &
+              + 0.5D0 * (DELREQ(J - 1) + DELREQ(J))
+      END IF
+      WINT  = 0.5D0 * (WBLND(J - 1) + WBLND(J))
+      GBARI = (GTARG - SLOPIN) * WINT + GADJ(J)
+      TW(J) = TW(J - 1) * (TKUR(J) / TKUR(J - 1)) * exp(GBARI * LNPR)
+      TW(J) = max(TW(J), TW(J - 1))   ! keep T monotone increasing inward
+    END DO
+    IF (K .EQ. CZC_NREFINE) EXIT
+
+    ! Node-gradient mismatch of the constructed profile against the
+    ! blended targets
+    CALL DERIV(RHOX, TW, DTW, NRHOX)
+    DO J = JC, NRHOX - 1
+      ERRG(J) = WBLND(J) * (GRDADB(J) + DELREQ(J)) &
+              + (1.0D0 - WBLND(J)) * GIN(J) &
+              - PTOTAL(J) / TW(J) / GRAV * DTW(J)
+    END DO
+    ! Endpoint: same log-slope operator CONVEC now uses at J = NRHOX
+    ERRG(NRHOX) = WBLND(NRHOX) * (GRDADB(NRHOX) + DELREQ(NRHOX)) &
+                + (1.0D0 - WBLND(NRHOX)) * GIN(NRHOX) &
+                - log(TW(NRHOX) / TW(NRHOX - 1)) &
+                / log(PTOTAL(NRHOX) / PTOTAL(NRHOX - 1))
+    GADJ(JC) = GADJ(JC) + 0.70D0 * ERRG(JC)
+    DO J = JC + 1, NRHOX
+      GADJ(J) = GADJ(J) + 0.35D0 * (ERRG(J - 1) + ERRG(J))
+    END DO
+  END DO
+
+  !---------------------------------------------------------------------
+  ! Global step cap and application.
+  !---------------------------------------------------------------------
+  DTMAX_BLK = 0.0D0
+  DO J = JC, NRHOX
+    DTMAX_BLK = max(DTMAX_BLK, abs(TW(J) - TKUR(J)))
+  END DO
+  SCL = 1.0D0
+  IF (DTMAX_BLK .GT. CZC_DT_MAX) SCL = CZC_DT_MAX / DTMAX_BLK
+
+  DO J = JC, NRHOX
+    T1(J) = T1(J) + (TW(J) - TKUR(J)) * SCL
+  END DO
+  CZC_LAST_DTMAX = DTMAX_BLK * SCL
+
+  WRITE(6, '(A,I3,A,I3,A,1PE9.2,A,0PF7.1,A,F6.3)') &
+    ' CZC: constructed J=', JC, '..', NRHOX, &
+    '  maxERR%=', MAXERR_BLK, '  max|dT|=', DTMAX_BLK * SCL, &
+    ' K  scale=', SCL
+
+  RETURN
+
+END SUBROUTINE CZ_CONSTRUCT
 
 !=========================================================================
 ! SUBROUTINE GET_TCORR_RESIDUALS(R)
@@ -7875,6 +8378,22 @@ SUBROUTINE CONVEC(MLT_ONLY)
     ! Actual temperature gradient
     DLTDLP(J) = PTOTAL(J) / T(J) / GRAV * DTDRHX(J)
 
+    ! Deepest point: DERIV's one-sided endpoint difference is a LINEAR
+    ! T vs RHOX slope normalized at the endpoint; for a power-law
+    ! stratification T ~ P^s it returns (1-exp(-s*L))/(1-exp(-L)) with
+    ! L = dlnP between the last two layers -- a systematic +13%
+    ! overestimate of nabla at L = 0.288 (grid spacing 0.125 dex).
+    ! F_conv ~ (nabla - nabla_ad)^{3/2} amplifies that phantom ~+0.01
+    ! superadiabaticity into an irreducible bottom-layer flux
+    ! overshoot in efficiently convective models (the long-standing
+    ! "deepest layer never converges" artifact).  The log-space
+    ! one-sided slope is exact for power laws:
+    IF (J .EQ. NRHOX .AND. J .GE. 2) THEN
+      IF (T(J) .GT. T(J-1) .AND. PTOTAL(J) .GT. PTOTAL(J-1)) THEN
+        DLTDLP(J) = log(T(J) / T(J-1)) / log(PTOTAL(J) / PTOTAL(J-1))
+      END IF
+    END IF
+
     ! Specific heats
     HEATCV = DEDT - DEDPG * DRDT / DRDPG
     HEATCP(J) = DEDT - DEDPG * DPDT / DPDPG &
@@ -8158,16 +8677,58 @@ SUBROUTINE CONVEC(MLT_ONLY)
     END DO
   END IF
 
+  ! Koester (1980) bottom-boundary clamp.  The interior gap fill above
+  ! cannot reach the deepest layers: a zeroed layer at or near J = NRHOX
+  ! has no convective layer below it to interpolate against.  When the
+  ! convection zone reaches (essentially) the bottom of the grid but the
+  ! deepest layer(s) came out marginally subadiabatic -- the Schwarzschild
+  ! CYCLE left FLXCNV = 0 -- the zone physically continues below the
+  ! grid and F_c = 0 there is a numerical accident.  It injects a -100%
+  ! flux error at the boundary, to which the T-correction + remap
+  ! machinery responds violently (observed: bottom-layer nabla spiking
+  ! 0.21 -> 0.48 and deep-CZ flux errors ringing to 10^4 % within two
+  ! iterations on cool dwarfs).  Koester's cure, standard in cool
+  ! white-dwarf atmospheres (Koester 1980, A&AS 39, 401; Rohrmann 2001,
+  ! MNRAS 323, 699): in a layer that belongs to the converged model's
+  ! convection zone, assign the flux-conservation value
+  !     F_c = FLUX - FLXRAD
+  ! instead of zero.  Gates: (a) T-correction mode (FLXRAD is the
+  ! frequency-integrated radiative flux accumulated during this
+  ! iteration's RT pass, valid only when IFCORR = 1); (b) the deepest
+  ! MLT-convective layer JBOT lies within 3 layers of the bottom (a
+  ! genuinely interior CZ base, e.g. solar-type stars, is untouched);
+  ! (c) only marginally subadiabatic layers (DEL > -0.01) are clamped --
+  ! a strongly radiative bottom stays radiative.  Solar models have
+  ! FLXCNV(NRHOX) > 0 (grid ends inside the CZ) and hot stars have no
+  ! deep convection, so neither is affected.
+  IF (IFCORR .EQ. 1) THEN
+    JBOT = 0
+    DO J = 1, NRHOX
+      IF (FLXCNV(J) .GT. 0.0D0) JBOT = J
+    END DO
+    IF (JBOT .GE. NRHOX - 3 .AND. JBOT .LT. NRHOX) THEN
+      DO J = JBOT + 1, NRHOX
+        IF (DLTDLP(J) - GRDADB(J) .GT. -0.01D0) THEN
+          FLXCNV(J) = max(FLUX - FLXRAD(J), 0.0D0)
+        ELSE
+          EXIT
+        END IF
+      END DO
+    END IF
+  END IF
+
   ! 1-2-1 smoothing of convective flux at interior depths.  Tames the
   ! (∇-∇_ad)^{1/2} cusp at the Schwarzschild boundary.  Runs AFTER the
   ! gap fill so it operates on a gap-free profile.  Deepest layer left
   ! unsmoothed: on cool dwarfs the bottom-boundary MLT residual is huge
   ! and a one-sided kernel would smear it into NRHOX-1.
   FLXCNV0 = FLXCNV
-  DO J = 2, NRHOX - 1
-    FLXCNV(J) = 0.25D0 * FLXCNV0(J - 1) + 0.50D0 * FLXCNV0(J) &
-              + 0.25D0 * FLXCNV0(J + 1)
-  END DO
+  IF (USE_FLXCNV_SMOOTH) THEN
+    DO J = 2, NRHOX - 1
+      FLXCNV(J) = 0.25D0 * FLXCNV0(J - 1) + 0.50D0 * FLXCNV0(J) &
+                + 0.25D0 * FLXCNV0(J + 1)
+    END DO
+  END IF
 
   FLXCNV0 = FLXCNV
 
@@ -19088,7 +19649,7 @@ END FUNCTION PFGROUND_HYBRID
 !=======================================================================
 ! FUNCTION PARTFNH2(T)
 !
-! H2 partition function by linear interpolation in temperature.
+! H2 partition function by natural-cubic-spline interpolation in T.
 !
 ! Reads a two-column text file (T, Q) on first call. The file
 ! must have comment lines starting with '#' and data lines with
@@ -19110,13 +19671,15 @@ FUNCTION PARTFNH2(T)
 
   INTEGER, PARAMETER :: NMAX = 500   ! max table entries
   REAL(8),  SAVE :: PF(NMAX)          ! partition function values
+  REAL(8),  SAVE :: PF2(NMAX)         ! spline second derivatives d2Q/dT2
   REAL(8),  SAVE :: TSTEP = 100.0d0   ! temperature step (K)
   REAL(8),  SAVE :: TSTART = 100.0d0  ! first temperature in table
   INTEGER, SAVE :: NPF = 0           ! number of entries loaded
   LOGICAL, SAVE :: INITIALIZED = .FALSE.
-  
+
   INTEGER :: N, IOS, LUN
-  REAL(8)  :: frac, TDUM, QDUM
+  REAL(8)  :: frac, TDUM, QDUM, TT
+  REAL(8)  :: CWK(NMAX)               ! scratch for the spline tridiagonal
   CHARACTER(len=256) :: LINE
 
   ! Read table from file on first call
@@ -19143,6 +19706,34 @@ FUNCTION PARTFNH2(T)
       IF (NPF .EQ. 2) TSTEP = TDUM - TSTART
    END DO
    CLOSE(LUN)
+
+   ! Precompute natural-cubic-spline second derivatives (uniform grid).
+   ! Linear interpolation of the 100 K table put derivative kinks in
+   ! Q(T) at every node; the EOS finite-difference stencil (+-0.1% in T,
+   ! i.e. +-4-6 K in cool-dwarf deep CZs) straddling a node then
+   ! produces spurious localized structure in dE/dT and hence nabla_ad
+   ! (measured: d(nabla_ad)/dT ~ 1e-3 per K confined to ~10 K windows
+   ! around T = table nodes -- ~10x steeper than the physical
+   ! H-ionization valley wall).  Through EQUILH2 the same kinks
+   ! modulate the H2 fraction and its 4.48 eV dissociation-energy term.
+   ! A C2 spline of the same table removes the kinks without changing
+   ! the tabulated physics.
+   IF (NPF .GE. 3) THEN
+     PF2(1)   = 0.0d0
+     PF2(NPF) = 0.0d0
+     CWK(1)   = 0.0d0
+     DO N = 2, NPF - 1
+       ! Forward elimination for M(N-1) + 4 M(N) + M(N+1) = RHS(N)
+       PF2(N) = (6.0d0 * (PF(N+1) - 2.0d0 * PF(N) + PF(N-1)) / TSTEP**2 &
+                 - PF2(N-1)) / (4.0d0 - CWK(N-1))
+       CWK(N) = 1.0d0 / (4.0d0 - CWK(N-1))
+     END DO
+     DO N = NPF - 1, 2, -1
+       PF2(N) = PF2(N) - CWK(N) * PF2(N+1)
+     END DO
+   ELSE
+     PF2(1:max(NPF,1)) = 0.0d0
+   END IF
   END IF
 
   ! Fallback if no table loaded
@@ -19151,14 +19742,19 @@ FUNCTION PARTFNH2(T)
     RETURN
   END IF
 
+  ! Clamp into the table range (constant beyond the ends, as before)
+  TT = MIN(TSTART + (NPF - 1) * TSTEP, MAX(TSTART, T))
+
   ! Table index from temperature
-  N = INT((T - TSTART) / TSTEP) + 1
+  N = INT((TT - TSTART) / TSTEP) + 1
   N = MIN(NPF - 1, MAX(1, N))
 
-  ! Linear interpolation
-  frac = (T - (TSTART + (N-1) * TSTEP)) / TSTEP
-  frac = MIN(1.0d0, MAX(0.0d0, frac))
-  PARTFNH2 = PF(N) + (PF(N+1) - PF(N)) * frac
+  ! Cubic-spline evaluation (natural spline; reduces to linear where
+  ! the second derivatives vanish)
+  frac = (TT - (TSTART + (N-1) * TSTEP)) / TSTEP
+  PARTFNH2 = (1.0d0 - frac) * PF(N) + frac * PF(N+1) &
+           + ((1.0d0 - frac)**3 - (1.0d0 - frac)) * PF2(N)   * TSTEP**2 / 6.0d0 &
+           + (frac**3 - frac)                     * PF2(N+1) * TSTEP**2 / 6.0d0
 
 END FUNCTION PARTFNH2
 
