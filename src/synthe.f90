@@ -40,7 +40,7 @@
 PROGRAM SYNTHE
   
   USE synthe_module
-  USE mod_mklinelist, only: run_mklinelist, lte_lines, nlines_lte, nlines_nlte
+  USE mod_mklinelist, only: run_mklinelist, lte_lines, nlte_lines, nlines_lte, nlines_nlte
   USE mod_parameters, only: LINE_CUTOFF
   USE mod_atlas_data, only: &
     JOSH, READIN, BLOCKJ, BLOCKH, set_bc_data_dir, &
@@ -274,6 +274,10 @@ PROGRAM SYNTHE
 
   WRITE(6,'(A,I9,A,I9,A,I9)') ' Lines:  LTE =', nlines_lte, &
        '   NLTE =', nlines_nlte, '   total =', nlines_lte + nlines_nlte
+
+  ! Optional: dump the assembled "used lines" to an ASCII file for external
+  ! linelist validation (e.g., cross-checking the Korg master linelist).
+  IF (more_output) CALL dump_used_lines()
 
   ! --- Copy module state into local working arrays ---------------------
   nrhox = nrhox_a
@@ -534,6 +538,57 @@ PROGRAM SYNTHE
   CALL EXIT(0)
 
 CONTAINS
+
+  ! ------------------------------------------------------------------------
+  !  dump_used_lines()
+  !
+  !  Emit the assembled line list (exactly what SYNTHE selected for this
+  !  window) to an ASCII file <model>.lines, gated on more_output.  This is
+  !  a general "what lines are in this synthesis" dump; it is not tied to any
+  !  particular downstream code.
+  !
+  !  Columns: kind  wl_vac_ang  code  nelion  elo_cm  strength  g_rad  g_stark  g_vdw
+  !
+  !  Design notes:
+  !   - Both the raw integer nelion AND the decoded Kurucz species code are
+  !     written.  For LTE lines the code is the true species captured by the
+  !     reader (Z.ion for atoms, molecule code for molecules, incl. the FeH
+  !     156->126 remap); for NLTE lines (all atomic) it is decoded from
+  !     nelion via nelem=(nelion-1)/6+1, ion=mod(nelion-1,6).
+  !   - LTE line centers are reconstructed from the log-lambda grid index
+  !     nbuff using SYNTHE's own convention  wave = wbegin*ratio**(nbuff-1)
+  !     (see the opacity loop in synthe_module); NLTE lines carry wlvac.
+  !   - Wavelengths are vacuum, written in Angstrom (nm*10).
+  ! ------------------------------------------------------------------------
+  SUBROUTINE dump_used_lines()
+    INTEGER            :: iL, u, ne, io
+    REAL(8)            :: wlang
+    REAL(4)            :: code_nlte
+    CHARACTER(LEN=512) :: lines_file
+
+    lines_file = TRIM(model_base) // '.lines'
+    OPEN(NEWUNIT=u, FILE=TRIM(lines_file), STATUS='REPLACE', ACTION='WRITE')
+    WRITE(u,'(A)') '# kind  wl_vac_ang  code  nelion  elo_cm  strength  g_rad  g_stark  g_vdw'
+    WRITE(u,'(A,I10,A,I10)') '# nlines_lte=', nlines_lte, &
+                             '  nlines_nlte=', nlines_nlte
+    DO iL = 1, nlines_lte
+      wlang = wbegin * ratio**(lte_lines(iL)%nbuff - 1) * 10.0D0
+      WRITE(u,'(A4,1X,F13.4,1X,F9.2,1X,I8,1X,ES14.6,1X,ES13.5,1X,ES12.4,1X,ES12.4,1X,ES12.4)') &
+        'LTE ', wlang, lte_lines(iL)%code, lte_lines(iL)%nelion, lte_lines(iL)%elo, &
+        lte_lines(iL)%cgf, lte_lines(iL)%gamrf, lte_lines(iL)%gamsf, lte_lines(iL)%gamwf
+    END DO
+    DO iL = 1, nlines_nlte
+      wlang = nlte_lines(iL)%wlvac * 10.0D0
+      ne = (nlte_lines(iL)%nelion - 1)/6 + 1
+      io = MOD(nlte_lines(iL)%nelion - 1, 6)
+      code_nlte = REAL(ne,4) + REAL(io,4)/100.0
+      WRITE(u,'(A4,1X,F13.4,1X,F9.2,1X,I8,1X,ES14.6,1X,ES13.5,1X,ES12.4,1X,ES12.4,1X,ES12.4)') &
+        'NLTE', wlang, code_nlte, nlte_lines(iL)%nelion, nlte_lines(iL)%elo, &
+        nlte_lines(iL)%gf, nlte_lines(iL)%gammar, nlte_lines(iL)%gammas, nlte_lines(iL)%gammaw
+    END DO
+    CLOSE(u)
+    WRITE(6,'(A,A)') ' Line list dump   = ', TRIM(lines_file)
+  END SUBROUTINE dump_used_lines
 
   ! ------------------------------------------------------------------------
   !  setup_opacity_sv(wave)
