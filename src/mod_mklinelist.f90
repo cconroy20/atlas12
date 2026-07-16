@@ -35,6 +35,9 @@ MODULE mod_mklinelist
     REAL(4)  :: gamrf    ! radiative  damping / 4πν
     REAL(4)  :: gamsf    ! Stark      damping / 4πν
     REAL(4)  :: gamwf    ! van der Waals damping / 4πν
+    REAL(4)  :: code     ! Kurucz species code: Z.ion for atoms (e.g. 26.00 = Fe I),
+                         !   molecule code for molecules (e.g. 108 = OH, 126 = FeH,
+                         !   822 = TiO, 10108 = H2O)
   END TYPE lte_line_t
 
   !  NLTE / complex-profile line record — mirrors the fort.19 binary record:
@@ -625,7 +628,8 @@ CONTAINS
         IF (n_lte .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
         n_lte = n_lte + 1
         lte_buf(n_lte) = lte_line_t(nbuff, REAL(cgf,4), nelion_i, &
-          REAL(elo_d,4), REAL(gammar_d,4), REAL(gammas_d,4), REAL(gammaw_d,4))
+          REAL(elo_d,4), REAL(gammar_d,4), REAL(gammas_d,4), REAL(gammaw_d,4), &
+          REAL(code,4))
       END IF
 
     END DO
@@ -854,7 +858,8 @@ CONTAINS
       IF (n_lte .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_lte = n_lte + 1
       lte_buf(n_lte) = lte_line_t(nbuff, REAL(congf,4), nelion_i, &
-        REAL(elo_d,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4))
+        REAL(elo_d,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4), &
+        REAL((nelion_i-1)/6 + 1, 4) + REAL(MOD(nelion_i-1,6),4)/100.0)
     END DO
 
     CLOSE(11)
@@ -992,6 +997,11 @@ CONTAINS
       loggr    = buf(7)
       labelp_x = buf(8)
 
+      ! Normalise FeH's H+Fe-mass code (156) to the atomic-number code (126);
+      ! see read_molec_ascii.  (No .bin molecule currently uses 156, but this
+      ! keeps the two molecular readers parallel.)
+      IF (icode .EQ. 156) icode = 126
+
       wlvac_d = DBLE(wlvac)
       IF (wlvac_d .GT. wlend + 1.0D0) EXIT
 
@@ -1028,7 +1038,8 @@ CONTAINS
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
       lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), nelion, &
-        REAL(elo,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4))
+        REAL(elo,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4), &
+        REAL(icode,4))   ! icode already normalised (FeH 156->126) at ingestion
     END DO
 
     CLOSE(21)
@@ -1121,6 +1132,14 @@ CONTAINS
         CYCLE
       END IF
 
+      ! fehfx.dat labels FeH with H + Fe *mass* number (1+56 = 156); the Kurucz
+      ! convention uses the *atomic* number (1+26 = 126).  Normalise at ingestion
+      ! so the species carries its correct code.  156 is unique to FeH here (no
+      ! BaH list is present, though 156 = H+Z56 would nominally be BaH), so this
+      ! is unambiguous.  molec_dispatch keys FeH on the isotope field (iso=56),
+      ! not on icode, so this does not affect species routing.
+      IF (icode .EQ. 156) icode = 126
+
       IF (ABS(wl) .GT. wlend + 2.0D0) EXIT
 
       wlvac = 1.0D7 / ABS(ABS(ep) - ABS(e))
@@ -1160,7 +1179,8 @@ CONTAINS
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
       lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), nelion, &
-        REAL(elo,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4))
+        REAL(elo,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4), &
+        REAL(icode,4))   ! icode already normalised (FeH 156->126) at ingestion
     END DO
 
     CLOSE(11)
@@ -1307,7 +1327,8 @@ CONTAINS
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
       lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), 534, &
-        REAL(ABS(ielo_loc),4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4))
+        REAL(ABS(ielo_loc),4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4), &
+        10108.0)
     END DO
 
     CLOSE(11)
