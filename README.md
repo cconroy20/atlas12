@@ -182,7 +182,7 @@ The output basename is derived from the model filename by stripping the
 leading directory and trailing extension.  For example,
 `synthe.exe models/sun.atm wlbeg=400 wlend=700` produces `sun.spec` in
 the current directory.  Adding `more_output=yes` additionally produces
-`sun.linform` and `sun.mol`.
+`sun.linform`, `sun.mol`, and `sun.lines`.
 
 Output files:
 
@@ -191,6 +191,7 @@ Output files:
 | `<base>.spec`     | always                  | ASCII spectrum: wavelength (Å, F11.4), flux (E15.6), continuum flux (E15.6) |
 | `<base>.linform`  | only if `more_output=yes` | Per-wavelength diagnostic: wavelength, emergent H, surface H, monochromatic optical depth at each atmospheric layer |
 | `<base>.mol`      | only if `more_output=yes` | Molecular number-density diagnostics vs. depth for all species tracked by the equation of state |
+| `<base>.lines`      | only if `more_output=yes` | Line list for all lines used in synthesis. Columns are: LTE/NLTE, vacuum wavelengths (Å), species code, nelion (internal species identifier), ELO, cgf (strength indicator), gamma_rad, gamma_stark, gamma_vdW |
 
 Wavelengths are handled internally in nanometers on a logarithmic grid
 with spacing `ratio = 1 + 1/resolu`; vacuum wavelengths are used
