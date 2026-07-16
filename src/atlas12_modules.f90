@@ -4901,6 +4901,34 @@ END SUBROUTINE LINTER
 !         multiple neighbors contribute meaningfully even when one
 !         is the closest, unlike the p=3/eps=1e-12 form which
 !         collapses to nearest-neighbor near stored points.
+!     3 = Moving least squares: weighted plane fit of log kappa on
+!         (logT, logP) over the K nearest neighbors, Wendland C2
+!         weights scaled to the Kth-neighbor radius (weights vanish
+!         exactly at the neighbor-set boundary, so the surface stays
+!         continuous when the set changes).  Unlike Shepard, which has
+!         zero-derivative flat spots at every stored sample, MLS gives
+!         a smooth derivative field — this matters because the stored
+!         samples are noisy duplicates of one state function
+!         kappa(T,P), and the EOS/convection machinery differentiates
+!         through the lookups (bubble probes at T +/- DELTAT, TTAUP
+!         integrations in the remap).  Ridge-regularized against the
+!         near-1D geometry of the sample cloud (points cluster along
+!         the model's T-P stratification); falls back to the weighted
+!         mean if the fit is degenerate.
+!
+!   Set ATLAS_ROSSTAB_DUMP=<file> in the environment to write the cache
+!   (normalized coords + log kappa) after each STORE, for offline
+!   verification of the interpolation modes.
+!
+!   Mode 3 status (2026-07-16): microscale properties verified by
+!   workdir/pfverify/rosstab_verify.py (derivative texture 23-500x
+!   smoother than modes 1/2, leave-one-out unbiased at 1e-5 dex), but
+!   end-to-end A/B on 2800K + solar showed no convergence-floor
+!   improvement -- the residual gradient-noise floor evidently lives
+!   elsewhere -- and a ~6K solar structure shift plus one anomalously
+!   slow iteration (CONVEC-suspect) at 2800K.  Default therefore
+!   remains IROSSTAB = 1; mode 3 is available via rosstab=3 for future
+!   work at smaller superadiabaticities.
 !=========================================================================
 
 FUNCTION ROSSTAB(TEMP, PRESSURE, V)
@@ -4944,11 +4972,22 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
   REAL(8)  :: R_HIPRESS, R_LOPRESS
   REAL(8)  :: P_HIPRESS, P_LOPRESS
 
-  ! Shepard variables
+  ! Shepard / MLS variables
   REAL(8)  :: DIST2(KFIT)
   INTEGER :: KIDX(KFIT)
   REAL(8)  :: DMAX2
   INTEGER :: KMAX, KFOUND
+
+  ! MLS variables: weighted normal equations for log k = C0 + C1*dT + C2*dP
+  REAL(8)  :: D2SUP           ! squared support radius (Wendland cutoff)
+  REAL(8)  :: DNRM            ! d/D for the Wendland kernel
+  REAL(8)  :: A11, A12, A13, A22, A23, A33   ! symmetric normal matrix
+  REAL(8)  :: B1, B2, B3, DETA, RIDGE
+  REAL(8)  :: C0, DET1, DET
+
+  ! Cache-dump variables
+  CHARACTER(len=512) :: DUMPFILE
+  INTEGER :: DUMPLEN, LUNDMP
 
   INTEGER :: I, J, K
 
@@ -4981,6 +5020,19 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
         WRITE(6, '(" ROSSTAB",I5,F10.1,F10.5,1PE12.3,0PF10.5,F10.5)') &
         ROSSTAB_NROSS, T(J), ROSSTAB_TABT(ROSSTAB_NROSS), P(J), ROSSTAB_TABP(ROSSTAB_NROSS), ROSSTAB_ROSS(ROSSTAB_NROSS)
     END DO
+
+    ! Optional cache dump for offline interpolation verification
+    CALL GET_ENVIRONMENT_VARIABLE('ATLAS_ROSSTAB_DUMP', DUMPFILE, DUMPLEN)
+    IF (DUMPLEN .GT. 0) THEN
+      OPEN(NEWUNIT=LUNDMP, FILE=TRIM(DUMPFILE), STATUS='REPLACE')
+      WRITE(LUNDMP, '(I8,4ES24.15)') ROSSTAB_NROSS, ROSSTAB_ZEROT, &
+        ROSSTAB_SLOPET, ROSSTAB_ZEROP, ROSSTAB_SLOPEP
+      DO J = 1, ROSSTAB_NROSS
+        WRITE(LUNDMP, '(3ES24.15)') ROSSTAB_TABT(J), ROSSTAB_TABP(J), &
+          ROSSTAB_ROSS(J)
+      END DO
+      CLOSE(LUNDMP)
+    END IF
 
     ROSSTAB = 0.0D0
     RETURN
@@ -5071,7 +5123,8 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
     END IF
 
   ! -----------------------------------------------------------------
-  ! IROSSTAB = 2: Shepard (K-nearest, p=2)
+  ! IROSSTAB = 2 or 3: K-nearest neighbor collection, then Shepard
+  ! weighting (2) or a moving-least-squares plane fit (3)
   ! -----------------------------------------------------------------
   ELSE
 
@@ -5106,14 +5159,64 @@ FUNCTION ROSSTAB(TEMP, PRESSURE, V)
       END IF
     END DO
 
-    R   = 0.0D0
-    RWT = 0.0D0
-    DO K = 1, KFOUND
-      W   = 1.0D0 / (DIST2(K) + SHEP_EPS) ** SHEP_PHALF
-      R   = R   + W * ROSSTAB_ROSS(KIDX(K))
-      RWT = RWT + W
-    END DO
-    R = R / RWT
+    IF (IROSSTAB .EQ. 2) THEN
+
+      R   = 0.0D0
+      RWT = 0.0D0
+      DO K = 1, KFOUND
+        W   = 1.0D0 / (DIST2(K) + SHEP_EPS) ** SHEP_PHALF
+        R   = R   + W * ROSSTAB_ROSS(KIDX(K))
+        RWT = RWT + W
+      END DO
+      R = R / RWT
+
+    ELSE
+
+      ! MLS plane fit around the query point.  Wendland C2 weights,
+      ! support just beyond the Kth neighbor so weights vanish at the
+      ! set boundary.
+      D2SUP = DMAX2 * 1.1025D0        ! (1.05 * r_K)^2
+      A11 = 0.0D0; A12 = 0.0D0; A13 = 0.0D0
+      A22 = 0.0D0; A23 = 0.0D0; A33 = 0.0D0
+      B1  = 0.0D0; B2  = 0.0D0; B3  = 0.0D0
+      DO K = 1, KFOUND
+        DNRM = sqrt(DIST2(K) / D2SUP)
+        W    = (1.0D0 - DNRM)**4 * (1.0D0 + 4.0D0 * DNRM)
+        DT   = ROSSTAB_TABT(KIDX(K)) - TEMPLOG
+        DP   = ROSSTAB_TABP(KIDX(K)) - PRESSLOG
+        A11 = A11 + W
+        A12 = A12 + W * DT
+        A13 = A13 + W * DP
+        A22 = A22 + W * DT * DT
+        A23 = A23 + W * DT * DP
+        A33 = A33 + W * DP * DP
+        B1  = B1  + W * ROSSTAB_ROSS(KIDX(K))
+        B2  = B2  + W * ROSSTAB_ROSS(KIDX(K)) * DT
+        B3  = B3  + W * ROSSTAB_ROSS(KIDX(K)) * DP
+      END DO
+      ! Ridge regularization against the near-1D sample geometry (the
+      ! cloud clusters along the model's T-P stratification, so the
+      ! cross-curve direction can be data-starved).
+      RIDGE = 1.0D-6 * (A22 + A33) + 1.0D-30
+      A22   = A22 + RIDGE
+      A33   = A33 + RIDGE
+      ! Solve the 3x3 normal equations (Cramer); C0 is the prediction.
+      DET =  A11 * (A22 * A33 - A23 * A23) &
+           - A12 * (A12 * A33 - A23 * A13) &
+           + A13 * (A12 * A23 - A22 * A13)
+      DET1 = B1  * (A22 * A33 - A23 * A23) &
+           - A12 * (B2  * A33 - A23 * B3 ) &
+           + A13 * (B2  * A23 - A22 * B3 )
+      DETA = max(abs(A11 * A22 * A33), 1.0D-300)
+      IF (abs(DET) .GT. 1.0D-10 * DETA .AND. A11 .GT. 0.0D0) THEN
+        C0 = DET1 / DET
+        R  = C0
+      ELSE
+        ! Degenerate fit: weighted mean
+        R = B1 / max(A11, 1.0D-300)
+      END IF
+
+    END IF
 
   END IF
 

@@ -134,6 +134,7 @@ Command-line options (keyword=value):
 | `abund=file` | none        | Individual element overrides (see below) |
 | `czc=0\|1`   | 1           | Deep convection-zone temperature constructor (see Translation notes) |
 | `smooth=0\|1`| 1           | Interior 1-2-1 smoothing of the convective flux |
+| `rosstab=N`  | 1           | Rosseland-table interpolation: 1=bilinear, 2=Shepard, 3=moving least squares (smoothest derivatives; no measured convergence benefit, kept as an option) |
 
 Abundance override file format: one element per line with two
 whitespace-separated columns, `Z  log10(number_fraction)`.  Lines

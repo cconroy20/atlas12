@@ -84,6 +84,7 @@ PROGRAM ATLAS12
   !     abund=file : file with individual element overrides (Z  log_abund)
   !     czc=0|1    : deep-CZ temperature constructor off/on (default on)
   !     smooth=0|1 : interior 1-2-1 FLXCNV smoothing off/on (default on)
+  !     rosstab=N  : Rosseland-table interpolation 1|2|3 (default 1)
   
   OUTBASE    = 'mystar'
   ABUND_FILE = ''
@@ -146,6 +147,11 @@ PROGRAM ATLAS12
                        IF (ISTAT .EQ. 0) USE_CZ_CONSTRUCTOR = ICZC_CLI .NE. 0
       CASE ('smooth'); READ(val, *, IOSTAT=ISTAT) ICZC_CLI
                        IF (ISTAT .EQ. 0) USE_FLXCNV_SMOOTH = ICZC_CLI .NE. 0
+      CASE ('rosstab'); READ(val, *, IOSTAT=ISTAT) IROSSTAB
+                       IF (ISTAT .EQ. 0 .AND. (IROSSTAB .LT. 1 .OR. IROSSTAB .GT. 3)) THEN
+                         WRITE(6, '(A)') ' ERROR: rosstab must be 1, 2, or 3'
+                         CALL EXIT(1)
+                       END IF
       CASE ('mlt');    READ(val, *, IOSTAT=ISTAT) MIXLTH
       CASE ('teff');   READ(val, *, IOSTAT=ISTAT) CMD_TEFF
       CASE ('logg');   READ(val, *, IOSTAT=ISTAT) CMD_LOGG
@@ -628,6 +634,7 @@ CONTAINS
     WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'
     WRITE(6, '(A)') '  czc=0|1      Deep-CZ temperature constructor off/on (default on)'
     WRITE(6, '(A)') '  smooth=0|1   Interior 1-2-1 FLXCNV smoothing off/on (default on)'
+    WRITE(6, '(A)') '  rosstab=N    Rosseland-table interpolation: 1=bilinear 2=Shepard 3=MLS'
     WRITE(6, '(A)') ''
     WRITE(6, '(A)') 'Help:'
     WRITE(6, '(A)') '  --help, -h, help    Print this message and exit'
