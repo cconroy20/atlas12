@@ -52,7 +52,6 @@ PROGRAM ATLAS12
   CHARACTER(32)  :: CMD_SOLAR
   INTEGER        :: NARGS, IEQPOS, ISTAT, IPOSARG
   REAL(8)        :: VTURB_KMS
-  INTEGER        :: ICZC_CLI      ! czc= CLI value (0 = off, nonzero = on)
   REAL(8)        :: CMD_TEFF, CMD_LOGG
   REAL(8)        :: CMD_ZSCALE, CMD_HEABND
   REAL(8)        :: Z_TOTAL
@@ -87,11 +86,11 @@ PROGRAM ATLAS12
   !     heabnd=X   : He number fraction Y (default: from model);
   !                  H is computed as X = 1 - Y - Z for consistency
   !     abund=file : file with individual element overrides (Z  log_abund)
-  !     czc=0|1    : deep-CZ temperature constructor off/on (default on)
-  !     smooth=0|1 : interior 1-2-1 FLXCNV smoothing off/on (default on)
-  !     rosstab=N  : Rosseland-table interpolation 1|2|3 (default 1)
-  !     quad=0|1   : INTEG quadrature, 0 = legacy blended-parabola,
-  !                  1 = Steffen monotone cubic (default 0)
+  !
+  !     Numerics A/B switches (CZ constructor, FLXCNV smoothing, ROSSTAB
+  !     interpolation, INTEG quadrature) are developer options set at
+  !     their declarations in mod_atlas_data (USE_CZ_CONSTRUCTOR,
+  !     USE_FLXCNV_SMOOTH, IROSSTAB, IQUAD), not CLI arguments.
   
   OUTBASE    = 'mystar'
   ABUND_FILE = ''
@@ -151,20 +150,6 @@ PROGRAM ATLAS12
       SELECT CASE (TRIM(key))
       CASE ('numit');  READ(val, *, IOSTAT=ISTAT) NUMITS
       CASE ('vturb');  READ(val, *, IOSTAT=ISTAT) VTURB_KMS
-      CASE ('czc');    READ(val, *, IOSTAT=ISTAT) ICZC_CLI
-                       IF (ISTAT .EQ. 0) USE_CZ_CONSTRUCTOR = ICZC_CLI .NE. 0
-      CASE ('smooth'); READ(val, *, IOSTAT=ISTAT) ICZC_CLI
-                       IF (ISTAT .EQ. 0) USE_FLXCNV_SMOOTH = ICZC_CLI .NE. 0
-      CASE ('rosstab'); READ(val, *, IOSTAT=ISTAT) IROSSTAB
-                       IF (ISTAT .EQ. 0 .AND. (IROSSTAB .LT. 1 .OR. IROSSTAB .GT. 3)) THEN
-                         WRITE(6, '(A)') ' ERROR: rosstab must be 1, 2, or 3'
-                         CALL EXIT(1)
-                       END IF
-      CASE ('quad');   READ(val, *, IOSTAT=ISTAT) IQUAD
-                       IF (ISTAT .EQ. 0 .AND. (IQUAD .LT. 0 .OR. IQUAD .GT. 1)) THEN
-                         WRITE(6, '(A)') ' ERROR: quad must be 0 or 1'
-                         CALL EXIT(1)
-                       END IF
       CASE ('mlt');    READ(val, *, IOSTAT=ISTAT) MIXLTH
       CASE ('teff');   READ(val, *, IOSTAT=ISTAT) CMD_TEFF
       CASE ('logg');   READ(val, *, IOSTAT=ISTAT) CMD_LOGG
@@ -421,7 +406,7 @@ PROGRAM ATLAS12
     IF (LEN_TRIM(CMD_SOLAR) .GT. 0) &
       WRITE(6,'(A,A,A)')    '  solar scale      = ', TRIM(CMD_SOLAR), '   (CLI override)'
     IF (IQUAD .NE. 0) &
-      WRITE(6,'(A,I2,A)')  '  quad             = ', IQUAD, '   (CLI override)'
+      WRITE(6,'(A,I2,A)')  '  quad             = ', IQUAD, '   (developer build)'
     IF (CMD_ZSCALE .GT. 0.0D0) &
       WRITE(6,'(A,F5.2,A)') '  zscale           = ', CMD_ZSCALE, '   (CLI override)'
     IF (CMD_HEABND .GT. 0.0D0) &
@@ -676,10 +661,6 @@ CONTAINS
     WRITE(6, '(A)') '  zscale=X     Metal abundance scale factor (default: no scaling)'
     WRITE(6, '(A)') '  heabnd=X     He number fraction Y; H = 1 - Y - Z (default: from model)'
     WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'
-    WRITE(6, '(A)') '  czc=0|1      Deep-CZ temperature constructor off/on (default on)'
-    WRITE(6, '(A)') '  smooth=0|1   Interior 1-2-1 FLXCNV smoothing off/on (default on)'
-    WRITE(6, '(A)') '  rosstab=N    Rosseland-table interpolation: 1=bilinear 2=Shepard 3=MLS'
-    WRITE(6, '(A)') '  quad=0|1     INTEG quadrature: 0=blended-parabola 1=Steffen cubic (default 0)'
     WRITE(6, '(A)') ''
     WRITE(6, '(A)') 'Help:'
     WRITE(6, '(A)') '  --help, -h, help    Print this message and exit'

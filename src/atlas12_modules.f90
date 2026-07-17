@@ -1180,16 +1180,19 @@ MODULE mod_atlas_data
   ! --- Control flags ---
   INTEGER :: IFCORR = 1, IFPRES = 1, IFSURF = 0, IFSCAT = 1, IFMOL = 1, IFREADLINES = 1
 
-  ! ROSSTAB interpolation mode:
+  ! ROSSTAB interpolation mode (developer option, set here; no CLI):
   !   1 = original bilinear (4-quadrant nearest neighbor)
-  !   2 = Shepard (K-nearest, inverse-distance weighted, p=2; default)
+  !   2 = Shepard (K-nearest, inverse-distance weighted, p=2)
+  !   3 = moving least squares (smoothest derivatives)
   INTEGER :: IROSSTAB = 1
 
-  ! INTEG quadrature mode (tau scales, PRAD, HEIGHT integrals):
+  ! INTEG quadrature mode (developer option, set here; no CLI):
   !   0 = legacy Kurucz blended-parabola quadrature (PARCOE)
   !   1 = Steffen 1990 monotone-cubic quadrature; 3-6x more accurate on
-  !       opacity-like integrands (workdir/pfverify josh battery, Test C)
-  !       but answer-changing, so off until the full-regime A/B passes
+  !       opacity-like integrands (workdir/pfverify josh battery, Test C).
+  !       Answer-changing: moves deep radiative-envelope T by 0.1-0.5%
+  !       in hot stars (deep tau error, diffusion limit), <=1.5 K in
+  !       cool/warm stars where convection pins the deep structure.
   INTEGER :: IQUAD = 0
 
   ! --- Molecular equilibrium ---
@@ -1310,12 +1313,13 @@ MODULE mod_atlas_data
   !   - error gate:  engage only while max |local flux error| in the block
   !     exceeds CZC_ERR_ON percent (CZC_ERR_OFF once engaged); converged
   !     solar/hot models never trip it and are untouched.
+  ! Developer option, set here; no CLI.
   LOGICAL :: USE_CZ_CONSTRUCTOR = .TRUE.
   ! Interior 1-2-1 smoothing of FLXCNV in CONVEC.  Historically
   ! unconditional: it papered over per-layer MLT flux noise whose real
   ! sources (partition-function interpolation kinks, the deepest-layer
   ! gradient bias) are now fixed, and it biases the reported flux
-  ! balance wherever F_conv is curved.  CLI: smooth=0|1.
+  ! balance wherever F_conv is curved.  Developer option, set here.
   LOGICAL :: USE_FLXCNV_SMOOTH  = .TRUE.
   REAL(8), PARAMETER :: CZC_HR_MIN   = 0.60D0   ! HRATIO acquisition gate
   ! Per-layer blend weight: the constructor's authority rises as a
@@ -5142,7 +5146,7 @@ END SUBROUTINE LINTER
 !   improvement -- the residual gradient-noise floor evidently lives
 !   elsewhere -- and a ~6K solar structure shift plus one anomalously
 !   slow iteration (CONVEC-suspect) at 2800K.  Default therefore
-!   remains IROSSTAB = 1; mode 3 is available via rosstab=3 for future
+!   remains IROSSTAB = 1; mode 3 stays available (IROSSTAB = 3) for future
 !   work at smaller superadiabaticities.
 !=========================================================================
 
