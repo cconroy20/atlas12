@@ -129,6 +129,7 @@ Command-line options (keyword=value):
 | `mlt=X`      | from model  | Mixing length parameter |
 | `teff=X`     | from model  | Rescale model to this Teff (K) |
 | `logg=X`     | from model  | Rescale model to this log g (cgs) |
+| `solar=name` | from model  | Solar reference abundance pattern (`ag89`, `agss09`, `berg25`); replaces the abundance table carried by the model file |
 | `zscale=X`   | 1.0         | Metal abundance scale factor (multiplicative on Z≥3) |
 | `heabnd=X`   | from model  | He number fraction Y; H is recomputed as X = 1 − Y − Z |
 | `abund=file` | none        | Individual element overrides (see below) |
@@ -146,11 +147,16 @@ starting with `#` or `!` are treated as comments.  Example:
 26  -4.54
 ```
 
-When `zscale`, `heabnd`, or `abund=` is used, ATLAS12 renormalizes so
-that X + Y + Z = 1 (aborting if the specified Y + Z would drive X
-negative), then recomputes all abundance-dependent quantities before
-the iteration loop.  If both `teff=` and `logg=` are given, the model
-is regridded via `SCALE_MODEL` before iteration begins.
+The abundance overrides are applied in order after the model file is
+read: `solar=` replaces the reference pattern, `zscale=` shifts all
+metals, `abund=` overrides individual elements, and `heabnd=` sets Y.
+`solar=` leaves the relative offsets (`XRELATIVE`) untouched, so a
+model's [M/H] scaling is preserved across a change of solar zero-point.
+When any of these is used, ATLAS12 renormalizes so that X + Y + Z = 1
+(aborting if the specified Y + Z would drive X negative), then
+recomputes all abundance-dependent quantities before the iteration
+loop.  If both `teff=` and `logg=` are given, the model is regridded
+via `SCALE_MODEL` before iteration begins.
 
 ## Running SYNTHE
 
@@ -303,7 +309,7 @@ Key changes in the modernization:
 - Physical constants consolidated into `mod_constants` with CODATA 2018 values, replacing ~130 scattered literals
 - Atomic partition functions replaced with the Barklem & Collet (2016) tabulated U(T) calculated by direct NIST level summation, covering Z = 1..92 in ionization stages I–III; the legacy Kurucz hand-selected few-term sums used by `PFGROUND` (the low-T floor in `PFSAHA`) and the generic `NNN` interpolation table are retained as an internal safety net but are no longer the production data source.  Iron-group partition functions (Z = 20..28) still flow through `PFIRON` for its pressure-lowering correction, but the unperturbed POTLOW = 0 baseline is now anchored to B&C
 - Metal continuum bound-free opacity overhauled: a new `CONT_METAL_OPACITY_TOPBASE` dispatcher replaces the legacy collection of analytic Seaton/Peach fits (Li1OP, C1OP, MG1OP, AL1OP, SI1OP, FE1OP, …).  `MBF_TOPBASE` supplies 30 species (neutrals and first ions of Li, Be, B, C, N, O, F, Ne, Na, Mg, Al, Si, S, Ar, Ca) from R-matrix Opacity Project cross sections processed by Allende Prieto, Hubeny & Lambert (2003, ApJS 147, 363) into resonance-averaged 3%-log-spaced grids; `MBF_HIGH_ION` supplies higher ionization stages and Coulomb free-free from a filtered subset of `hotop.dat`; `FELO_OPACITY` supplies Fe I and Fe II from Iron Project / Opacity Project R-matrix calculations (Bautista 1997 for Fe I, Nahar & Pradhan 1994 for Fe II, sourced from the TLUSTY model atoms).  Toggleable via `USE_TOPBASE_MBF`; the legacy path is preserved for reference.  Known limitation: TOPbase identifies levels by LS term without resolving J, so per-species opacity carries a U_TB/U_BC factor of a few percent for most species (≲13% for the worst case, Ar II)
-- Default solar abundance scale updated from Anders & Grevesse (1989) to Asplund, Grevesse, Sauval & Scott (2009).  The CNO abundances change significantly (ε(O): 8.93 → 8.69; ε(C): 8.56 → 8.43; ε(N): 8.05 → 7.83), affecting the electron-donor budget and molecular equilibrium in cool-star atmospheres.  Defined once in `mod_atlas_data` and shared by ATLAS12 and SYNTHE; user overrides via `abund=file` and `zscale=` work as before
+- Solar reference abundance pattern is now selectable at the command line (`solar=name`).  The compiled-in default remains Anders & Grevesse (1989), defined once in `mod_atlas_data` and shared by ATLAS12 and SYNTHE; `solar=` replaces the abundance table carried by the input model file while preserving its relative [M/H] offsets, and `zscale=`/`abund=`/`heabnd=` overrides apply on top.  Additional named scales are stored as log-ε tables and converted internally (`LOGEPS_TO_ABUND`); registered scales: `ag89` (Anders & Grevesse 1989), `agss09` (Asplund et al. 2009), `berg25` (Bergemann, Lodders & Palme 2025, with A(He) = 10.922 from the published compilation).  (An earlier changelog entry here claimed the default had been switched to Asplund et al. 2009 — that change was never made; the code default has always been AG89.)
 - Hydrogen line profiles now use the Stehlé & Hutcheon (1999) MMM tabulated Stark broadening profiles via `hydrogen_line_profile`, replacing the Kurucz–Peterson (1982) analytic approximation; the K–P path is retained as a fallback for atmospheric layers exceeding the Inglis–Teller density limit, controlled by the `USE_KP_HYDROGEN` flag
 - Voigt function evaluated via Weideman (1994) N=32 rational approximation of w(z) plus Humlíček (1982) R₁,₂ asymptotic, replacing the Kurucz three-regime table approximation that had ~4% error at the a = 0.2 regime boundary.  Accuracy is now ~10⁻⁵ relative across the full (a, v) plane with no regime boundaries
 - H₂ partition function read from an external data file rather than hardcoded
@@ -328,7 +334,9 @@ Key changes in the modernization:
 - Castelli, F., & Kurucz, R. L. 2004, astro-ph/0405087 (new grids of ATLAS9 model atmospheres)
 - Castelli, F. 2005, MSAIS, 8, 25 (ATLAS12: how to use it)
 - Allende Prieto, C., Hubeny, I., & Lambert, D. L. 2003, ApJS, 147, 363 (TOPbase metal photoionization grids)
-- Asplund, M., Grevesse, N., Sauval, A. J., & Scott, P. 2009, ARA&A, 47, 481 (solar abundance scale)
+- Anders, E., & Grevesse, N. 1989, Geochim. Cosmochim. Acta, 53, 197 (default solar abundance scale, `solar=ag89`)
+- Asplund, M., Grevesse, N., Sauval, A. J., & Scott, P. 2009, ARA&A, 47, 481 (solar abundance scale, `solar=agss09`)
+- Bergemann, M., Lodders, K., & Palme, H. 2025, Zenodo record 14988840 (solar abundance scale, `solar=berg25`)
 - Barklem, P. S., & Collet, R. 2016, A&A, 588, A96 (atomic and molecular partition functions)
 - Bautista, M. A. 1997, A&AS, 122, 167 (Fe I R-matrix bound-free)
 - Humlíček, J. 1982, JQSRT, 27, 437 (Voigt function asymptotic)

@@ -49,6 +49,7 @@ PROGRAM ATLAS12
   CHARACTER(256) :: OUTBASE, ARGBUF
   CHARACTER(256) :: ABUND_FILE
   CHARACTER(256) :: ABUND_LINE
+  CHARACTER(32)  :: CMD_SOLAR
   INTEGER        :: NARGS, IEQPOS, ISTAT, IPOSARG
   REAL(8)        :: VTURB_KMS
   INTEGER        :: ICZC_CLI      ! czc= CLI value (0 = off, nonzero = on)
@@ -66,7 +67,7 @@ PROGRAM ATLAS12
 
   ! --- Parse command-line arguments ---
   !     Usage: atlas12.exe <input_atm> [basename] [numit=N] [vturb=X] [mlt=X]
-  !            [teff=X] [logg=X] [zscale=X] [heabnd=X] [abund=file]
+  !            [teff=X] [logg=X] [solar=name] [zscale=X] [heabnd=X] [abund=file]
   !     Pass --help (or -h, help) to print usage and exit.
   !     input_atm  : input atmosphere model file (REQUIRED, first positional)
   !     basename   : output file base name (default 'mystar')
@@ -78,6 +79,10 @@ PROGRAM ATLAS12
   !     mlt=X      : mixing length parameter (default 2.0)
   !     teff=X     : rescale model to this Teff (default: from model)
   !     logg=X     : rescale model to this log g (default: from model)
+  !     solar=name : solar reference abundance pattern (default: from
+  !                  model file; compiled-in default is ag89).  Replaces
+  !                  the pattern the model file carries; zscale/abund/
+  !                  heabnd overrides then apply on top of it.
   !     zscale=X   : metal abundance scale factor (default: no scaling)
   !     heabnd=X   : He number fraction Y (default: from model);
   !                  H is computed as X = 1 - Y - Z for consistency
@@ -88,6 +93,7 @@ PROGRAM ATLAS12
   
   OUTBASE    = 'mystar'
   ABUND_FILE = ''
+  CMD_SOLAR  = ''
   INPUT_MODEL_FILE = ''
   NUMITS     = 30
   VTURB_KMS  = -1.0D0    ! sentinel: not set
@@ -157,6 +163,22 @@ PROGRAM ATLAS12
       CASE ('logg');   READ(val, *, IOSTAT=ISTAT) CMD_LOGG
       CASE ('zscale'); READ(val, *, IOSTAT=ISTAT) CMD_ZSCALE
       CASE ('heabnd'); READ(val, *, IOSTAT=ISTAT) CMD_HEABND
+      CASE ('solar')
+        ! Normalize to lowercase, then validate the name now (fail fast).
+        ! This also pre-loads ABUND, but READIN may overwrite it from the
+        ! model file, so the selection is re-applied after READIN below.
+        DO J = 1, LEN_TRIM(val)
+          IF (val(J:J) .GE. 'A' .AND. val(J:J) .LE. 'Z') &
+            val(J:J) = CHAR(ICHAR(val(J:J)) + 32)
+        END DO
+        CMD_SOLAR = TRIM(val)
+        CALL SET_SOLAR_ABUND(TRIM(CMD_SOLAR), ISTAT)
+        IF (ISTAT .NE. 0) THEN
+          WRITE(6, '(A)') ' ERROR: unknown solar scale: '//TRIM(CMD_SOLAR)
+          WRITE(6, '(A,*(1X,A))') '   valid names:', &
+            (TRIM(SOLAR_SCALE_LIST(J)), J = 1, SIZE(SOLAR_SCALE_LIST))
+          CALL EXIT(1)
+        END IF
       CASE ('abund');  ABUND_FILE = TRIM(val)
       CASE DEFAULT
         WRITE(6, '(A)') ' WARNING: unknown argument: '//TRIM(ARGBUF)
@@ -186,7 +208,8 @@ PROGRAM ATLAS12
   ! Are any CLI overrides active?  (Controls whether we re-apply abundance
   ! math and/or recompute derived quantities after READIN.)
   have_abund_overrides = CMD_ZSCALE .GT. 0.0D0 .OR. CMD_HEABND .GT. 0.0D0 &
-                         .OR. LEN_TRIM(ABUND_FILE) .GT. 0
+                         .OR. LEN_TRIM(ABUND_FILE) .GT. 0 &
+                         .OR. LEN_TRIM(CMD_SOLAR) .GT. 0
   have_overrides       = have_abund_overrides .OR. VTURB_KMS .GE. 0.0D0 &
                          .OR. CMD_TEFF .GT. 0.0D0 .OR. CMD_LOGG .GT. -98.0D0
 
@@ -241,19 +264,27 @@ PROGRAM ATLAS12
   CALL READIN(1)
 
     ! --- ABUNDANCE OVERRIDES (applied after READIN reads model file) ----
-    ! Order: (1) zscale shifts metals, (2) abund= file overrides
-    ! individual elements, (3) H is recomputed as X = 1 - Y - Z.
+    ! Order: (1) solar= replaces the reference pattern, (2) zscale
+    ! shifts metals, (3) abund= file overrides individual elements,
+    ! (4) H is recomputed as X = 1 - Y - Z.
     ! At this point ABUND(1:2) are number fractions and ABUND(3:99)
     ! are log10(number fraction), as set by READIN finalization.
 
-    ! --- Step 1: Apply metallicity scaling (shifts all metals) ---
+    ! --- Step 1: Select solar reference pattern (replaces the table the
+    !     model file carried; XRELATIVE offsets survive, so an [M/H]
+    !     scaling is preserved across a change of zero-point) ---
+    IF (LEN_TRIM(CMD_SOLAR) .GT. 0) THEN
+      CALL SET_SOLAR_ABUND(TRIM(CMD_SOLAR), ISTAT)
+    END IF
+
+    ! --- Step 2: Apply metallicity scaling (shifts all metals) ---
     IF (CMD_ZSCALE .GT. 0.0D0) THEN
       DO IZ_ABUND = 3, 99
         XRELATIVE(IZ_ABUND) = LOG10(CMD_ZSCALE)
       END DO
     END IF
 
-    ! --- Step 2: Read individual element overrides from file ---
+    ! --- Step 3: Read individual element overrides from file ---
     !     File format: one element per line, two columns:
     !       Z   log10(number_fraction)
     !     e.g.:  6  -3.52
@@ -282,7 +313,7 @@ PROGRAM ATLAS12
       CLOSE(UNIT=4)
     END IF
 
-    ! --- Step 3: Apply He override and recompute H = 1 - Y - Z ---
+    ! --- Step 4: Apply He override and recompute H = 1 - Y - Z ---
     IF (have_abund_overrides) THEN
       ! Compute total metal number fraction Z
       Z_TOTAL = 0.0D0
@@ -380,6 +411,8 @@ PROGRAM ATLAS12
     WRITE(6,'(A,F5.2)')  '  vturb (km/s)     = ', VTURB(1) * 1.0D-5
     WRITE(6,'(A,I5)')    '  teff (K)         = ', INT(TEFF)
     WRITE(6,'(A,F5.2)')  '  logg             = ', GLOG
+    IF (LEN_TRIM(CMD_SOLAR) .GT. 0) &
+      WRITE(6,'(A,A,A)')    '  solar scale      = ', TRIM(CMD_SOLAR), '   (CLI override)'
     IF (CMD_ZSCALE .GT. 0.0D0) &
       WRITE(6,'(A,F5.2,A)') '  zscale           = ', CMD_ZSCALE, '   (CLI override)'
     IF (CMD_HEABND .GT. 0.0D0) &
@@ -629,6 +662,8 @@ CONTAINS
     WRITE(6, '(A)') '  mlt=X        Mixing length parameter (default 2.0)'
     WRITE(6, '(A)') '  teff=X       Rescale model to this Teff (default: from model)'
     WRITE(6, '(A)') '  logg=X       Rescale model to this log g (default: from model)'
+    WRITE(6, '(A)') '  solar=NAME   Solar reference abundance pattern: ag89, agss09, berg25'
+    WRITE(6, '(A)') '               (default: from model file; replaces its table)'
     WRITE(6, '(A)') '  zscale=X     Metal abundance scale factor (default: no scaling)'
     WRITE(6, '(A)') '  heabnd=X     He number fraction Y; H = 1 - Y - Z (default: from model)'
     WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'

@@ -1016,11 +1016,22 @@ MODULE mod_atlas_data
 
   ! --- Element abundances, atomic masses, labels ---
   REAL(8)       :: YABUND(99)
-  ! Default solar abundances: Anders & Grevesse (1989, Geochim. Cosmochim.
-  ! Acta, 53, 197).  H and He are fractional number densities (H+He=1);
+  ! --- Named solar reference abundance scales ---------------------------
+  ! Internal convention: H and He are fractional number densities;
   ! Z >= 3 are log10(N_Z / N_total).  Elements with -20.00 have no
   ! astrophysically relevant abundance.
-  REAL(8)       :: ABUND(99) = (/ &
+  !
+  ! AG89 is stored directly in the internal convention (H+He=1, metals
+  ! excluded from the normalization — Kurucz's original numbers, kept
+  ! bit-identical).  Additional scales are stored on the spectroscopic
+  ! log-eps scale, A(X) = log10(N_X/N_H) + 12, and converted to the
+  ! internal convention by SET_SOLAR_ABUND at selection time.
+  !
+  ! To add a scale: add its LOGEPS_* parameter array below, add its name
+  ! to SOLAR_SCALE_LIST, and add a CASE in SET_SOLAR_ABUND.
+  !
+  ! Anders & Grevesse (1989, Geochim. Cosmochim. Acta, 53, 197):
+  REAL(8), PARAMETER :: ABUND_AG89(99) = (/ &
   !   1 H        2 He
        0.911D0,  0.089D0, &
   !   3 Li       4 Be       5 B        6 C        7 N        8 O        9 F       10 Ne
@@ -1047,6 +1058,86 @@ MODULE mod_atlas_data
      -11.33D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -11.92D0, &
   !  91 Pa      92 U       93 Np      94 Pu      95 Am      96 Cm      97 Bk      98 Cf      99 Es
      -20.00D0, -12.51D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0/)
+
+  ! Asplund, Grevesse, Sauval & Scott (2009, ARA&A, 47, 481),
+  ! photospheric values with meteoritic where unavailable.  Provided by
+  ! the user already in the internal convention (H/He number fractions
+  ! plus log10(N_X/N_total); A(X) = value + 12.04) and stored verbatim.
+  REAL(8), PARAMETER :: ABUND_AGSS09(99) = (/ &
+  !   1 H        2 He
+      0.92068D0, 0.07837D0, &
+  !   3 Li       4 Be       5 B        6 C        7 N        8 O        9 F       10 Ne
+     -10.99D0, -10.66D0,  -9.34D0,  -3.61D0,  -4.21D0,  -3.35D0,  -7.48D0,  -4.11D0, &
+  !  11 Na      12 Mg      13 Al      14 Si      15 P       16 S       17 Cl      18 Ar
+      -5.80D0,  -4.44D0,  -5.59D0,  -4.53D0,  -6.63D0,  -4.92D0,  -6.54D0,  -5.64D0, &
+  !  19 K       20 Ca      21 Sc      22 Ti      23 V       24 Cr      25 Mn      26 Fe
+      -7.01D0,  -5.70D0,  -8.89D0,  -7.09D0,  -8.11D0,  -6.40D0,  -6.61D0,  -4.54D0, &
+  !  27 Co      28 Ni      29 Cu      30 Zn      31 Ga      32 Ge      33 As      34 Se
+      -7.05D0,  -5.82D0,  -7.85D0,  -7.48D0,  -9.00D0,  -8.39D0,  -9.74D0,  -8.70D0, &
+  !  35 Br      36 Kr      37 Rb      38 Sr      39 Y       40 Zr      41 Nb      42 Mo
+      -9.50D0,  -8.79D0,  -9.52D0,  -9.17D0,  -9.83D0,  -9.46D0, -10.58D0, -10.16D0, &
+  !  43 Tc      44 Ru      45 Rh      46 Pd      47 Ag      48 Cd      49 In      50 Sn
+     -20.00D0, -10.29D0, -11.13D0, -10.47D0, -11.10D0, -10.33D0, -11.24D0, -10.00D0, &
+  !  51 Sb      52 Te      53 I       54 Xe      55 Cs      56 Ba      57 La      58 Ce
+     -11.03D0,  -9.86D0, -10.49D0,  -9.80D0, -10.96D0,  -9.86D0, -10.94D0, -10.46D0, &
+  !  59 Pr      60 Nd      61 Pm      62 Sm      63 Eu      64 Gd      65 Tb      66 Dy
+     -11.32D0, -10.62D0, -20.00D0, -11.08D0, -11.52D0, -10.97D0, -11.74D0, -10.94D0, &
+  !  67 Ho      68 Er      69 Tm      70 Yb      71 Lu      72 Hf      73 Ta      74 W
+     -11.56D0, -11.12D0, -11.94D0, -11.20D0, -11.94D0, -11.19D0, -12.16D0, -11.19D0, &
+  !  75 Re      76 Os      77 Ir      78 Pt      79 Au      80 Hg      81 Tl      82 Pb
+     -11.78D0, -10.64D0, -10.66D0, -10.42D0, -11.12D0, -10.87D0, -11.14D0, -10.29D0, &
+  !  83 Bi      84 Po      85 At      86 Rn      87 Fr      88 Ra      89 Ac      90 Th
+     -11.39D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -12.02D0, &
+  !  91 Pa      92 U       93 Np      94 Pu      95 Am      96 Cm      97 Bk      98 Cf      99 Es
+     -20.00D0, -12.58D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0/)
+
+  ! Bergemann 2025 baseline = Bergemann, Lodders & Palme (2025,
+  ! zenodo 14988840).  Provided by the user as H/He number fractions
+  ! (0.92042/0.07834) plus log10(N_X/N_H) for Z >= 3; stored here on the
+  ! log-eps scale, A(X) = log10(N_X/N_H) + 12.  He uses the published
+  ! BLP25 value A(He) = 10.922 (the user's fractions implied 10.93; He
+  ! was corrected to the source compilation).  Unmeasured elements
+  ! (Tc, Pm, Po-Ac, Pa, Np-Es) carry the -20 sentinel.  NOTE: the source
+  ! list placed the Th and U values on the Po and At slots when read
+  ! strictly Z-indexed; they are registered here as Th and U, since
+  ! Po/At have no measured solar abundance and the values match Th/U in
+  ! every solar compilation.
+  REAL(8), PARAMETER :: LOGEPS_BERG25(99) = (/ &
+  !   1 H        2 He
+      12.00D0,  10.922D0, &
+  !   3 Li       4 Be       5 B        6 C        7 N        8 O        9 F       10 Ne
+       1.04D0,   1.21D0,   2.70D0,   8.51D0,   7.94D0,   8.76D0,   4.40D0,   8.15D0, &
+  !  11 Na      12 Mg      13 Al      14 Si      15 P       16 S       17 Cl      18 Ar
+       6.29D0,   7.58D0,   6.43D0,   7.56D0,   5.44D0,   7.16D0,   5.43D0,   6.50D0, &
+  !  19 K       20 Ca      21 Sc      22 Ti      23 V       24 Cr      25 Mn      26 Fe
+       5.09D0,   6.35D0,   3.13D0,   4.97D0,   3.89D0,   5.74D0,   5.52D0,   7.51D0, &
+  !  27 Co      28 Ni      29 Cu      30 Zn      31 Ga      32 Ge      33 As      34 Se
+       4.95D0,   6.24D0,   4.24D0,   4.55D0,   3.02D0,   3.62D0,   2.34D0,   3.41D0, &
+  !  35 Br      36 Kr      37 Rb      38 Sr      39 Y       40 Zr      41 Nb      42 Mo
+       2.65D0,   3.31D0,   2.35D0,   2.93D0,   2.30D0,   2.68D0,   1.47D0,   1.88D0, &
+  !  43 Tc      44 Ru      45 Rh      46 Pd      47 Ag      48 Cd      49 In      50 Sn
+     -20.00D0,   1.75D0,   0.78D0,   1.57D0,   0.96D0,   1.77D0,   0.80D0,   2.02D0, &
+  !  51 Sb      52 Te      53 I       54 Xe      55 Cs      56 Ba      57 La      58 Ce
+       1.08D0,   2.23D0,   1.76D0,   2.30D0,   1.12D0,   2.27D0,   1.10D0,   1.58D0, &
+  !  59 Pr      60 Nd      61 Pm      62 Sm      63 Eu      64 Gd      65 Tb      66 Dy
+       0.75D0,   1.42D0, -20.00D0,   0.95D0,   0.57D0,   1.08D0,   0.31D0,   1.10D0, &
+  !  67 Ho      68 Er      69 Tm      70 Yb      71 Lu      72 Hf      73 Ta      74 W
+       0.48D0,   0.93D0,   0.11D0,   0.85D0,   0.10D0,   0.86D0,  -0.11D0,   0.79D0, &
+  !  75 Re      76 Os      77 Ir      78 Pt      79 Au      80 Hg      81 Tl      82 Pb
+       0.30D0,   1.36D0,   1.42D0,   1.64D0,   0.91D0,   1.14D0,   0.95D0,   1.95D0, &
+  !  83 Bi      84 Po      85 At      86 Rn      87 Fr      88 Ra      89 Ac      90 Th
+       0.70D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0,   0.09D0, &
+  !  91 Pa      92 U       93 Np      94 Pu      95 Am      96 Cm      97 Bk      98 Cf      99 Es
+     -20.00D0,  -0.50D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0, -20.00D0/)
+
+  ! Names accepted by the solar= command-line option (see SET_SOLAR_ABUND)
+  CHARACTER(8), PARAMETER :: SOLAR_SCALE_LIST(3) = &
+    (/ 'ag89    ', 'agss09  ', 'berg25  ' /)
+
+  ! Active abundances.  Defaults to AG89; replaced at startup by the
+  ! solar= command-line option (SET_SOLAR_ABUND) and/or by ABUNDANCE
+  ! cards in the input model file.
+  REAL(8)       :: ABUND(99) = ABUND_AG89
   REAL(8)       :: ATMASS(99) = (/ 1.008D0, 4.003D0, &
    6.939D0,9.013D0,10.81D0,12.01D0,14.01D0,16.00D0,19.00D0,20.18D0,22.99D0,24.31D0, &
   26.98D0,28.09D0,30.98D0,32.07D0,35.45D0,39.95D0,39.10D0,40.08D0,44.96D0,47.90D0, &
@@ -5518,6 +5609,89 @@ SUBROUTINE TTAUP(T_in, TAU, ABSTD, PTOTAL, P_out, PRAD_in, PTURB_in, &
   RETURN
 
 END SUBROUTINE TTAUP
+
+
+!=========================================================================
+! SUBROUTINE SET_SOLAR_ABUND(NAME, IERR)
+!
+! Load the named solar reference abundance pattern into ABUND(1:99).
+! Called from the atlas12 driver when the solar= command-line option is
+! given: once at argument-parse time to validate the name, and again
+! after READIN so the selection replaces whatever abundance table the
+! input model file carried.
+!
+! XRELATIVE is left untouched, so a model's [M/H] offsets (ABUNDANCE
+! SCALE / RELATIVE, or the zscale= option) survive a change of the
+! solar zero-point.
+!
+! IERR = 0 on success, 1 if NAME is not a known scale (ABUND unchanged).
+!=========================================================================
+
+SUBROUTINE SET_SOLAR_ABUND(NAME, IERR)
+
+  IMPLICIT NONE
+
+  CHARACTER(*), INTENT(IN)  :: NAME
+  INTEGER,      INTENT(OUT) :: IERR
+
+  IERR = 0
+  SELECT CASE (TRIM(NAME))
+  CASE ('ag89')
+    ABUND = ABUND_AG89
+  CASE ('agss09')
+    ABUND = ABUND_AGSS09
+  CASE ('berg25')
+    CALL LOGEPS_TO_ABUND(LOGEPS_BERG25)
+  CASE DEFAULT
+    IERR = 1
+  END SELECT
+
+END SUBROUTINE SET_SOLAR_ABUND
+
+
+!=========================================================================
+! SUBROUTINE LOGEPS_TO_ABUND(EPS)
+!
+! Convert a solar abundance pattern given on the spectroscopic scale,
+!   A(X) = log10(N_X / N_H) + 12   with A(H) = 12 by definition,
+! into the internal ABUND convention: ABUND(1:2) are number fractions
+! of H and He, ABUND(3:99) are log10(N_Z / N_total), and the pattern is
+! normalized so that H + He + metals sum to unit number fraction.
+! Entries with EPS <= -19 (no measured abundance) map to -20.00.
+!=========================================================================
+
+SUBROUTINE LOGEPS_TO_ABUND(EPS)
+
+  IMPLICIT NONE
+
+  REAL(8), INTENT(IN) :: EPS(99)
+
+  REAL(8) :: RATIO(99), HFRAC
+  INTEGER :: IZ
+
+  ! Number densities relative to hydrogen
+  RATIO(1) = 1.0D0
+  DO IZ = 2, 99
+    IF (EPS(IZ) .GT. -19.0D0) THEN
+      RATIO(IZ) = 10.0D0**(EPS(IZ) - 12.0D0)
+    ELSE
+      RATIO(IZ) = 0.0D0
+    END IF
+  END DO
+
+  HFRAC = 1.0D0 / SUM(RATIO)
+
+  ABUND(1) = HFRAC
+  ABUND(2) = RATIO(2) * HFRAC
+  DO IZ = 3, 99
+    IF (RATIO(IZ) .GT. 0.0D0) THEN
+      ABUND(IZ) = LOG10(RATIO(IZ) * HFRAC)
+    ELSE
+      ABUND(IZ) = -20.00D0
+    END IF
+  END DO
+
+END SUBROUTINE LOGEPS_TO_ABUND
 
 
 !=========================================================================
