@@ -16116,7 +16116,7 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
 
   ! Fixed quadrature grid parameters
   INTEGER, PARAMETER :: NXTAU = 51
-  INTEGER, PARAMETER :: MAX_ITER = 50  ! convergence ceiling (both iterations)
+  INTEGER, PARAMETER :: MAX_ITER = 50  ! convergence ceiling (Eddington iteration)
 
   ! H (flux) quadrature weights on the 51-point grid
   REAL(8), PARAMETER :: CH_J(NXTAU) = (/ &
@@ -16167,15 +16167,17 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
   REAL(8), SAVE :: EXTAU(NXTAU, 20) = 0.0D0
 
   ! Local variables
-  REAL(8) :: XS(NXTAU), XSBAR(NXTAU), XALPHA(NXTAU), DIAG(NXTAU)
+  REAL(8) :: XS(NXTAU), XSBAR(NXTAU), XALPHA(NXTAU)
+  REAL(8) :: AMAT(NXTAU, NXTAU)
   REAL(8) :: XH(NXTAU), XJS(NXTAU)
   REAL(8) :: XSBAR8(NXTAU), XALPHA8(NXTAU), XS8(NXTAU)
   REAL(8) :: XH8(NXTAU), XJS8(NXTAU)
   REAL(8) :: A(kw), B(kw), C(kw), SNUBAR(kw), CTWO(kw), B2CT(kw), B2CT1(kw)
-  REAL(8) :: DELXS, ERRORX, XK, ERROR, SNEW, EXNEW
+  REAL(8) :: XK, ERROR, SNEW, EXNEW
   REAL(8) :: TANGLE, D, DDDDD, OLD, SUM_VAL
-  INTEGER :: J, JJ, K, KK, L, M, MAXJ, MAXJ1, MU, N1, NM1, NMJ, MDUMMY
-  INTEGER :: IFERR, IFNEG
+  INTEGER :: J, JJ, L, M, MAXJ, MAXJ1, MU, N1, NM1, NMJ, MDUMMY
+  INTEGER :: IPIVOT(NXTAU)
+  INTEGER :: IFNEG
   INTEGER :: output_mode
 
   IF (IDEBUG .EQ. 1) WRITE(6, '(A)') ' RUNNING JOSH'
@@ -16222,7 +16224,7 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
     END IF
 
     !-------------------------------------------------------------------
-    ! Scattering solution on 51-point grid (Lambda iteration)
+    ! Scattering solution on 51-point grid (direct solve)
     !-------------------------------------------------------------------
     IF (TAUNU(1) .GT. XTAU8(NXTAU)) MAXJ = 1
 
@@ -16243,43 +16245,33 @@ SUBROUTINE JOSH(IFSCAT, IFSURF)
           XSBAR(L) = XSBAR8(L)
           XALPHA(L) = XALPHA8(L)
         END IF
-        XS(L) = XSBAR(L)
-        DIAG(L) = 1.0D0 - XALPHA(L) * COEFJ(L, L)
-        IF (abs(DIAG(L)) .LT. 1.0D-30) DIAG(L) = sign(1.0D-30, DIAG(L))
-        XSBAR(L) = (1.0D0 - XALPHA(L)) * XSBAR(L)
       END DO
 
-      ! Lambda iteration: Gauss-Seidel sweeps (max MAX_ITER iterations)
-      BLOCK
-        REAL(8)  :: WORST_ERR
-        INTEGER :: WORST_K
-        DO L = 1, MAX_ITER
-          IFERR = 0
-          WORST_ERR = 0.0D0
-          WORST_K   = 0
-          K = NXTAU + 1
-          DO KK = 1, NXTAU
-            K = K - 1
-            DELXS = 0.0D0
-            DO M = 1, NXTAU
-              DELXS = DELXS + COEFJ(K, M) * XS(M)
-            END DO
-            DELXS = (DELXS * XALPHA(K) + XSBAR(K) - XS(K)) / DIAG(K)
-            ERRORX = abs(DELXS / XS(K))
-            IF (ERRORX .GT. 0.00001D0) IFERR = 1
-            IF (ERRORX .GT. WORST_ERR) THEN
-              WORST_ERR = ERRORX
-              WORST_K   = K
-            END IF
-            XS(K) = max(XS(K) + DELXS, 1.0D-37)
-          END DO
-          IF (IFERR .EQ. 0) EXIT
+      ! Direct solve of the scattering system
+      !   (I - diag(alpha) * LambdaJ) * S = (1 - alpha) * Sbar
+      ! A Gauss-Seidel Lambda iteration on this system stalls when
+      ! alpha >= 0.99 over the grid (10% error in S at alpha = 0.999
+      ! after 50 sweeps), and a finite sweep tolerance leaves
+      ! quantization noise in every scattering solve; one dense LU of
+      ! the 51x51 operator costs about the same and is exact.
+      IF (maxval(XALPHA) .LE. 0.0D0) THEN
+        ! No scattering at any depth: S = Sbar directly
+        DO L = 1, NXTAU
+          XS(L) = max(XSBAR(L), 1.0D-37)
         END DO
-        IF (IFERR .NE. 0) &
-          WRITE(6, '(A,I4,A,1PE12.4,A,I3,A,E9.2)') &
-            ' JOSH WARNING: Lambda iter not converged in ', MAX_ITER, &
-            ' sweeps  wave=', CLIGHT_NMS/FREQ, '  tau_pt=', WORST_K, '  err=', WORST_ERR
-      END BLOCK
+      ELSE
+        DO L = 1, NXTAU
+          DO M = 1, NXTAU
+            AMAT(L, M) = -XALPHA(L) * COEFJ(L, M)
+          END DO
+          AMAT(L, L) = AMAT(L, L) + 1.0D0
+          XS(L) = (1.0D0 - XALPHA(L)) * XSBAR(L)
+        END DO
+        CALL SOLVIT(AMAT, NXTAU, XS, IPIVOT)
+        DO L = 1, NXTAU
+          XS(L) = max(XS(L), 1.0D-37)
+        END DO
+      END IF
 
       ! Post-iteration dispatch
       IF (IFSURF .EQ. 1) THEN
