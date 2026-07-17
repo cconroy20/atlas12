@@ -19,7 +19,7 @@
 !   C  : accuracy of INTEG against an analytic integral exp(a*x) on
 !        the real RHOX grid (no sweep).
 PROGRAM JOSHTEST
-  USE mod_atlas_data, ONLY: MAP1, DERIV, INTEG
+  USE mod_atlas_data, ONLY: MAP1, DERIV, INTEG, IQUAD
   IMPLICIT NONE
 
   INTEGER, PARAMETER :: NXTAU = 51, NEPS = 401
@@ -161,6 +161,17 @@ PROGRAM JOSHTEST
   CALL INTEG(RHOX, F, FI, N, 0.0D0)
   DO J = 1, N
     WRITE(LUOUT, '(A,",",I4,3(",",ES24.16))') 'C', J, RHOX(J), &
+      (exp(AEXP*RHOX(J)) - exp(AEXP*RHOX(1))) / AEXP, FI(J)
+  END DO
+
+  ! Same integral through the production INTEG dispatch with quad=1
+  ! (Steffen path), for cross-checking against the independent Python
+  ! implementation in josh_verify.py.
+  IQUAD = 1
+  CALL INTEG(RHOX, F, FI, N, 0.0D0)
+  IQUAD = 0
+  DO J = 1, N
+    WRITE(LUOUT, '(A,",",I4,3(",",ES24.16))') 'C2', J, RHOX(J), &
       (exp(AEXP*RHOX(J)) - exp(AEXP*RHOX(1))) / AEXP, FI(J)
   END DO
 

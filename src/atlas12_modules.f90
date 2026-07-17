@@ -1185,6 +1185,13 @@ MODULE mod_atlas_data
   !   2 = Shepard (K-nearest, inverse-distance weighted, p=2; default)
   INTEGER :: IROSSTAB = 1
 
+  ! INTEG quadrature mode (tau scales, PRAD, HEIGHT integrals):
+  !   0 = legacy Kurucz blended-parabola quadrature (PARCOE)
+  !   1 = Steffen 1990 monotone-cubic quadrature; 3-6x more accurate on
+  !       opacity-like integrands (workdir/pfverify josh battery, Test C)
+  !       but answer-changing, so off until the full-regime A/B passes
+  INTEGER :: IQUAD = 0
+
   ! --- Molecular equilibrium ---
   REAL(8) :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
   INTEGER :: IFEQUA(101), KCOMPS(maxloc), LOCJ(max1), IDEQUA(maxeq)
@@ -4508,6 +4515,11 @@ SUBROUTINE INTEG(X, F, FINT, N, START)
   REAL(8)  :: XLO, XHI
   INTEGER :: I
 
+  IF (IQUAD .EQ. 1) THEN
+    CALL INTEG_STEFFEN(X, F, FINT, N, START)
+    RETURN
+  END IF
+
   ! Fit piecewise parabolas to F(X)
   CALL PARCOE(F, X, A, B, C, N)
 
@@ -4632,6 +4644,118 @@ SUBROUTINE PARCOE(F, X, A, B, C, N)
   C(N-1) = C(N)
 
 END SUBROUTINE PARCOE
+
+!=========================================================================
+! SUBROUTINE STEFFEN_SLOPES(X, F, D, N)
+!
+!   Node derivatives for the Steffen (1990, A&A 239, 443) monotone
+!   piecewise-cubic interpolant.  The interior slope is the weighted
+!   parabolic (3-point Lagrange) derivative, limited so the cubic on
+!   each interval preserves monotonicity: no overshoot, C1 everywhere.
+!   Endpoints use one-sided parabolic slopes with the same limiter
+!   (Steffen eqs. 24-27).
+!=========================================================================
+
+SUBROUTINE STEFFEN_SLOPES(X, F, D, N)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)  :: N
+  REAL(8),  INTENT(IN)  :: X(*), F(*)
+  REAL(8),  INTENT(OUT) :: D(*)
+
+  ! --- Local variables ---
+  REAL(8)  :: HL, HR, SL, SR, P
+  INTEGER :: J
+
+  IF (N .EQ. 2) THEN
+    D(1) = (F(2) - F(1)) / (X(2) - X(1))
+    D(2) = D(1)
+    RETURN
+  END IF
+
+  ! --- Interior nodes: limited weighted-parabolic slope (eq. 11) ---
+  DO J = 2, N - 1
+    HL = X(J) - X(J-1)
+    HR = X(J+1) - X(J)
+    SL = (F(J) - F(J-1)) / HL
+    SR = (F(J+1) - F(J)) / HR
+    IF (SL * SR .LE. 0.0D0) THEN
+      D(J) = 0.0D0
+    ELSE
+      P = (SL * HR + SR * HL) / (HL + HR)
+      D(J) = (sign(1.0D0, SL) + sign(1.0D0, SR)) &
+             * min(abs(SL), abs(SR), 0.5D0 * abs(P))
+    END IF
+  END DO
+
+  ! --- Left endpoint: one-sided parabolic slope, limited ---
+  HL = X(2) - X(1)
+  HR = X(3) - X(2)
+  SL = (F(2) - F(1)) / HL
+  SR = (F(3) - F(2)) / HR
+  P  = SL * (1.0D0 + HL / (HL + HR)) - SR * HL / (HL + HR)
+  IF (P * SL .LE. 0.0D0) THEN
+    D(1) = 0.0D0
+  ELSE IF (abs(P) .GT. 2.0D0 * abs(SL)) THEN
+    D(1) = 2.0D0 * SL
+  ELSE
+    D(1) = P
+  END IF
+
+  ! --- Right endpoint: mirror of the left ---
+  HR = X(N) - X(N-1)
+  HL = X(N-1) - X(N-2)
+  SR = (F(N) - F(N-1)) / HR
+  SL = (F(N-1) - F(N-2)) / HL
+  P  = SR * (1.0D0 + HR / (HR + HL)) - SL * HR / (HR + HL)
+  IF (P * SR .LE. 0.0D0) THEN
+    D(N) = 0.0D0
+  ELSE IF (abs(P) .GT. 2.0D0 * abs(SR)) THEN
+    D(N) = 2.0D0 * SR
+  ELSE
+    D(N) = P
+  END IF
+
+END SUBROUTINE STEFFEN_SLOPES
+
+!=========================================================================
+! SUBROUTINE INTEG_STEFFEN(X, F, FINT, N, START)
+!
+!   Running integral of the Steffen monotone cubic through (X, F):
+!   on each interval the cubic  f(t) = F(I) + D(I)*t + B*t^2 + A*t^3
+!   (t = x - X(I)) is integrated analytically.  Selected by IQUAD = 1
+!   as the alternative to the legacy blended-parabola INTEG path;
+!   monotonicity of the interpolant keeps integrals of positive
+!   integrands (opacities) positive and tau scales monotone.
+!=========================================================================
+
+SUBROUTINE INTEG_STEFFEN(X, F, FINT, N, START)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)  :: N
+  REAL(8),  INTENT(IN)  :: X(*), F(*), START
+  REAL(8),  INTENT(OUT) :: FINT(*)
+
+  ! --- Local variables ---
+  REAL(8)  :: D(kw)
+  REAL(8)  :: H, S, A, B
+  INTEGER :: I
+
+  CALL STEFFEN_SLOPES(X, F, D, N)
+
+  FINT(1) = START
+  DO I = 1, N - 1
+    H = X(I+1) - X(I)
+    S = (F(I+1) - F(I)) / H
+    B = (3.0D0 * S - 2.0D0 * D(I) - D(I+1)) / H
+    A = (D(I) + D(I+1) - 2.0D0 * S) / (H * H)
+    FINT(I+1) = FINT(I) + H * (F(I) + H * (0.5D0 * D(I) &
+                + H * (B / 3.0D0 + H * A * 0.25D0)))
+  END DO
+
+END SUBROUTINE INTEG_STEFFEN
 
 !=========================================================================
 ! FUNCTION MAP1(XOLD, FOLD, NOLD, XNEW, FNEW, NNEW)

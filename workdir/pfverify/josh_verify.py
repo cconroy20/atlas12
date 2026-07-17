@@ -257,6 +257,7 @@ probes = None
 xtau, chj = [], []
 rhox, tprof, abross, tauros = [], [], [], []
 rows_a, rows_a2, rows_b, rows_c = [], [], [], []
+rows_c2 = []
 aexp_c = 1.0
 for line in open(fn):
     p = [q.strip() for q in line.split(',')]
@@ -280,6 +281,8 @@ for line in open(fn):
         aexp_c = float(p[1])
     elif p[0] == 'C':
         rows_c.append([float(v) for v in p[2:]])
+    elif p[0] == 'C2':
+        rows_c2.append([float(v) for v in p[2:]])
 
 n = len(rhox)
 g = [math.exp(-0.5 * ((math.log10(tr) - 0.0) / 0.35) ** 2) for tr in tauros]
@@ -390,9 +393,15 @@ def maxrel(cum):
 
 print('\nC. Cumulative integral of exp(x) on the real RHOX grid, max |err|/max')
 print('   INTEG/PARCOE (production) : %.3e' % maxrel(integ))
-print('   steffen integral          : %.3e' % maxrel(cumint_steffen(xc, fexp, 0.0)))
+py_stef = cumint_steffen(xc, fexp, 0.0)
+print('   steffen integral          : %.3e' % maxrel(py_stef))
 print('   spline integral           : %.3e' % maxrel(cumint_spline(xc, fexp, 0.0)))
 print('   trapezoid                 : %.3e' % maxrel(cumint_trapz(xc, fexp, 0.0)))
+if rows_c2:
+    f_stef = [r[2] for r in rows_c2]
+    print('   INTEG quad=1 (production) : %.3e   [Fortran vs Python steffen: %.2e]'
+          % (maxrel(f_stef),
+             max(abs(a - b) for a, b in zip(f_stef, py_stef)) / scale))
 
 # ----------------------------------------------------------------------
 # Test D: scattering Gauss-Seidel Lambda iteration vs direct solve
