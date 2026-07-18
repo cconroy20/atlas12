@@ -108,7 +108,7 @@ Output files:
 
 | File | Contents |
 |------|----------|
-| `<basename>.atm`   | Converged model atmosphere. The `READ DECK6` block has one line per depth with columns: `RHOX`, `T`, `P`, `XNE`, `ABROSS` (Rosseland mean opacity κ), `ACCRAD`, `VTURB`, `FLXCNV`, `VCONV`, `RHO` (mass density, g/cm³) |
+| `<basename>.atm`   | Converged model atmosphere. The `READ DECK6` block has one line per depth with columns: `RHOX`, `T`, `P`, `XNE`, `ABROSS` (Rosseland mean opacity κ), `ACCRAD`, `VTURB`, `FLXCNV`, `VCONV`, `RHO` (mass density, g/cm³), `TAU5000` (continuum optical depth at 5000 Å — absorption + continuum scattering, no lines — the reference depth scale tabulated by MARCS/PHOENIX) |
 | `<basename>.flux`  | Emergent flux vs. wavelength |
 | `<basename>.iter`  | Per-iteration summary, including the temperature-correction diagnostics (the former `.tcorr` columns are merged into this file) |
 
@@ -117,8 +117,8 @@ separate `.taunu` and `.tcorr` files; `.taunu` is no longer written, and the
 `.tcorr` temperature-correction diagnostics are now columns in `.iter`.
 
 Only the first seven DECK6 columns (`RHOX`…`VTURB`) are read back when a
-model is used as input; `FLXCNV`, `VCONV`, and `RHO` are write-only
-diagnostics for downstream use.
+model is used as input; `FLXCNV`, `VCONV`, `RHO`, and `TAU5000` are
+write-only diagnostics for downstream use.
 
 Command-line options (keyword=value):
 
@@ -137,10 +137,11 @@ Command-line options (keyword=value):
 Numerics A/B switches are deliberately not CLI options.  They live as
 developer flags at their declarations in `mod_atlas_data` (set the
 default value and recompile): `USE_CZ_CONSTRUCTOR` (deep-CZ temperature
-constructor), `USE_FLXCNV_SMOOTH` (interior 1-2-1 convective-flux
-smoothing), `IROSSTAB` (Rosseland-table interpolation: 1=bilinear,
-2=Shepard, 3=moving least squares), and `IQUAD` (`INTEG` quadrature:
-0=legacy blended-parabola, 1=Steffen monotone cubic).
+constructor), `USE_CZC_POLISH` (terminal deep-CZ flux-closure polish),
+`USE_FLXCNV_SMOOTH` (interior 1-2-1 convective-flux smoothing),
+`IROSSTAB` (Rosseland-table interpolation: 1=bilinear, 2=Shepard,
+3=moving least squares), and `IQUAD` (`INTEG` quadrature: 0=legacy
+blended-parabola, 1=Steffen monotone cubic).
 
 Abundance override file format: one element per line with two
 whitespace-separated columns, `Z  log10(number_fraction)`.  Lines
@@ -322,7 +323,10 @@ Key changes in the modernization:
 - Optional Steffen (1990) monotone-cubic quadrature for `INTEG` (developer flag `IQUAD = 1` in `mod_atlas_data`), the routine that builds τ_Ross, the per-frequency τ_ν, P_rad, and the height scale.  The legacy blended-parabola quadrature (`PARCOE`) integrates a 5-decade exponential on real model grids with 1.3% (solar) to 11% (2800 K) maximum error — only ~2× better than a trapezoid — while the Steffen cubic is 3–6× more accurate and its monotone interpolant keeps τ scales monotone with no overshoot (`workdir/pfverify/josh_verify.py`, Test C).  The quadrature error is concentrated in the deepest layers, so switching moves converged structures mainly at the grid bottom: ≤1.5 K in cool/warm stars (convection pins the deep adiabat) but 0.1–0.5% of T in hot-star radiative envelopes (47–105 K at 8000–40000 K), with equal convergence quality and negligible emergent-flux change.  The default remains the legacy quadrature
 - Partition-function tables (H₂ and Barklem & Collet) evaluated with natural cubic splines instead of (log-)linear interpolation.  The interpolation kinks at table nodes, sampled by the EOS finite-difference stencil, imprinted spurious structure on ∇_ad that F_conv ∝ (∇−∇_ad)^{3/2} amplified into large local flux errors in cool-dwarf deep convection zones.  Node values, boundary behavior, and hot-star fallbacks are unchanged (verified by the `workdir/pfverify/` battery); converged structures shift by ≲0.5 K
 - Deep convection-zone convergence overhauled ("CZ constructor", `CZ_CONSTRUCT`): where convection is efficient the classical flux-error correction is structurally dead, so the required gradient is obtained by inverting the Böhm–Vitense relation in closed form for the superadiabatic excess carrying F_conv = F_tot − F_rad, applied as incremental interval-space corrections blended into the Kurucz correction by convective flux fraction.  Engagement is error-gated; release is on step size (ΔT < 1.5 K), standard practice for efficient convection zones.  Cool dwarfs (2500–3500 K) now converge from cold starts in ~10–30 iterations to few-percent flux balance — grid points that previously never converged; solar and hot-star models never engage it.  Developer flags: `USE_CZ_CONSTRUCTOR`, `USE_FLXCNV_SMOOTH` in `mod_atlas_data`
+- Terminal deep-CZ polish (`CZC_POLISH`, developer flag `USE_CZC_POLISH`, default on): on the final iteration, the CZ-constructor block's temperatures are re-placed by a Newton solve of the node-gradient system ∇_j(T) = ∇_ad + ∇_required (tridiagonal finite-difference Jacobian, banded LU; the interval-sweep construction is retained as a fallback), closing the MLT flux relation against the final radiative flux to ≲0.1% where the iterative floor was 5–30%.  Two structural facts force this design.  First, deep-CZ flux balance is stiff: F_conv ∝ (∇−∇_ad)^{3/2} at ∇−∇_ad ≈ 10⁻³ demands milli-Kelvin temperature placement — three orders below the constructor's release threshold, and unreachable during the iterations because each TAUSTD remap re-perturbs T at the Kelvin level (which is also why deep-CZ flux errors of tens of percent are endemic to published cool-dwarf models).  Second, ∇_ad's rapidly varying curvature through the H₂-dissociation region (the EOS chain itself is smooth to ~10⁻⁷, verified by the fine-T probe `GRDADB_SCAN_MAYBE`, env `ATLAS_GRDADB_SCAN`) defeats interval-space constructions: the interval-slope vs node-average operator mismatch has an alternating component invisible to averaged relaxation, which DEL^{3/2} stiffness amplifies to ~16% flux error.  Two further constraints shape where and how the placement is applied.  The polish closes the *raw* MLT flux relation, which equals the model's actual (1-2-1 smoothed, gap-filled) convective flux only where convection is efficient, so its authority is a smoothstep in convective flux fraction over `CZC_POL_W_LO`…`CZC_POL_W_HI` (0.85…0.95): full in the deep interior — which contains the entire flux-balance sawtooth — tapering to zero at the CZ-top transition, which is left to the normal iteration.  (Applying it across the transition instead degrades those layers from <1% to several percent, and the final consistency refresh must likewise use the full production `CONVEC`, not the MLT-only path, or the `.atm` convective-flux columns are overwritten with raw MLT that switches convection off near τ≈1.)  And because re-placing the block in isolation shifts its temperatures — by several K where the constructor left the deep CZ far from closure — against a still-unrelaxed atmosphere above, the polish runs on the last `CZC_POL_NHEAL` (8) iterations rather than only the final one: between calls the normal flux correction, which is alive in the transition, relaxes those layers toward the polished deep boundary, healing the boundary seam (3500 K: 7% → a converged 1.8%, with the final polish then applying ≈0 ΔT).  Verified on 2500/2800/3500 K: the deep convection zone closes from ±11–34% to <0.04%, with the CZ-top transition left at a normal 1–2%; solar and hot-star models are untouched (the polish only runs where the constructor engaged).  A closure summary goes to the run log, the post-polish per-layer state is appended to `.iter` as a final block in the standard table layout (`ERROR` is the flux residual at frozen F_rad, `T1` the polish ΔT, correction columns zero by construction), and the final `.atm` carries the polished structure
 - Convective boundary fixes: marginally subadiabatic layers at the grid bottom take the flux-conservation value F_c = F_tot − F_rad instead of zero (Koester 1980), and the deepest-layer gradient uses the log-space one-sided slope, removing a ~13% systematic overestimate of ∇ — the long-standing "deepest layer never converges" artifact
+
+- The `.atm` deck gains a `TAU5000` column: the continuum optical depth at 5000 Å (continuum absorption + continuum scattering at 500 nm from `KAPP`, integrated on the same quadrature as τ_Ross), the reference depth scale tabulated by MARCS and PHOENIX; computed once at output time from the final structure.  The deck-count field is widened `I3`→`I4`, fixing the round-trip failure of models with ≥ 100 depth points (the count printed glued to `DECK6` and could not be parsed back by `READIN`)
 
 **Data and code hygiene**
 

@@ -597,6 +597,10 @@ PROGRAM ATLAS12
              INT(DBLE(CLOCK_END - CLOCK_START) / DBLE(CLOCK_RATE)), ' seconds'
         FLUSH(6)
 
+        ! Developer probe: fine-T scan of the nabla_ad / EOS machinery
+        ! (no-op unless ATLAS_GRDADB_SCAN is set; stops after writing)
+        IF (ITERAT .EQ. 1) CALL GRDADB_SCAN_MAYBE
+
       END IF
 
     END DO iteration_loop

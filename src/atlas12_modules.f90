@@ -1315,6 +1315,15 @@ MODULE mod_atlas_data
   !     solar/hot models never trip it and are untouched.
   ! Developer option, set here; no CLI.
   LOGICAL :: USE_CZ_CONSTRUCTOR = .TRUE.
+  ! Terminal deep-CZ polish: after the final iteration, close the MLT
+  ! flux relation in the constructor's block against the frozen
+  ! radiative flux (see CZC_POLISH).  Developer option, set here.
+  LOGICAL :: USE_CZC_POLISH = .TRUE.
+  ! Constructor run-state consumed by the polish: whether the
+  ! constructor engaged at least once this run, and the block top at
+  ! the last engaged call.
+  LOGICAL :: CZC_RUN_ENGAGED = .FALSE.
+  INTEGER :: CZC_RUN_JC      = 0
   ! Interior 1-2-1 smoothing of FLXCNV in CONVEC.  Historically
   ! unconditional: it papered over per-layer MLT flux noise whose real
   ! sources (partition-function interpolation kinks, the deepest-layer
@@ -1342,6 +1351,38 @@ MODULE mod_atlas_data
   ! fall below this threshold the temperature structure is settled and
   ! it hands off.
   REAL(8), PARAMETER :: CZC_DT_RELEASE = 1.5D0  ! release when max applied |dT| < this [K]
+  ! CZC_POLISH tolerances: inner node-gradient residual target (3e-6 in
+  ! nabla ~ 0.5% flux at DEL ~ 1e-3), outer-cycle settle tolerance on
+  ! applied |dT| (deep-CZ flux balance needs mK placement), sweep and
+  ! cycle caps.
+  REAL(8), PARAMETER :: CZC_POL_GTOL   = 3.0D-6
+  REAL(8), PARAMETER :: CZC_POL_DTTOL  = 5.0D-3
+  INTEGER, PARAMETER :: CZC_POL_MAXSWP = 100
+  INTEGER, PARAMETER :: CZC_POL_MAXCYC = 30
+  ! Polish authority ramp in CONV/TOT.  The polish closes the raw MLT
+  ! flux relation at frozen F_rad; that raw flux equals the model's actual
+  ! (1-2-1 smoothed, gap-filled) convective flux only where convection is
+  ! efficient.  Full authority (WBLND = 1) above CZC_POL_W_HI (deep CZ,
+  ! raw = smoothed, contains the whole flux-balance sawtooth); a smoothstep
+  ! taper down to 0 across [CZC_POL_W_LO, CZC_POL_W_HI]; untouched below
+  ! (CZ-top transition, left to the normal iteration).  A HARD cutoff here
+  ! instead of the taper dumps the block's whole T shift at one boundary
+  ! layer -- fine when the shift is small (2800 K, ~0.3 K) but a 10-20%
+  ! seam when it is large (3500 K, ~5 K); the taper spreads it smoothly.
+  REAL(8), PARAMETER :: CZC_POL_W_LO   = 0.85D0
+  REAL(8), PARAMETER :: CZC_POL_W_HI   = 0.95D0
+  ! Seam-healing: fire the polish on the last CZC_POL_NHEAL iterations,
+  ! not just the final one.  Re-placing the deep block in isolation shifts
+  ! its temperatures (up to several K where the constructor left the CZ
+  ! far from closure), which leaves a flux-error seam at the block's upper
+  ! boundary against the still-unrelaxed atmosphere above.  Between polish
+  ! calls the normal iteration's flux correction -- alive in the CZ-top
+  ! transition -- relaxes those layers toward the polished deep boundary,
+  ! healing the seam; the polish (which shares the constructor's
+  ! Boehm-Vitense target, only exact) re-closes the deep block each time.
+  ! The final iteration's polish sets the mK-precise closure that the
+  ! output carries; the earlier ones only steer the relaxation.
+  INTEGER, PARAMETER :: CZC_POL_NHEAL  = 8
   ! Re-engagement hysteresis: after a dT-release, the block's flux
   ! metric keeps fluttering on the code's gradient-noise floor (the
   ! amplification 1.5/DEL makes tens of percent normal in the coolest
@@ -1882,6 +1923,7 @@ SUBROUTINE PUTOUT(MODE)
 
   ! --- Local variables ---
   REAL(8)  :: HSURF, TAUEND
+  REAL(8)  :: TAU5000_L(kw)    ! continuum optical depth at 5000 A (deck column)
   REAL(8)  :: HLAM, HLAMLG, HLAMMG, HNULG, HNUMG
   REAL(8)  :: SURFIN(20)       ! Note: SURFIN accumulation was disabled in original
                                ! code (opacity-sampling replaced frequency groups).
@@ -2035,14 +2077,20 @@ SUBROUTINE PUTOUT(MODE)
 553 FORMAT(' ABUNDANCE TABLE' / '    1', A2, F10.6, '       2', A2, F10.6 &
       / (5(I5, A2, F7.3, F6.3)))
 
+    ! Continuum optical depth at 5000 A (MARCS/PHOENIX reference scale)
+    CALL COMPUTE_TAU5000(TAU5000_L)
+
     ! Model structure: column mass, T, P, N_e, kappa_Ross, g_rad, v_turb,
-    !                  convective flux, convective velocity
+    !                  convective flux, convective velocity, density,
+    !                  continuum optical depth at 5000 A.  Only the first
+    !                  seven columns are read back by READIN.
     WRITE(7, 554) NRHOX, (RHOX(J), T(J), P(J), XNE(J), ABROSS(J), ACCRAD(J), &
-      VTURB(J), FLXCNV(J), VCONV(J), RHO(J), J=1,NRHOX)
-554 FORMAT('READ DECK6', I3, &
-      '     RHOX         T         P       XNE', &
-      '     ABROSS    ACCRAD     VTURB    FLXCNV     VCONV       RHO' &
-      / (13X, 1PE12.5, 0PF10.2, 1P8E10.3))
+      VTURB(J), FLXCNV(J), VCONV(J), RHO(J), TAU5000_L(J), J=1,NRHOX)
+554 FORMAT('READ DECK6', I4, &
+      '    RHOX         T         P       XNE', &
+      '     ABROSS    ACCRAD     VTURB    FLXCNV     VCONV       RHO', &
+      '   TAU5000' &
+      / (13X, 1PE12.5, 0PF10.2, 1P9E10.3))
 
     ! Surface radiation pressure constant
     WRITE(7, '("PRADK",1PE11.4)') PRADK0
@@ -2061,6 +2109,41 @@ SUBROUTINE PUTOUT(MODE)
   END SELECT
 
 END SUBROUTINE PUTOUT
+
+!=========================================================================
+! SUBROUTINE COMPUTE_TAU5000(TAU5)
+!
+! Continuum optical depth scale at 5000 A (500 nm), the reference depth
+! variable tabulated by MARCS and PHOENIX: extinction = continuum
+! absorption + continuum scattering (ACONT + SIGMAC from KAPP, no
+! lines), integrated over column mass with the same quadrature as the
+! Rosseland scale.  Overwrites the module frequency state (WAVE, FREQ,
+! EHVKT, STIM, BNU, ACONT, SIGMAC, ...) as a side effect, so it must
+! only be called at final-output time (the PUTOUT punch branch).
+!=========================================================================
+SUBROUTINE COMPUTE_TAU5000(TAU5)
+
+  IMPLICIT NONE
+
+  REAL(8), INTENT(OUT) :: TAU5(kw)
+
+  REAL(8) :: EXTINC(kw), FREQ15
+
+  WAVE   = 500.0D0
+  FREQ   = CLIGHT_NMS / WAVE
+  WAVENO = 1.0D7 / WAVE
+  FREQLG = LOG(FREQ)
+  FREQ15 = FREQ / 1.0D15
+  EHVKT  = EXP(-FREQ * HKT)
+  STIM   = 1.0D0 - EHVKT
+  BNU    = BNU_PREFAC * FREQ15**3 * EHVKT / STIM
+
+  CALL KAPP
+
+  EXTINC = ACONT + SIGMAC
+  CALL INTEG(RHOX, EXTINC, TAU5, NRHOX, EXTINC(1)*RHOX(1))
+
+END SUBROUTINE COMPUTE_TAU5000
 
 
 !=========================================================================
@@ -2694,6 +2777,12 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! Replace old TAUROS with the standard grid
   TAUROS = TAUSTD
 
+  ! Terminal deep-CZ polish on the final iteration: closes the MLT flux
+  ! relation in the constructor's block and appends a labeled POLISH
+  ! block to the .iter file (no-op unless the constructor engaged this
+  ! run; see CZC_POLISH).
+  IF (ITER .GT. NUMITS - CZC_POL_NHEAL) CALL CZC_POLISH
+
   RETURN
 
 END SUBROUTINE TCORR
@@ -2744,15 +2833,6 @@ SUBROUTINE CZ_CONSTRUCT(T1)
   REAL(8) :: TKUR(kw)       ! incoming Kurucz-corrected profile T + T1
   REAL(8) :: TW(kw)         ! corrected working profile
 
-  REAL(8) :: F_REQ          ! required convective flux
-  REAL(8) :: FLUXCO, VCO    ! MLT coefficients (as in CONVEC)
-  REAL(8) :: DELTA          ! MLT efficiency variable
-  REAL(8) :: DELTAT_B       ! bubble temperature excess T*MIXLTH*DELTA
-  REAL(8) :: ROSST0         ! ROSSTAB at the unperturbed state
-  REAL(8) :: DPLUS, DMINUS, DPLUS_I, DMINUS_I  ! bubble opacity ratios
-  REAL(8) :: ABCONV_L       ! bubble opacity (harmonic mean)
-  REAL(8) :: DRESP          ! radiative damping parameter D
-  REAL(8) :: TAUB           ! bubble optical thickness
   REAL(8) :: MAXERR_BLK     ! max |FLXERR| in the block [%]
   REAL(8) :: DTMAX_BLK      ! max |TW - TKUR| in the block [K]
   REAL(8) :: SCL            ! global step-cap scale factor
@@ -2796,6 +2876,8 @@ SUBROUTINE CZ_CONSTRUCT(T1)
     NBOT_BAD         = 0
     CZC_LAST_DTMAX   = 1.0D30
     CZC_REL_ERR      = 0.0D0
+    CZC_RUN_ENGAGED  = .FALSE.
+    CZC_RUN_JC       = 0
   END IF
 
   IF (.NOT. USE_CZ_CONSTRUCTOR) RETURN
@@ -2897,50 +2979,15 @@ SUBROUTINE CZ_CONSTRUCT(T1)
   END IF
   JC_STICKY = JC
   CZC_REL_ERR = 0.0D0
+  CZC_RUN_ENGAGED = .TRUE.
+  CZC_RUN_JC      = JC
 
   !---------------------------------------------------------------------
-  ! Invert MLT for the required superadiabatic excess at each node.
+  ! Invert MLT for the required superadiabatic excess at each node
+  ! (shared with CZC_POLISH).
   !---------------------------------------------------------------------
   DO J = JC, NRHOX
-    F_REQ  = FLUX - min(FLXRAD(J), CZC_FRAD_CAP * FLUX)
-    FLUXCO = 0.5D0 * RHO(J) * HEATCP(J) * T(J) * MIXLTH / FOURPI
-    VCO    = 0.5D0 * MIXLTH &
-           * sqrt(max(-0.5D0 * PTOTAL(J) / RHO(J) * DLRDLT(J), 0.0D0))
-
-    IF (FLUXCO .LE. 0.0D0 .OR. VCO .LE. 0.0D0) THEN
-      ! Degenerate EOS corner: zero increment (leave the layer alone).
-      DELREQ(J) = DELIN(J)
-      CYCLE
-    END IF
-
-    DELTA = (F_REQ / (FLUXCO * VCO))**(2.0D0 / 3.0D0)
-    ! Match the forward solve's bubble-excess cap DELTAT <= 0.15*T.
-    DELTA = min(DELTA, 0.15D0 / MIXLTH)
-    DELTAT_B = T(J) * MIXLTH * DELTA
-
-    ! Bubble opacity exactly as in CONVEC's forward quadrature.
-    ROSST0 = ROSSTAB(T(J), P(J), VTURB(J))
-    DPLUS  = ROSSTAB(T(J) + DELTAT_B, P(J), VTURB(J)) / ROSST0
-    DMINUS = ROSSTAB(T(J) - DELTAT_B, P(J), VTURB(J)) / ROSST0
-    IF (USE_4POINT_MLT) THEN
-      DPLUS_I  = ROSSTAB(T(J) + DELTAT_B / 3.0D0, P(J), VTURB(J)) / ROSST0
-      DMINUS_I = ROSSTAB(T(J) - DELTAT_B / 3.0D0, P(J), VTURB(J)) / ROSST0
-      ABCONV_L = 4.0D0 / (1.0D0 / DPLUS  + 1.0D0 / DPLUS_I &
-                        + 1.0D0 / DMINUS + 1.0D0 / DMINUS_I) * ABROSS(J)
-    ELSE
-      ABCONV_L = 2.0D0 / (1.0D0 / DPLUS + 1.0D0 / DMINUS) * ABROSS(J)
-    END IF
-
-    ! Radiative damping parameter D, as in CONVEC.
-    DRESP = 8.0D0 * SIGMA_SB * T(J)**4 &
-          / (ABCONV_L * HSCALE(J) * RHO(J)) &
-          / (FLUXCO * FOURPI) / VCO
-    TAUB  = ABCONV_L * RHO(J) * MIXLTH * HSCALE(J)
-    DRESP = DRESP * TAUB**2 / (2.0D0 + TAUB**2)
-    DRESP = DRESP**2 / 2.0D0
-
-    ! Exact closed-form inverse of the forward DELTA(DEL) relation.
-    DELREQ(J) = DELTA + sqrt(2.0D0 * DRESP * DELTA)
+    CALL CZC_DELREQ_LAYER(J, DELIN(J), DELREQ(J))
   END DO
 
   !---------------------------------------------------------------------
@@ -3049,6 +3096,554 @@ SUBROUTINE CZ_CONSTRUCT(T1)
   RETURN
 
 END SUBROUTINE CZ_CONSTRUCT
+
+!=========================================================================
+! SUBROUTINE CZC_DELREQ_LAYER(J, DELIN_J, DELREQ_J)
+!
+! Closed-form inverse of the forward MLT flux relation at layer J: the
+! superadiabatic excess DELREQ_J that carries F_conv = FLUX - FLXRAD(J),
+! with the bubble opacity and radiative damping evaluated exactly as in
+! CONVEC's forward quadrature.  In the degenerate EOS corner the layer
+! is left alone (DELREQ_J = DELIN_J, zero increment).  Shared by
+! CZ_CONSTRUCT and CZC_POLISH.
+!=========================================================================
+SUBROUTINE CZC_DELREQ_LAYER(J, DELIN_J, DELREQ_J)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)  :: J
+  REAL(8), INTENT(IN)  :: DELIN_J
+  REAL(8), INTENT(OUT) :: DELREQ_J
+
+  REAL(8) :: F_REQ          ! required convective flux
+  REAL(8) :: FLUXCO, VCO    ! MLT coefficients (as in CONVEC)
+  REAL(8) :: DELTA          ! MLT efficiency variable
+  REAL(8) :: DELTAT_B       ! bubble temperature excess T*MIXLTH*DELTA
+  REAL(8) :: ROSST0         ! ROSSTAB at the unperturbed state
+  REAL(8) :: DPLUS, DMINUS, DPLUS_I, DMINUS_I  ! bubble opacity ratios
+  REAL(8) :: ABCONV_L       ! bubble opacity (harmonic mean)
+  REAL(8) :: DRESP          ! radiative damping parameter D
+  REAL(8) :: TAUB           ! bubble optical thickness
+
+  F_REQ  = FLUX - min(FLXRAD(J), CZC_FRAD_CAP * FLUX)
+  FLUXCO = 0.5D0 * RHO(J) * HEATCP(J) * T(J) * MIXLTH / FOURPI
+  VCO    = 0.5D0 * MIXLTH &
+         * sqrt(max(-0.5D0 * PTOTAL(J) / RHO(J) * DLRDLT(J), 0.0D0))
+
+  IF (FLUXCO .LE. 0.0D0 .OR. VCO .LE. 0.0D0) THEN
+    ! Degenerate EOS corner: zero increment (leave the layer alone).
+    DELREQ_J = DELIN_J
+    RETURN
+  END IF
+
+  DELTA = (F_REQ / (FLUXCO * VCO))**(2.0D0 / 3.0D0)
+  ! Match the forward solve's bubble-excess cap DELTAT <= 0.15*T.
+  DELTA = min(DELTA, 0.15D0 / MIXLTH)
+  DELTAT_B = T(J) * MIXLTH * DELTA
+
+  ! Bubble opacity exactly as in CONVEC's forward quadrature.
+  ROSST0 = ROSSTAB(T(J), P(J), VTURB(J))
+  DPLUS  = ROSSTAB(T(J) + DELTAT_B, P(J), VTURB(J)) / ROSST0
+  DMINUS = ROSSTAB(T(J) - DELTAT_B, P(J), VTURB(J)) / ROSST0
+  IF (USE_4POINT_MLT) THEN
+    DPLUS_I  = ROSSTAB(T(J) + DELTAT_B / 3.0D0, P(J), VTURB(J)) / ROSST0
+    DMINUS_I = ROSSTAB(T(J) - DELTAT_B / 3.0D0, P(J), VTURB(J)) / ROSST0
+    ABCONV_L = 4.0D0 / (1.0D0 / DPLUS  + 1.0D0 / DPLUS_I &
+                      + 1.0D0 / DMINUS + 1.0D0 / DMINUS_I) * ABROSS(J)
+  ELSE
+    ABCONV_L = 2.0D0 / (1.0D0 / DPLUS + 1.0D0 / DMINUS) * ABROSS(J)
+  END IF
+
+  ! Radiative damping parameter D, as in CONVEC.
+  DRESP = 8.0D0 * SIGMA_SB * T(J)**4 &
+        / (ABCONV_L * HSCALE(J) * RHO(J)) &
+        / (FLUXCO * FOURPI) / VCO
+  TAUB  = ABCONV_L * RHO(J) * MIXLTH * HSCALE(J)
+  DRESP = DRESP * TAUB**2 / (2.0D0 + TAUB**2)
+  DRESP = DRESP**2 / 2.0D0
+
+  ! Exact closed-form inverse of the forward DELTA(DEL) relation.
+  DELREQ_J = DELTA + sqrt(2.0D0 * DRESP * DELTA)
+
+END SUBROUTINE CZC_DELREQ_LAYER
+
+!=========================================================================
+! SUBROUTINE CZC_POLISH
+!
+! Terminal deep-CZ polish (developer flag USE_CZC_POLISH).  Runs once,
+! on the final iteration after TCORR has applied its last correction,
+! if CZ_CONSTRUCT engaged during the run.  Places the block's
+! temperatures so the forward MLT flux relation closes against the
+! frozen radiative flux:  F_conv(DEL(T)) = FLUX - FLXRAD.
+!
+! Deep-CZ flux balance is stiff: F_conv ~ DEL^(3/2) at DEL ~ 1e-3, so
+! 1% closure needs DEL controlled to ~7e-6, i.e. T placed to a few mK
+! -- three orders below CZC_DT_RELEASE.  No correction against
+! RT-measured errors can hold that (every iteration re-perturbs T at
+! the K level through the TAUSTD remap), which is why this pass is
+! terminal.  Freezing F_rad is legitimate where the polish has
+! authority: at the block bottom F_rad is ~0.2% of the total and
+! linear in the gradient, while F_conv carries all the stiffness.
+!
+! Structure: outer cycles refresh the EOS at the newly placed T
+! (nabla_ad moves ~1e-3 per K, far above the closure target, so the
+! refresh is required): pops -> COMPUTE_HEIGHT -> CONVEC(MLT-only) ->
+! re-invert DELREQ -> interval construction as in CZ_CONSTRUCT, but
+! with the refinement sweeps run to CZC_POL_GTOL instead of a fixed
+! count and no step cap -> apply.  Cycles end when the applied
+! max |dT| < CZC_POL_DTTOL.  P, PTOTAL, RHOX, and ABROSS are frozen:
+! hydrostatic equilibrium at fixed RHOX does not involve T, and the
+! closure is defined against the last RT pass's opacities.
+!
+! The .iter blocks are written by TCORR and show the pre-polish state;
+! this routine prints its own closure summary and refreshes FLXCNV and
+! the block's FLXERR so the final .atm deck is consistent with the
+! polished structure.
+!=========================================================================
+SUBROUTINE CZC_POLISH
+
+  IMPLICIT NONE
+
+  REAL(8) :: HRAT_L(kw)     ! convective flux fraction
+  REAL(8) :: DELREQ(kw)     ! MLT-inverted required superadiabatic excess
+  REAL(8) :: DELIN(kw)      ! measured current excess DLTDLP - GRDADB
+  REAL(8) :: TW(kw)         ! constructed profile
+  REAL(8) :: WBLND(kw)      ! per-layer HRATIO blend weight
+  REAL(8) :: GIN(kw)        ! incoming profile's node gradients
+  REAL(8) :: DTK(kw)        ! DERIV of the incoming profile
+  REAL(8) :: GADJ(kw)       ! refinement corrections to interval exponents
+  REAL(8) :: DTW(kw)        ! DERIV of the constructed profile
+  REAL(8) :: ERRG(kw)       ! node-gradient mismatch in refinement sweeps
+  REAL(8) :: GT(kw)         ! blended node-gradient targets
+  REAL(8) :: TPRE(kw)       ! T at polish entry (for the .iter dT column)
+  REAL(8) :: LNPR, SLOPIN, GTARG, WINT, GBARI
+  REAL(8) :: DTMAX, DTTOT, ERR0, ERR1, GRES
+  INTEGER :: J, JC, K, CYC, PINFO
+  LOGICAL :: SWEEP_CONV
+
+  IF (.NOT. USE_CZC_POLISH) RETURN
+  IF (.NOT. CZC_RUN_ENGAGED) RETURN
+  IF (IFCONV .NE. 1 .OR. IFPRES .NE. 1 .OR. MIXLTH .LE. 0.0D0) RETURN
+  JC = max(CZC_RUN_JC, CZC_J_MIN)
+  IF (NRHOX - JC .LT. 4) RETURN
+
+  ! Set JC to the top of the contiguous block down to which the polish
+  ! has any authority: the shallowest layer with CONV/TOT > CZC_POL_W_LO
+  ! (the taper foot).  Above it WBLND = 0 and the layer is untouched.
+  ! Uses the production convection so CONV/TOT matches the model.
+  IFEDNS = 0
+  CALL COMPUTE_ONE_POP(0.D0, 1, XNE)
+  CALL COMPUTE_ALL_POPS
+  CALL COMPUTE_HEIGHT
+  CALL CONVEC(.FALSE.)
+  DO J = 1, NRHOX
+    HRAT_L(J) = FLXCNV(J) / (FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
+  END DO
+  K = NRHOX
+  DO J = NRHOX, JC, -1
+    IF (HRAT_L(J) .GT. CZC_POL_W_LO) THEN
+      K = J
+    ELSE
+      EXIT
+    END IF
+  END DO
+  JC = K
+  IF (NRHOX - JC .LT. 4) RETURN   ! efficient block too thin: nothing to do
+
+  ERR0  = MAXVAL(ABS(FLXERR(JC:NRHOX)))
+  TPRE(1:NRHOX) = T(1:NRHOX)
+  DTTOT = 0.0D0
+  DTMAX = 0.0D0
+
+  DO CYC = 1, CZC_POL_MAXCYC
+
+    ! --- EOS refresh at the current T ---
+    IFEDNS = 0
+    CALL COMPUTE_ONE_POP(0.D0, 1, XNE)
+    CALL COMPUTE_ALL_POPS
+    CALL COMPUTE_HEIGHT
+    CALL CONVEC(.TRUE.)
+
+    ! --- Gates, blend weights, and inversion targets ---
+    DO J = 1, NRHOX
+      HRAT_L(J) = FLXCNV(J) / (FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
+      DELIN(J)  = DLTDLP(J) - GRDADB(J)
+    END DO
+    DO J = max(JC - 1, 1), NRHOX
+      WINT = (HRAT_L(J) - CZC_POL_W_LO) / (CZC_POL_W_HI - CZC_POL_W_LO)
+      WINT = max(0.0D0, min(1.0D0, WINT))
+      WBLND(J) = WINT * WINT * (3.0D0 - 2.0D0 * WINT)
+    END DO
+    DO J = JC, NRHOX
+      CALL CZC_DELREQ_LAYER(J, DELIN(J), DELREQ(J))
+    END DO
+
+    ! --- Incoming node gradients (blend targets where WBLND < 1) ---
+    CALL DERIV(RHOX, T, DTK, NRHOX)
+    DO J = JC, NRHOX - 1
+      GIN(J) = PTOTAL(J) / T(J) / GRAV * DTK(J)
+    END DO
+    GIN(NRHOX) = log(T(NRHOX) / T(NRHOX - 1)) &
+               / log(PTOTAL(NRHOX) / PTOTAL(NRHOX - 1))
+
+    ! --- Blended node-gradient targets ---
+    DO J = JC, NRHOX
+      GT(J) = WBLND(J) * (GRDADB(J) + DELREQ(J)) &
+            + (1.0D0 - WBLND(J)) * GIN(J)
+    END DO
+
+    ! --- Exact Newton placement on the node-gradient operator; the
+    !     interval-sweep construction below remains as a fallback ---
+    TW(1:NRHOX) = T(1:NRHOX)
+    CALL CZC_PLACE_NODES(JC, GT, TW, PINFO)
+    IF (PINFO .EQ. 0) THEN
+      CALL CZC_NODE_RESID(JC, GT, TW, ERRG)
+      GRES = MAXVAL(ABS(ERRG(1:NRHOX - JC + 1)))
+      K = -1          ! marks Newton placement in the cycle diagnostic
+    ELSE
+      WRITE(6, '(A,I2,A)') ' CZC polish: Newton placement failed (info=', &
+        PINFO, '), using sweep fallback'
+
+    ! --- Interval construction, refinement sweeps run to tolerance ---
+    TW(1:NRHOX)   = T(1:NRHOX)
+    GADJ(1:NRHOX) = 0.0D0
+    SWEEP_CONV = .FALSE.
+    DO K = 0, CZC_POL_MAXSWP
+      DO J = JC, NRHOX
+        LNPR   = log(PTOTAL(J) / PTOTAL(J - 1))
+        SLOPIN = log(T(J) / T(J - 1)) / LNPR
+        IF (J .EQ. JC) THEN
+          GTARG = 0.5D0 * (GRDADB(J - 1) + GRDADB(J)) + DELREQ(J)
+        ELSE
+          GTARG = 0.5D0 * (GRDADB(J - 1) + GRDADB(J)) &
+                + 0.5D0 * (DELREQ(J - 1) + DELREQ(J))
+        END IF
+        WINT  = 0.5D0 * (WBLND(J - 1) + WBLND(J))
+        GBARI = (GTARG - SLOPIN) * WINT + GADJ(J)
+        TW(J) = TW(J - 1) * (T(J) / T(J - 1)) * exp(GBARI * LNPR)
+        TW(J) = max(TW(J), TW(J - 1))
+      END DO
+      IF (SWEEP_CONV .OR. K .EQ. CZC_POL_MAXSWP) EXIT
+
+      CALL DERIV(RHOX, TW, DTW, NRHOX)
+      DO J = JC, NRHOX - 1
+        ERRG(J) = WBLND(J) * (GRDADB(J) + DELREQ(J)) &
+                + (1.0D0 - WBLND(J)) * GIN(J) &
+                - PTOTAL(J) / TW(J) / GRAV * DTW(J)
+      END DO
+      ERRG(NRHOX) = WBLND(NRHOX) * (GRDADB(NRHOX) + DELREQ(NRHOX)) &
+                  + (1.0D0 - WBLND(NRHOX)) * GIN(NRHOX) &
+                  - log(TW(NRHOX) / TW(NRHOX - 1)) &
+                  / log(PTOTAL(NRHOX) / PTOTAL(NRHOX - 1))
+      GRES = MAXVAL(ABS(ERRG(JC:NRHOX)))
+      IF (GRES .LT. CZC_POL_GTOL) SWEEP_CONV = .TRUE.
+
+      GADJ(JC) = GADJ(JC) + 0.70D0 * ERRG(JC)
+      DO J = JC + 1, NRHOX
+        GADJ(J) = GADJ(J) + 0.35D0 * (ERRG(J - 1) + ERRG(J))
+      END DO
+    END DO
+    END IF   ! Newton placement / sweep fallback
+
+    ! --- Apply and refresh thermodynamic arrays ---
+    DTMAX = 0.0D0
+    DO J = JC, NRHOX
+      DTMAX = max(DTMAX, abs(TW(J) - T(J)))
+      T(J) = TW(J)
+    END DO
+    DTTOT = DTTOT + DTMAX
+    TK   = KBOL * T
+    HKT  = HPLANCK / TK
+    HCKT = HKT * CLIGHT
+    TKEV = KBOL_EV * T
+    TLOG = log(T)
+    ITEMP = ITEMP + 1
+
+    WRITE(6, '(A,I2,A,I3,A,1PE9.2,A,1PE9.2,A)') &
+      ' CZC polish: cycle ', CYC, '  sweeps=', K, '  maxERRG=', GRES, &
+      '  dTmax=', DTMAX, ' K'
+
+    IF (DTMAX .LT. CZC_POL_DTTOL) EXIT
+  END DO
+
+  ! --- Final consistency refresh and closure report.  Uses the FULL
+  !     production convection (CONVEC(.FALSE.): 1-2-1 smoothing, radiative
+  !     gap fill, Koester bottom clamp) -- the same FLXCNV that every
+  !     iteration and the output .atm use -- NOT the raw MLT-only path.
+  !     Raw MLT switches convection off across the CZ-top transition
+  !     (CONV/TOT -> 0), which would both corrupt the .atm FLXCNV/VCONV
+  !     columns there and make the polish block mis-report tens-of-percent
+  !     flux errors in layers the polish never touched.  In the efficient
+  !     deep block the smoothing is a no-op, so the closure is unchanged. ---
+  IFEDNS = 0
+  CALL COMPUTE_ONE_POP(0.D0, 1, XNE)
+  CALL COMPUTE_ALL_POPS
+  CALL COMPUTE_HEIGHT
+  CALL CONVEC(.FALSE.)
+  DO J = 1, NRHOX
+    FLXERR(J) = (FLXRAD(J) + FLXCNV(J) - FLUX) / FLUX * 100.0D0
+    HRAT_L(J) = FLXCNV(J) / (FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
+  END DO
+  ERR1 = MAXVAL(ABS(FLXERR(JC:NRHOX)))
+
+  WRITE(6, '(A,I3,A,I3,A,I2,A,F8.3,A)') &
+    ' CZC polish: J=', JC, '..', NRHOX, '  cycles=', &
+    min(CYC, CZC_POL_MAXCYC), '  cumulative max|dT|=', DTTOT, ' K'
+  WRITE(6, '(A,1PE9.2,A,1PE9.2,A)') &
+    ' CZC polish: block max|FLXERR| ', ERR0, ' % -> ', ERR1, &
+    ' %  (MLT closure at frozen F_rad)'
+  WRITE(6, '(A)') &
+    ' CZC polish:   J    DEL       DELREQ     FLXERR%   Fc/Ftot' // &
+    '    GRDADB          D2(GRDADB)   D2(DLTDLP)'
+  DO J = max(JC, NRHOX - 9), NRHOX
+    IF (J .GT. 1 .AND. J .LT. NRHOX) THEN
+      WRITE(6, '(A,I4,1P4E11.3,0PF14.9,1P2E13.3)') ' CZC polish:', J, &
+        DLTDLP(J) - GRDADB(J), DELREQ(J), FLXERR(J), &
+        FLXCNV(J) / max(FLUX, 1.0D-30), GRDADB(J), &
+        GRDADB(J+1) - 2.0D0*GRDADB(J) + GRDADB(J-1), &
+        DLTDLP(J+1) - 2.0D0*DLTDLP(J) + DLTDLP(J-1)
+    ELSE
+      WRITE(6, '(A,I4,1P4E11.3,0PF14.9)') ' CZC polish:', J, &
+        DLTDLP(J) - GRDADB(J), DELREQ(J), FLXERR(J), &
+        FLXCNV(J) / max(FLUX, 1.0D-30), GRDADB(J)
+    END IF
+  END DO
+
+  ! --- Post-polish state appended to the .iter file, in TCORR's
+  !     per-iteration table layout (no special header).  No classical
+  !     correction ran here, so DTLAMB/DTSURF/DTFLUX and DERIV are zero;
+  !     the T1 column carries the polish's total applied dT; ERROR and
+  !     R_NEWT are both the post-polish flux residual; CONV/TOT is
+  !     recomputed from the polished fluxes.
+  IF (IFPRNT(ITER) .NE. 0 .AND. ITER .EQ. NUMITS) THEN
+    WRITE(66, 110) &
+         (J, log10(max(TAUROS(J),1.0D-30)), T(J), 0.0D0, 0.0D0, &
+          0.0D0, T(J) - TPRE(J), FLXERR(J), 0.0D0, &
+          FLXERR(J), &
+          DLTDLP(J), GRDADB(J), HRAT_L(J), P(J), XNE(J), HEIGHT(J), &
+          ACCRAD(J), J=1,NRHOX)
+110 FORMAT(&
+      '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
+      '      ERROR       DERIV    R_NEWT   NABLA NABLA_AD     CONV/TOT', &
+      '        P           XNE       HEIGHT     ACCRAD' / &
+      '                  K        K       K       K       K', &
+      '          %           %         %                            ', &
+      '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
+      (I3, F8.3, F10.1, 4F8.1, &
+       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+       1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
+    flush(66)
+  END IF
+
+END SUBROUTINE CZC_POLISH
+
+!=========================================================================
+! SUBROUTINE CZC_NODE_RESID(JC, GT, TW, R)
+!
+! Residuals of the node-gradient placement system for CZC_PLACE_NODES:
+!   R(j-JC+1) = g_j(TW) - GT(j),  j = JC .. NRHOX
+! where g_j is the code's own node-gradient operator -- DERIV tangent
+! averaging in the interior, the log-slope at the bottom endpoint --
+! i.e. exactly the operator CONVEC uses to build DLTDLP.
+!=========================================================================
+SUBROUTINE CZC_NODE_RESID(JC, GT, TW, R)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)  :: JC
+  REAL(8), INTENT(IN)  :: GT(kw), TW(kw)
+  REAL(8), INTENT(OUT) :: R(kw)
+
+  REAL(8) :: DTW(kw)
+  INTEGER :: J
+
+  CALL DERIV(RHOX, TW, DTW, NRHOX)
+  DO J = JC, NRHOX - 1
+    R(J - JC + 1) = PTOTAL(J) / TW(J) / GRAV * DTW(J) - GT(J)
+  END DO
+  R(NRHOX - JC + 1) = log(TW(NRHOX) / TW(NRHOX - 1)) &
+                    / log(PTOTAL(NRHOX) / PTOTAL(NRHOX - 1)) - GT(NRHOX)
+
+END SUBROUTINE CZC_NODE_RESID
+
+!=========================================================================
+! SUBROUTINE CZC_PLACE_NODES(JC, GT, TW, INFO)
+!
+! Exact node-gradient placement for CZC_POLISH: solve the nonlinear
+! tridiagonal system  g_j(T) = GT(j), j = JC..NRHOX, for T(JC..NRHOX)
+! with T(JC-1) held fixed.  Newton iteration with a finite-difference
+! tridiagonal Jacobian (each node gradient depends on its three
+! neighboring temperatures) and the banded LU solver.
+!
+! This exists because the interval-space construction + averaged
+! refinement sweeps cannot null the alternating component of the
+! interval-slope vs node-average operator mismatch on a curved
+! nabla_ad profile (O(dT^2 * nabla_ad'') ~ 5e-5, which DEL^{3/2}
+! stiffness amplifies to ~16% bottom flux error).  Solving the node
+! system directly inverts the actual grading operator; the solution
+! differs from the sweep construction by tens of mK including a
+! legitimate two-grid component.
+!
+! On entry TW holds the starting profile (full grid); on success
+! TW(JC:NRHOX) is the solution.  INFO = 0 success; nonzero -> caller
+! falls back to the sweep construction.
+!=========================================================================
+SUBROUTINE CZC_PLACE_NODES(JC, GT, TW, INFO)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN)    :: JC
+  REAL(8), INTENT(IN)    :: GT(kw)
+  REAL(8), INTENT(INOUT) :: TW(kw)
+  INTEGER, INTENT(OUT)   :: INFO
+
+  INTEGER, PARAMETER :: MAXNEWT = 30
+  REAL(8), PARAMETER :: RTOL    = 1.0D-8   ! max |g - GT| target
+  REAL(8), PARAMETER :: FDSTEP  = 1.0D-2   ! Jacobian FD step [K]
+  REAL(8), PARAMETER :: STEPCAP = 5.0D0    ! per-Newton step cap [K]
+
+  REAL(8) :: R0(kw), RP(kw), STEP(kw)
+  REAL(8) :: AB(4, kw)                     ! KL=KU=1: LDAB = 2*KL+KU+1
+  REAL(8) :: TSAVE, RMAX, SMAX
+  INTEGER :: N, J, IT, COL, ROW, LUINFO
+
+  N = NRHOX - JC + 1
+  INFO = 1
+
+  DO IT = 1, MAXNEWT
+    CALL CZC_NODE_RESID(JC, GT, TW, R0)
+    RMAX = MAXVAL(ABS(R0(1:N)))
+    IF (.NOT. (RMAX .LT. 1.0D6)) RETURN   ! NaN guard
+    IF (RMAX .LT. RTOL) THEN
+      INFO = 0
+      RETURN
+    END IF
+
+    ! Finite-difference tridiagonal Jacobian, LAPACK band storage
+    AB = 0.0D0
+    DO COL = 1, N
+      J = JC + COL - 1
+      TSAVE = TW(J)
+      TW(J) = TSAVE + FDSTEP
+      CALL CZC_NODE_RESID(JC, GT, TW, RP)
+      TW(J) = TSAVE
+      DO ROW = max(1, COL - 1), min(N, COL + 1)
+        AB(3 + ROW - COL, COL) = (RP(ROW) - R0(ROW)) / FDSTEP
+      END DO
+    END DO
+
+    CALL BANDED_LU_FACTOR(AB, N, 1, 1, 4, LUINFO)
+    IF (LUINFO .NE. 0) RETURN
+    STEP(1:N) = -R0(1:N)
+    CALL BANDED_LU_SOLVE(AB, N, 1, 1, 4, STEP)
+
+    SMAX = MAXVAL(ABS(STEP(1:N)))
+    IF (.NOT. (SMAX .LT. 1.0D6)) RETURN   ! NaN guard
+    IF (SMAX .GT. STEPCAP) STEP(1:N) = STEP(1:N) * (STEPCAP / SMAX)
+    DO COL = 1, N
+      TW(JC + COL - 1) = TW(JC + COL - 1) + STEP(COL)
+    END DO
+    ! Safety: keep the block monotone increasing inward (never active
+    ! for the mK-scale adjustments this solves for)
+    DO J = JC, NRHOX
+      TW(J) = max(TW(J), TW(J - 1))
+    END DO
+  END DO
+
+  INFO = 2   ! no convergence within MAXNEWT
+
+END SUBROUTINE CZC_PLACE_NODES
+
+!=========================================================================
+! SUBROUTINE GRDADB_SCAN_MAYBE
+!
+! Developer probe (set ATLAS_GRDADB_SCAN=<file> in the environment; the
+! atlas12c driver calls this after iteration 1 so every table and cache
+! is warm; no-op when unset).  Sweeps T at two deep layers over a fine
+! (0.5 K) and a coarse (5 K) grid at fixed P, re-running the production
+! EOS probe chain (NELECT + COMPUTE_ALL_POPS + CONVEC MLT-only) at each
+! point, and writes T, GRDADB, HEATCP, DLRDLT, XNE, RHO per row.
+!
+! Purpose: decide whether the node-scale roughness measured in GRDADB
+! (D2 ~ 1e-3, the CZC_POLISH closure floor) is EOS evaluation texture
+! or under-resolved physics.  Smooth physics gives second differences
+! scaling with step^2 between the two grids; evaluation noise gives
+! step-independent second differences.  Stops the run when done.
+!=========================================================================
+SUBROUTINE GRDADB_SCAN_MAYBE
+
+  IMPLICIT NONE
+
+  CHARACTER(256) :: FN
+  INTEGER :: LENV, STATV, LUN, JS(2), K, J, IP
+  REAL(8) :: T0, TVAL
+  REAL(8), PARAMETER :: FINE_HALF = 60.0D0,  FINE_STEP = 0.5D0
+  REAL(8), PARAMETER :: CRSE_HALF = 350.0D0, CRSE_STEP = 5.0D0
+
+  CALL GET_ENVIRONMENT_VARIABLE('ATLAS_GRDADB_SCAN', FN, LENV, STATV)
+  IF (STATV .NE. 0 .OR. LENV .EQ. 0) RETURN
+
+  JS(1) = NRHOX - 6
+  JS(2) = NRHOX - 2
+  OPEN(NEWUNIT=LUN, FILE=TRIM(FN), STATUS='REPLACE', ACTION='WRITE')
+  WRITE(LUN, '(A)') '# tag  J        T             GRDADB          ' // &
+    'HEATCP          DLRDLT          XNE             RHO'
+
+  DO K = 1, 2
+    J  = JS(K)
+    T0 = T(J)
+    ! Fine scan then coarse scan around the layer's converged T
+    DO IP = -NINT(FINE_HALF/FINE_STEP), NINT(FINE_HALF/FINE_STEP)
+      TVAL = T0 + IP * FINE_STEP
+      CALL GRDADB_SCAN_POINT(J, TVAL, LUN, 'F')
+    END DO
+    DO IP = -NINT(CRSE_HALF/CRSE_STEP), NINT(CRSE_HALF/CRSE_STEP)
+      TVAL = T0 + IP * CRSE_STEP
+      CALL GRDADB_SCAN_POINT(J, TVAL, LUN, 'C')
+    END DO
+    ! Restore the layer
+    CALL GRDADB_SCAN_POINT(J, T0, LUN, 'R')
+  END DO
+
+  CLOSE(LUN)
+  WRITE(6, '(A)') ' GRDADB_SCAN: wrote '//TRIM(FN)//', stopping.'
+  CALL EXIT(0)
+
+END SUBROUTINE GRDADB_SCAN_MAYBE
+
+!=========================================================================
+! SUBROUTINE GRDADB_SCAN_POINT(J, TVAL, LUN, TAG)
+!
+! One evaluation for GRDADB_SCAN_MAYBE: set T(J) = TVAL, refresh the
+! thermodynamic arrays and populations, run CONVEC (MLT-only), and
+! write the layer's EOS derivatives.
+!=========================================================================
+SUBROUTINE GRDADB_SCAN_POINT(J, TVAL, LUN, TAG)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN) :: J, LUN
+  REAL(8), INTENT(IN) :: TVAL
+  CHARACTER(1), INTENT(IN) :: TAG
+
+  T(J)    = TVAL
+  TK(J)   = KBOL * TVAL
+  HKT(J)  = HPLANCK / TK(J)
+  HCKT(J) = HKT(J) * CLIGHT
+  TKEV(J) = KBOL_EV * TVAL
+  TLOG(J) = log(TVAL)
+  ITEMP   = ITEMP + 1
+
+  IFEDNS = 0
+  CALL COMPUTE_ONE_POP(0.D0, 1, XNE)
+  CALL COMPUTE_ALL_POPS
+  CALL COMPUTE_HEIGHT
+  CALL CONVEC(.TRUE.)
+
+  WRITE(LUN, '(A,I5,1P6E17.9)') TAG, J, T(J), GRDADB(J), HEATCP(J), &
+    DLRDLT(J), XNE(J), RHO(J)
+
+END SUBROUTINE GRDADB_SCAN_POINT
 
 !=========================================================================
 ! SUBROUTINE GET_TCORR_RESIDUALS(R)
