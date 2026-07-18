@@ -159,7 +159,7 @@ MODULE mod_parameters
   !      via SCALE_MODEL/TCORR using the TAU1LG/STEPLG log-tau grid.
   INTEGER, PARAMETER :: kw = 80
   INTEGER, PARAMETER :: mion = 1006    ! Number of ion species
-  INTEGER, PARAMETER :: maxmol = 200   ! Maximum number of molecules
+  INTEGER, PARAMETER :: maxmol = 400   ! Maximum number of molecules
   INTEGER, PARAMETER :: max1 = maxmol + 1
   INTEGER, PARAMETER :: maxeq = 35     ! Maximum number of equilibrium equations
   INTEGER, PARAMETER :: maxloc = 3 * maxmol
