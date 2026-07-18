@@ -7007,7 +7007,8 @@ SUBROUTINE READMOL
   ! as (D0, a0, a1, a2, a3, a4); we keep the variable names E1..E6 here
   ! for compatibility with the existing READ format.
   REAL(8)  :: E1, E2, E3, E4, E5, E6  ! D0, a0, a1, a2, a3, a4 (physical form)
-  REAL(8)  :: X                   ! remaining code after extracting components
+  INTEGER(8) :: IPAIRS           ! digit-pair part of code during extraction
+  INTEGER(8) :: IPLACE           ! place value of current digit pair
   INTEGER :: JMOL               ! molecule counter
   INTEGER :: KLOC               ! position in KCOMPS array
   INTEGER :: ID                  ! atomic number extracted from code
@@ -7090,11 +7091,16 @@ SUBROUTINE READMOL
       CALL EXIT(1)
     END IF
 
-    ! Extract atomic numbers from successive digit pairs
-    X = C
+    ! Extract atomic numbers from successive digit pairs.  Integer
+    ! arithmetic: the former real-valued peel, ID = int(X/XCODE + 0.5),
+    ! rounded the leading pair UP whenever the next pair was >= 50
+    ! (LaO = 857.00 decoded as ID = 9 then ID = -43).  No species had a
+    ! trailing pair >= 50 until La (Z = 57) entered the network.
+    IPAIRS = NINT(C * 100.0D0, KIND=8) / 100_8
     DO I = II, 8
-      ID = int(X / XCODE(I) + 0.5D0)
-      X  = X - dble(ID) * XCODE(I)
+      IPLACE = 10_8 ** (2 * (8 - I))
+      ID = int(IPAIRS / IPLACE)
+      IPAIRS = IPAIRS - int(ID, KIND=8) * IPLACE
       IF (ID .EQ. 0) ID = 100       ! code 00 → neutral atom (element 100)
       IF (ID .LT. 1 .OR. ID .GT. 101) THEN
         WRITE(6, '(A,I5,A,F18.2)') ' READMOL ERROR: decoded atomic ID =', ID, &
@@ -7114,7 +7120,7 @@ SUBROUTINE READMOL
 
     ! Extract ionization state from decimal part: .NN → NN electrons removed
     ! Each removed electron adds component 101 (free electron)
-    ION = int(X * 100.0D0 + 0.5D0)
+    ION = int(MOD(NINT(C * 100.0D0, KIND=8), 100_8))
     IF (ION .GE. 1) THEN
       IFEQUA(100) = 1    ! neutral atom appears in ion balance
       IFEQUA(101) = 1    ! electron appears in ion balance
