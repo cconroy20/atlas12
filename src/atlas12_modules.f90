@@ -161,7 +161,7 @@ MODULE mod_parameters
   INTEGER, PARAMETER :: mion = 1006    ! Number of ion species
   INTEGER, PARAMETER :: maxmol = 400   ! Maximum number of molecules
   INTEGER, PARAMETER :: max1 = maxmol + 1
-  INTEGER, PARAMETER :: maxeq = 35     ! Maximum number of equilibrium equations
+  INTEGER, PARAMETER :: maxeq = 50     ! Maximum number of equilibrium equations
   INTEGER, PARAMETER :: maxloc = 3 * maxmol
 
   ! Line opacity cutoff: a line is dropped (in SELECTLINES, in the LINOP1/
