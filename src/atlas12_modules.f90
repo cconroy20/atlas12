@@ -8399,6 +8399,7 @@ SUBROUTINE NMOLEC(MODE)
   REAL(8)  :: E_CONTRIB(kw, maxmol)
   REAL(8)  :: XE_CONTRIB(kw, maxmol)
   INTEGER :: IDZ(maxmol), NION_MOL(maxmol)
+  INTEGER :: NCOMP_ATOM       ! component count of the most recent atom/ion row
 
   ! --- Local scalars ---
   REAL(8)  :: XNTOT          ! total particle density = P / kT
@@ -8736,6 +8737,7 @@ SUBROUTINE NMOLEC(MODE)
   ! Compute n/U for molecules and track element IDs for electron diagnostics
   IZ = 1
   IDZ(IZ) = 1
+  NCOMP_ATOM = 0
   DO JMOL = 1, NUMMOL
     NCOMP = LOCJ(JMOL + 1) - LOCJ(JMOL)
 
@@ -8764,10 +8766,15 @@ SUBROUTINE NMOLEC(MODE)
       ! Atom/ion: use PFSAHA to get n/U
       ID = int(XNMOLCODE(JMOL))
       IF (ID .NE. IDZ(IZ)) THEN
-        IF (JMOL .GE. 3) NION_MOL(IZ) = LOCJ(JMOL - 1) - LOCJ(JMOL - 2)
+        ! A new element starts here, so close out the previous group.  Rows
+        ! within a group run I, II, III, ... and the Nth carries N components
+        ! (the atom plus N-1 electrons), so the last row's NCOMP-1 is the
+        ! number of ionization stages above neutral.
+        IF (NCOMP_ATOM .GT. 0) NION_MOL(IZ) = NCOMP_ATOM - 1
         IZ = IZ + 1
         IDZ(IZ) = ID
       END IF
+      NCOMP_ATOM = NCOMP
 
       DO J = 1, NRHOX
         CALL PFSAHA(J, ID, NCOMP, 3, FRAC)
@@ -8776,15 +8783,26 @@ SUBROUTINE NMOLEC(MODE)
     END IF
   END DO
 
-  ! Compute electron contribution per element
+  ! Close out the final element group.  The loop above only assigns
+  ! NION_MOL(IZ) when a *later* element appears, and the last atom/ion row is
+  ! followed by molecules, so without this the last group's entry would be
+  ! read uninitialized by the diagnostic below.
   NZ = IZ
-  DO IZ = 1, NZ
-    DO J = 1, NRHOX
-      CALL PFSAHA(J, IDZ(IZ), NION_MOL(IZ), 4, E_CONTRIB)
-      XE_CONTRIB(J, IZ) = E_CONTRIB(J, 1) * XNATOM(J) &
-                         * XABUND(J, IDZ(IZ)) / XNE(J)
+  IF (NCOMP_ATOM .GT. 0) NION_MOL(NZ) = NCOMP_ATOM - 1
+
+  ! Electron contribution per element.  Consumed only by the IDEBUG table
+  ! printed below, so it is computed under the same condition rather than on
+  ! every call -- it costs NZ*NRHOX PFSAHA evaluations that are otherwise
+  ! discarded.
+  IF (ITER .EQ. NUMITS .AND. IDEBUG .EQ. 1) THEN
+    DO IZ = 1, NZ
+      DO J = 1, NRHOX
+        CALL PFSAHA(J, IDZ(IZ), NION_MOL(IZ), 4, E_CONTRIB)
+        XE_CONTRIB(J, IZ) = E_CONTRIB(J, 1) * XNATOM(J) &
+                           * XABUND(J, IDZ(IZ)) / XNE(J)
+      END DO
     END DO
-  END DO
+  END IF
 
   END IF  ! MODE /= 2 and MODE /= 12
 
