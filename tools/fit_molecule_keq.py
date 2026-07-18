@@ -216,7 +216,12 @@ def cmd_fit(names, write):
             sys.exit(f'{name}: not in BC16 Table 7')
         if bc_name not in table1:
             sys.exit(f'{name}: no adopted D0 in BC16 Table 1')
-        d0 = table1[bc_name]
+        # Round D0 to the F7.3 file precision BEFORE fitting: E1 and a0..a4
+        # are a matched set (a1 is degenerate with D0/k_B), so the fit must
+        # use exactly the D0 that lands in the row.  Table 1 carries up to
+        # six decimals; fitting with those and writing three shifted a1 by
+        # up to ~5 in its 4th significant figure.
+        d0 = round(table1[bc_name], 3)
         coeffs = fit_diatomic(d0, table7[bc_name], tgrid)
         row = format_row(name, float(code), d0, coeffs,
                          'BC16 fit; D0 = BC16 Table 1; new species')
