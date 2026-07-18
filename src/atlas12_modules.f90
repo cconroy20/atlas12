@@ -8699,10 +8699,14 @@ SUBROUTINE NMOLEC(MODE)
   IF (ITER .EQ. NUMITS .AND. IFSYNTHE .EQ. 1 .AND. IFMOLOUT .EQ. 1) THEN
     DO JMOL1 = 1, NUMMOL, 10
       JMOL10 = min(JMOL1 + 9, NUMMOL)
-      WRITE(35, '(49X,"MOLECULAR NUMBER DENSITIES"/5X,10F12.2)') &
+      ! Column width 14 with an explicit 3-digit exponent field (E3): the
+      ! former F12.2/E12.3 ran 12-character species codes together in the
+      ! header (e.g. 101010106.00101010114.00) and, for |exponent| > 99,
+      ! Fortran drops the 'E' to make the value fit (4.512-146).
+      WRITE(35, '(49X,"MOLECULAR NUMBER DENSITIES"/"    J",10F14.2)') &
         (XNMOLCODE(JMOL), JMOL = JMOL1, JMOL10)
       DO J = 1, NRHOX
-        WRITE(35, '(I5,1P10E12.3)') J, (XNMOL(J, JMOL), JMOL = JMOL1, JMOL10)
+        WRITE(35, '(I5,1P10E14.4E3)') J, (XNMOL(J, JMOL), JMOL = JMOL1, JMOL10)
       END DO
     END DO
   END IF
