@@ -44,4 +44,14 @@ POLYATOMIC_D0 = {
              'D0': 17.016, 'source': 'CCCBDB (Gurvich)',     'verified': True},
     'SiH4': {'exomol_name': 'SiH4', 'atoms': ['H', 'H', 'H', 'H', 'Si'],
              'D0': 13.132155, 'source': 'ATcT1.220',            'verified': True},
+    # --- July 2026 additions (D0 ledger in the adding commit; "JANAF
+    # chain" = raw JANAF dHf(0 K) of molecule and atoms, janaf_loader) ---
+    'KOH':  {'exomol_name': 'KOH',  'atoms': ['H', 'O', 'K'],
+             'D0': 8.096,  'source': 'JANAF chain',              'verified': True},
+    'LiOH': {'exomol_name': 'LiOH', 'atoms': ['H', 'O', 'Li'],
+             'D0': 8.836,  'source': 'JANAF chain',              'verified': True},
+    'SiH2': {'exomol_name': 'SiH2', 'atoms': ['H', 'H', 'Si'],
+             'D0': 6.270,  'source': 'Berkowitz & Ruscic 1987',  'verified': True},
+    'HBO':  {'exomol_name': 'HBO',  'atoms': ['H', 'B', 'O'],
+             'D0': 12.701, 'source': 'JANAF dHf298 + ATcT B(g)', 'verified': False},
 }

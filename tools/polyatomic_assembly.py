@@ -30,9 +30,9 @@ C_TR = 1.8793e20            # (2 pi m_u k / h^2)^{3/2}  [cm^-3 amu^-1.5 K^-1.5]
 NS_DIVIDE = True
 
 # Nuclear spin degeneracy (2I+1) of the main isotope
-GNS = {'H': 2, 'He': 1, 'C': 1, 'N': 3, 'O': 1, 'F': 2, 'Na': 4,
-       'Mg': 1, 'Al': 6, 'Si': 1, 'P': 2, 'S': 1, 'Cl': 4, 'K': 4,
-       'Ca': 1, 'Ti': 1, 'Fe': 1}
+GNS = {'H': 2, 'He': 1, 'Li': 4, 'B': 4, 'C': 1, 'N': 3, 'O': 1,
+       'F': 2, 'Na': 4, 'Mg': 1, 'Al': 6, 'Si': 1, 'P': 2, 'S': 1,
+       'Cl': 4, 'K': 4, 'Ca': 1, 'Ti': 1, 'Fe': 1}
 
 
 def _gns_total(atoms_sym):

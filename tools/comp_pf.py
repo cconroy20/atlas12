@@ -523,34 +523,60 @@ def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym,
     }
 
 
-def compute_polyatomic_new(entry_cur, janaf_rec):
+def compute_polyatomic_new(entry_cur, janaf_rec, em_ref=None):
     """
     Page for a polyatomic added after the April refit: no Kurucz
-    ancestry, so the curves are the CURRENT filed row and the
-    NIST-JANAF (Stock/Kitzmann) reference it was fit to.
+    ancestry, so the curves are the CURRENT filed row and the reference
+    it was fit to -- the ExoMol assembly when em_ref = (d0_info, exomol,
+    atomic) is given (with any JANAF/SK curve kept as an overlay), else
+    the NIST-JANAF (Stock/Kitzmann) fit.
     """
     T = T_POLY
     N = entry_cur['n_real_atoms']
     from ggchem_loader import ln_K_kurucz as janaf_lnK
-    log10_Kp_janaf = kurucz_to_bc16_pressure_convention(
-        janaf_lnK(janaf_rec, T) / np.log(10.0), T, N)
+    log10_Kp_janaf = None
+    if janaf_rec is not None:
+        log10_Kp_janaf = kurucz_to_bc16_pressure_convention(
+            janaf_lnK(janaf_rec, T) / np.log(10.0), T, N)
     E = entry_cur['E']
     lnK_cur = (E[0] / (K_BOLTZMANN_EV * T)
                - 1.5 * entry_cur['n_trans'] * np.log(T)
                + E[1] + E[2] / T + E[3] * np.log(T) + E[4] * T + E[5] / T**2)
     log10_Kp_cur = kurucz_to_bc16_pressure_convention(
         lnK_cur / np.log(10.0), T, N)
-    T_pts = np.arange(100.0, 6001.0, 200.0)
-    pts = kurucz_to_bc16_pressure_convention(
-        janaf_lnK(janaf_rec, T_pts) / np.log(10.0), T_pts, N)
-    delta = log10_Kp_cur - log10_Kp_janaf
-    mask = (T >= T_STAT_LO_P) & (T <= T_STAT_HI_P)
+
+    if em_ref is not None:
+        # ExoMol-assembled reference on its native range
+        d0i, exomol, atomic = em_ref
+        name = d0i['exomol_name']
+        ref_curve = assemble_log10_Kp_polyatomic(
+            d0i['atoms'], d0i['D0'],
+            lambda x: exomol.Q(name, x), atomic, T)
+        Tn = exomol.molecules[name]['T']
+        T_pts = Tn[(Tn >= 1000.0)][::max(1, len(Tn) // 25)]
+        pts = assemble_log10_Kp_polyatomic(
+            d0i['atoms'], d0i['D0'],
+            lambda x: exomol.Q(name, x), atomic, T_pts)
+        ref_label, pts_label = 'ExoMol', 'ExoMol data'
+        tmax_em = exomol.molecules[name]['Tmax']
+    else:
+        ref_curve = log10_Kp_janaf
+        T_pts = np.arange(100.0, 6001.0, 200.0)
+        pts = kurucz_to_bc16_pressure_convention(
+            janaf_lnK(janaf_rec, T_pts) / np.log(10.0), T_pts, N)
+        ref_label, pts_label = 'JANAF/SK', 'JANAF/SK fit points'
+        tmax_em = None
+
+    delta = log10_Kp_cur - ref_curve
+    mask = ((T >= T_STAT_LO_P) & (T <= T_STAT_HI_P)
+            & np.isfinite(delta))
     return {
         'kind': 'polyatomic', 'is_new': True, 'self_fit': False,
-        'ref_label': 'JANAF/SK', 'ref_points_label': 'JANAF/SK fit points',
+        'ref_label': ref_label, 'ref_points_label': pts_label,
         'T': T, 'N': N,
         'log10_K_kurucz_orig': None, 'log10_K_kurucz_updated': None,
-        'log10_K_exomol': None, 'log10_K_bc16': None,
+        'log10_K_exomol': ref_curve if em_ref is not None else None,
+        'log10_K_bc16': None,
         'log10_K_janaf': log10_Kp_janaf, 'log10_K_physical': log10_Kp_cur,
         'phys_coeffs': (E[0],) + tuple(E[1:]),
         'em_T_pts': T_pts, 'em_log10K_pts': pts,
@@ -566,7 +592,7 @@ def compute_polyatomic_new(entry_cur, janaf_rec):
         'D0_source': 'SK/JANAF', 'D0_verified': True,
         'formula': entry_cur['formula'], 'bc16_name': entry_cur['formula'],
         'atoms': [ELEMENT_SYMBOLS[a] for a in entry_cur['real_atoms']],
-        'Tmax_em': None,
+        'Tmax_em': tmax_em,
     }
 
 
@@ -1140,11 +1166,19 @@ def run(orig_dat='molecules.dat',
                 continue
             atoms_sym = [ELEMENT_SYMBOLS[a] for a in e_cur['real_atoms']]
             rec = janaf_by_atoms.get(tuple(sorted(atoms_sym)))
-            if rec is None:
-                print(f'  new polyatomic {e_cur["formula"]}: no JANAF match')
+            # ExoMol-fit rows reference the ExoMol assembly instead
+            em_ref = None
+            for d0i in POLYATOMIC_D0.values():
+                if (sorted(d0i['atoms']) == sorted(atoms_sym)
+                        and exomol.has(d0i['exomol_name'])):
+                    em_ref = (d0i, exomol, atomic)
+                    break
+            if rec is None and em_ref is None:
+                print(f'  new polyatomic {e_cur["formula"]}: no reference')
                 continue
             try:
-                poly_new.append(compute_polyatomic_new(e_cur, rec))
+                poly_new.append(
+                    compute_polyatomic_new(e_cur, rec, em_ref=em_ref))
             except Exception as exc:
                 print(f'  new polyatomic {e_cur["formula"]}: skipped ({exc})')
         poly_new.sort(key=lambda r: r['formula'])
