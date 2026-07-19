@@ -214,12 +214,22 @@ def compute_diatomic(entry_orig, entry_upd, bc16_mol, atomic, exomol):
     can be plotted on a single axis.
     """
     T = T_DIATOMIC
-    ion = entry_orig['ion']
-    formula = entry_orig['formula']
+    # entry_orig is None for species added after the April 2026 refit:
+    # they have no Kurucz polynomial ancestry, so the orig/updated curves
+    # (and their residuals) are absent and only the BC16 reference plus
+    # the physical-form fit are shown.
+    is_new = entry_orig is None
+    base = entry_upd if is_new else entry_orig
+    ion = base['ion']
+    formula = base['formula']
 
     # --- Kurucz original and updated (cgs from polynomial)
-    log10_K_kur = kurucz_lnKeq(entry_orig, T) / np.log(10.0)
-    log10_K_upd = kurucz_lnKeq(entry_upd,  T) / np.log(10.0)
+    if is_new:
+        log10_K_kur = None
+        log10_K_upd = None
+    else:
+        log10_K_kur = kurucz_lnKeq(entry_orig, T) / np.log(10.0)
+        log10_K_upd = kurucz_lnKeq(entry_upd,  T) / np.log(10.0)
 
     # --- BC16 reference (convert from K_p [Pa] to cgs).
     # BC16 data extend only to T_max = 10000 K; mask the curve outside
@@ -252,7 +262,7 @@ def compute_diatomic(entry_orig, entry_upd, bc16_mol, atomic, exomol):
     # for it. The raw BC16 points are also already on BC16's axis.
     saha_log10 = None
     channel = None
-    if ion == 1 and formula in ION_DISSOCIATION_CHANNEL:
+    if ion == 1 and formula in ION_DISSOCIATION_CHANNEL and not is_new:
         neutral_atom, ionized_atom = ION_DISSOCIATION_CHANNEL[formula]
         saha_log10 = atomic.log10_K_Saha(ionized_atom, T)
         log10_K_kur = log10_K_kur - saha_log10
@@ -272,21 +282,25 @@ def compute_diatomic(entry_orig, entry_upd, bc16_mol, atomic, exomol):
             pass
 
     # --- Residuals (vs BC16, the diatomic reference)
-    delta_kur = log10_K_kur - log10_K_bc
-    delta_upd = log10_K_upd - log10_K_bc
     delta_phys = log10_K_phys - log10_K_bc
-
-    # --- Stats over reliable range
     mask = (T >= T_STAT_LO_D) & (T <= T_STAT_HI_D)
-    rms_kur  = float(np.sqrt(np.nanmean(delta_kur[mask]**2)))
-    max_kur  = float(np.nanmax(np.abs(delta_kur[mask])))
-    rms_upd  = float(np.sqrt(np.nanmean(delta_upd[mask]**2)))
-    max_upd  = float(np.nanmax(np.abs(delta_upd[mask])))
     rms_phys = float(np.sqrt(np.nanmean(delta_phys[mask]**2)))
     max_phys = float(np.nanmax(np.abs(delta_phys[mask])))
+    if is_new:
+        delta_kur = None
+        delta_upd = None
+        rms_kur = max_kur = rms_upd = max_upd = float('nan')
+    else:
+        delta_kur = log10_K_kur - log10_K_bc
+        delta_upd = log10_K_upd - log10_K_bc
+        rms_kur  = float(np.sqrt(np.nanmean(delta_kur[mask]**2)))
+        max_kur  = float(np.nanmax(np.abs(delta_kur[mask])))
+        rms_upd  = float(np.sqrt(np.nanmean(delta_upd[mask]**2)))
+        max_upd  = float(np.nanmax(np.abs(delta_upd[mask])))
 
     return {
         'kind':        'diatomic',
+        'is_new':      is_new,
         'T':           T,
         'log10_K_kurucz_orig':    log10_K_kur,
         'log10_K_kurucz_updated': log10_K_upd,
@@ -307,7 +321,7 @@ def compute_diatomic(entry_orig, entry_upd, bc16_mol, atomic, exomol):
         'max_physical': max_phys,
         'channel':     channel,
         'ion':         ion,
-        'D0_kurucz_orig': entry_orig['E'][0],
+        'D0_kurucz_orig': float('nan') if is_new else entry_orig['E'][0],
         'D0_kurucz_upd':  entry_upd['E'][0],
         'D0_BC16':        bc16_mol.D0_adopted,
         'bc16_name':      bc16_mol.name,
@@ -534,9 +548,12 @@ def _plot_one(pdf, r):
     is_poly = (r['kind'] == 'polyatomic')
 
     # --- Top panel: log10 K curves
-    ax_top.plot(T, r['log10_K_kurucz_orig'], '-', color='C0', lw=1.5,
-                label=f'Kurucz original ($D_0$={r["D0_kurucz_orig"]:.3f})')
-    if abs(r['D0_kurucz_upd'] - r['D0_kurucz_orig']) > 1e-4:
+    # (orig/updated absent for species added after the April 2026 refit)
+    if r['log10_K_kurucz_orig'] is not None:
+        ax_top.plot(T, r['log10_K_kurucz_orig'], '-', color='C0', lw=1.5,
+                    label=f'Kurucz original ($D_0$={r["D0_kurucz_orig"]:.3f})')
+    if (r['log10_K_kurucz_updated'] is not None
+            and abs(r['D0_kurucz_upd'] - r['D0_kurucz_orig']) > 1e-4):
         ax_top.plot(T, r['log10_K_kurucz_updated'], '--', color='C4', lw=1.5,
                     label=f'Kurucz updated ($D_0$={r["D0_kurucz_upd"]:.3f})')
 
@@ -621,7 +638,11 @@ def _plot_one(pdf, r):
                      f'($\\Delta_{{upd-orig}}={r["D0_kurucz_upd"]-r["D0_kurucz_orig"]:+.3f}$){ver_tag}')
     else:
         species_label = r['bc16_name']   # canonical BC16/IUPAC ordering
-        if r['ion'] == 0:
+        if r.get('is_new'):
+            title = (f'{species_label}  [new species, July 2026]\n'
+                     f'$D_0$ = {r["D0_kurucz_upd"]:.3f} eV (BC16 Table 1); '
+                     f'no prior Kurucz entry')
+        elif r['ion'] == 0:
             title = (f'{species_label}\n'
                      f'$D_0$: orig={r["D0_kurucz_orig"]:.3f}, '
                      f'updated={r["D0_kurucz_upd"]:.3f}, '
@@ -651,9 +672,11 @@ def _plot_one(pdf, r):
             ax_bot.plot(T, r['delta_physical'], '-', color='C2', lw=1.6,
                         label='Physical form - Kurucz poly')
     else:
-        ax_bot.plot(T, r['delta_kurucz'], '-', color='C0', lw=1.3,
-                    label='Kurucz original')
-        if abs(r['D0_kurucz_upd'] - r['D0_kurucz_orig']) > 1e-4:
+        if r.get('delta_kurucz') is not None:
+            ax_bot.plot(T, r['delta_kurucz'], '-', color='C0', lw=1.3,
+                        label='Kurucz original')
+        if (r.get('delta_updated') is not None
+                and abs(r['D0_kurucz_upd'] - r['D0_kurucz_orig']) > 1e-4):
             ax_bot.plot(T, r['delta_updated'], '--', color='C4', lw=1.3,
                         label='Kurucz updated')
         if r.get('delta_physical') is not None:
@@ -676,17 +699,21 @@ def _plot_one(pdf, r):
         mask = (T >= T_STAT_LO_P) & (T <= T_STAT_HI_P)
     else:
         mask = (T >= T_STAT_LO_D) & (T <= T_STAT_HI_D)
+    d_ref = (r['delta_kurucz'] if r.get('delta_kurucz') is not None
+             else r['delta_physical'])
     d_all = np.concatenate([
-        r['delta_kurucz'][mask],
-        r['delta_updated'][mask] if abs(r['D0_kurucz_upd']-r['D0_kurucz_orig'])>1e-4
-        else r['delta_kurucz'][mask],
+        d_ref[mask],
+        r['delta_updated'][mask]
+        if (r.get('delta_updated') is not None
+            and abs(r['D0_kurucz_upd']-r['D0_kurucz_orig']) > 1e-4)
+        else d_ref[mask],
     ])
     d_all = d_all[~np.isnan(d_all)]
     if len(d_all) > 0:
         stat_max = max(0.1, 1.5 * np.max(np.abs(d_all)))
     else:
         stat_max = 0.5
-    full_max = max(1e-9, np.max(np.abs(r['delta_kurucz'])))
+    full_max = max(1e-9, np.nanmax(np.abs(d_ref)))
     if full_max <= 2.0 * stat_max:
         ylim = max(stat_max, full_max * 1.1)
     else:
@@ -698,6 +725,9 @@ def _plot_one(pdf, r):
         stats = (f'In fit window {r["fit_T_lo"]:.0f}-{r["fit_T_hi"]:.0f} K:  '
                  f'physical-vs-Kurucz: RMS={r["rms_physical"]:.4f}, '
                  f'max={r["max_physical"]:.4f}')
+    elif r.get('is_new'):
+        stats = (f'In stat range:  physical vs BC16: '
+                 f'RMS={r["rms_physical"]:.3f}, max={r["max_physical"]:.3f}')
     else:
         stats = (f'In stat range:  '
                  f'orig: RMS={r["rms_kurucz"]:.3f}, max={r["max_kurucz"]:.3f}')
@@ -720,16 +750,19 @@ def _plot_one(pdf, r):
     plt.close(fig)
 
 
-def _plot_cover(pdf, results_diat_n, results_diat_i, results_poly):
+def _plot_cover(pdf, results_diat_n, results_diat_i, results_poly,
+                results_new=()):
     """Cover page summarizing the contents."""
     fig = plt.figure(figsize=(8.5, 11))
     fig.text(0.5, 0.95, 'Kurucz molecules.dat: original / updated / physical-form fit',
              ha='center', fontsize=14, fontweight='bold')
-    fig.text(0.5, 0.92,
-             f'{len(results_diat_n)} diatomic neutrals, '
-             f'{len(results_diat_i)} diatomic ions, '
-             f'{len(results_poly)} polyatomics',
-             ha='center', fontsize=11)
+    counts = (f'{len(results_diat_n)} diatomic neutrals, '
+              f'{len(results_diat_i)} diatomic ions, '
+              f'{len(results_poly)} polyatomics')
+    if results_new:
+        counts += (f', {len(results_new)} diatomics added July 2026 '
+                   f'(BC16 fit only; no Kurucz ancestry)')
+    fig.text(0.5, 0.92, counts, ha='center', fontsize=11)
 
     lines = []
     lines.append('')
@@ -800,6 +833,7 @@ def _plot_cover(pdf, results_diat_n, results_diat_i, results_poly):
 
 def run(orig_dat='molecules.dat',
         updated_dat='molecules_updated.dat',
+        current_dat=None,
         out_pdf='kurucz_unified_report.pdf',
         out_csv='kurucz_unified_summary.csv'):
     bc16   = load_bc16()
@@ -834,6 +868,26 @@ def run(orig_dat='molecules.dat',
 
     diat_neutrals.sort(key=lambda r: -r['max_kurucz'])
     diat_ions.sort(key=lambda r: -r['max_kurucz'])
+
+    # ----- NEW DIATOMICS (post-April species from the current file) -----
+    # Species in current_dat with a BC16 match but no entry in orig_dat
+    # have no Kurucz-polynomial ancestry: their pages show the BC16
+    # reference and the physical-form fit only.
+    diat_new = []
+    if current_dat is not None:
+        k_cur = parse_molecules_dat(current_dat)
+        lineage_codes = {e['code'] for e in k_orig}
+        for e_cur, bc_name, _ in match_kurucz_to_bc16(k_cur, bc16):
+            if bc_name is None or e_cur['code'] in lineage_codes:
+                continue
+            try:
+                r = compute_diatomic(None, e_cur, bc16[bc_name],
+                                     atomic, exomol)
+            except Exception as e:
+                print(f'  new diatomic {e_cur["formula"]}: skipped ({e})')
+                continue
+            diat_new.append(r)
+        diat_new.sort(key=lambda r: r['bc16_name'])
 
     # ----- POLYATOMICS (matched against POLYATOMIC_D0 + .pf availability) -----
     poly_results = []
@@ -901,10 +955,12 @@ def run(orig_dat='molecules.dat',
 
     # ----- Write PDF -----
     with PdfPages(out_pdf) as pdf:
-        _plot_cover(pdf, diat_neutrals, diat_ions, poly_results)
+        _plot_cover(pdf, diat_neutrals, diat_ions, poly_results, diat_new)
         for r in diat_neutrals:
             _plot_one(pdf, r)
         for r in diat_ions:
+            _plot_one(pdf, r)
+        for r in diat_new:
             _plot_one(pdf, r)
         for r in poly_results:
             _plot_one(pdf, r)
@@ -922,6 +978,7 @@ def run(orig_dat='molecules.dat',
         all_results = (
             [(r, 'diatomic-neutral')   for r in diat_neutrals] +
             [(r, 'diatomic-ion')       for r in diat_ions]     +
+            [(r, 'diatomic-new')       for r in diat_new]      +
             [(r, 'polyatomic')         for r in poly_results]  +
             [(r, 'polyatomic-selffit') for r in poly_selffit_results])
         for r, label in all_results:
@@ -959,6 +1016,7 @@ def run(orig_dat='molecules.dat',
           f'{"avg RMS orig":>13s}  {"avg RMS upd":>13s}  {"avg RMS phys":>13s}')
     for label, results in [('diatomic neutrals',     diat_neutrals),
                            ('diatomic ions',         diat_ions),
+                           ('diatomics new (2026)',  diat_new),
                            ('polyatomics (ref)',     poly_results),
                            ('polyatomics (self-fit)', poly_selffit_results)]:
         if not results:
