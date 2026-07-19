@@ -185,6 +185,32 @@ def evaluate_physical(coeffs, n_trans, T):
             + a0 + a1 / T + a2 * np.log(T) + a3 * T + a4 / T**2)
 
 
+# Canonical display names for species whose internal formula string uses
+# the code-ordered (ascending-Z) convention rather than chemical convention.
+_DISPLAY_OVERRIDE = {
+    'O2Ti': 'TiO2', 'O2V': 'VO2', 'O2Si': 'SiO2', 'O2S': 'SO2',
+    'HOAl': 'AlOH', 'OAl2': 'Al2O', 'HO2Al': 'AlO2H', 'HOMg': 'MgOH',
+    'HOCa': 'CaOH', 'HONa': 'NaOH', 'O2H': 'HO2', 'H2C': 'CH2',
+    'H2N': 'NH2', 'C2Si': 'SiC2', 'CSi2': 'Si2C', 'COS': 'OCS',
+}
+
+
+def display_formula(name):
+    """'O2Ti' -> 'TiO$_2$', 'H3+' -> 'H$_3^+$': chemical-convention name
+    with mathtext subscripts for counts and superscripts for charge."""
+    import re as _re
+    name = _DISPLAY_OVERRIDE.get(name, name)
+    m = _re.match(r'^(.*?)([+-]+)$', name)
+    base, charge = (m.group(1), m.group(2)) if m else (name, '')
+    out = _re.sub(r'(\d+)', r'$_\1$', base)
+    if charge:
+        if out.endswith('$'):                    # merge H$_3$ + ^+ -> H$_3^+$
+            out = out[:-1] + f'^{charge}$'
+        else:
+            out += f'$^{charge}$'
+    return out
+
+
 # Diatomic ion channels (same as elsewhere)
 ION_DISSOCIATION_CHANNEL = {
     'H2+':  ('H', 'H'),
@@ -737,51 +763,25 @@ def _plot_one(pdf, r):
     # Title -- always use BC16 name as the primary species label for diatomics
     # (e.g. "AlO" not Kurucz's "OAl"); polyatomics use Kurucz formula since
     # there's no BC16 entry.
+    # One-line title: the species name in chemical convention, plus a
+    # status tag where applicable.  D0 values live in the legend labels.
     if is_poly:
-        atoms_str = '+'.join(r['atoms'])
-        if r.get('is_new'):
-            title = (f'{r["formula"]} ({atoms_str}; N={r["N"]})  '
-                     f'[new species, July 2026]\n'
-                     f'$D_0$ = {r["D0_kurucz_upd"]:.3f} eV (SK/JANAF '
-                     f'content); fit to NIST-JANAF (Stock-Kitzmann)')
-        elif r.get('self_fit'):
-            # No external D0 reference. Title states the source data is
-            # Kurucz's own polynomial fit over a stated T window.
-            title = (f'{r["formula"]} ({atoms_str}; N={r["N"]})  '
-                     f'[no external reference]\n'
-                     f'$D_0$ (Kurucz $E_1$): {r["D0_kurucz_orig"]:.3f} eV  |  '
-                     f'physical-form fit: {r["fit_T_lo"]:.0f}-{r["fit_T_hi"]:.0f} K')
-        else:
-            ver_tag = '' if r['D0_verified'] else ' (literature only)'
-            title = (f'{r["formula"]} ({atoms_str}; N={r["N"]})\n'
-                     f'$D_0$: orig={r["D0_kurucz_orig"]:.3f}, '
-                     f'updated={r["D0_kurucz_upd"]:.3f}, '
-                     f'modern={r["D0_BC16"]:.3f} eV  '
-                     f'($\\Delta_{{upd-orig}}={r["D0_kurucz_upd"]-r["D0_kurucz_orig"]:+.3f}$){ver_tag}')
+        disp = display_formula(r['formula'])
     else:
-        species_label = r['bc16_name']   # canonical BC16/IUPAC ordering
-        if r.get('is_new'):
-            title = (f'{species_label}  [new species, July 2026]\n'
-                     f'$D_0$ = {r["D0_kurucz_upd"]:.3f} eV (BC16 Table 1); '
-                     f'no prior Kurucz entry')
-        elif r['ion'] == 0:
-            title = (f'{species_label}\n'
-                     f'$D_0$: orig={r["D0_kurucz_orig"]:.3f}, '
-                     f'updated={r["D0_kurucz_upd"]:.3f}, '
-                     f'BC16={r["D0_BC16"]:.3f} eV  '
-                     f'($\\Delta_{{upd-orig}}={r["D0_kurucz_upd"]-r["D0_kurucz_orig"]:+.3f}$)')
-        elif r['channel'] is not None:
-            ch = r['channel']
-            title = (f'{species_label} (channel: '
-                     f'{species_label} -> {ch[0]} + {ch[1]}+)\n'
-                     f'Kurucz $E_1$: orig={r["D0_kurucz_orig"]:.3f}, '
-                     f'updated={r["D0_kurucz_upd"]:.3f}; '
-                     f'BC16 $D_0$={r["D0_BC16"]:.3f} eV')
-        else:
-            title = (f'{species_label} (ion, no Saha channel mapped)\n'
-                     f'$E_1$: orig={r["D0_kurucz_orig"]:.3f}, '
-                     f'updated={r["D0_kurucz_upd"]:.3f}')
-    ax_top.set_title(title, fontsize=9.5)
+        disp = display_formula(r['bc16_name'])
+    if r.get('is_new'):
+        title = f'{disp}  [new species, July 2026]'
+    elif r.get('self_fit') and r.get('log10_K_janaf') is None:
+        title = f'{disp}  [no external reference]'
+    elif not is_poly and r['channel'] is not None:
+        ch = r['channel']
+        title = (f'{disp} $\\rightarrow$ {display_formula(ch[0])} + '
+                 f'{display_formula(ch[1] + "+")}')
+    elif not is_poly and r['ion'] != 0:
+        title = f'{disp} -- ion, no Saha channel mapped'
+    else:
+        title = disp
+    ax_top.set_title(title, fontsize=12)
 
     # --- Bottom panel: residuals vs reference
     ax_bot.axhline(0, color='k', lw=0.6)
