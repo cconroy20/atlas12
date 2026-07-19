@@ -72,6 +72,31 @@ def assemble_log10_Kp_polyatomic(atoms_sym, D0_eV, Qmol, atomic, T):
     return log10_kp
 
 
+def assemble_lnK_cation_kurucz(atoms_sym, e1_eV, Qmol, atomic, T):
+    """
+    Kurucz e- convention ln K for a molecular CATION:
+      K = n(M+) n_e / prod n(atoms)   [for M+ built from neutral atoms]
+    assembled as exp(E1/kT) * q_tr(M+) U(M+) q_tr(e) U(e) / prod[q_tr U],
+    with E1 = (formation energy of M+ + e- from neutral atoms, negative),
+    U(e) = 2, q_tr(e) = SAHA_TR_E * T^1.5, and the ExoMol molecular Q
+    divided by the nuclear-spin product as for neutrals.
+    """
+    from atomic_saha import SAHA_TR_E
+    T = np.asarray(T, dtype=float)
+    q_mol = np.asarray(Qmol(T), dtype=float)
+    if NS_DIVIDE:
+        q_mol = q_mol / _gns_total(atoms_sym)
+    m_mol = sum(atomic.mass(s) for s in atoms_sym)
+    ln_k = (e1_eV / (K_BOLTZMANN_EV * T)
+            + np.log(q_mol) + np.log(2.0)
+            + np.log(C_TR) + 1.5 * np.log(m_mol * T)
+            + np.log(SAHA_TR_E) + 1.5 * np.log(T))
+    for s in atoms_sym:
+        ln_k = ln_k - (np.log(C_TR) + 1.5 * np.log(atomic.mass(s) * T)
+                       + np.log(atomic.Q(s, T, 0)))
+    return ln_k
+
+
 def kurucz_log10_K_polyatomic(entry, T):
     """Kurucz polynomial ln K -> log10 K (cgs association convention)."""
     from kurucz_molec import kurucz_lnKeq

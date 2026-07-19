@@ -72,9 +72,15 @@ K_BOLTZMANN_EV = 8.617333262e-5     # eV/K, matches kurucz_molec
 # excited-state correction).
 # ============================================================
 
-def fit_physical_diatomic(entry, bc16_mol):
+def fit_physical_diatomic(entry, bc16_mol, saha=None):
     """
     Fit the physical form to BC16 data (sampled at BC16's actual grid).
+
+    For molecular CATIONS pass saha = (atomic, ionized_atom_symbol): the
+    target becomes BC16's association constant times the Saha factor of
+    the ionized atom, i.e. the Kurucz e- convention K = n(M+) n_e /
+    prod n(atoms) that NMOLEC implements (this factor was omitted by the
+    April 2026 fit -- the July 2026 convention fix).
 
     Returns:
         coeffs : tuple (D0, a0, a1, a2, a3, a4)  -- same length as Kurucz E
@@ -90,6 +96,9 @@ def fit_physical_diatomic(entry, bc16_mol):
     log10_K_kurucz = (np.log10(KB_PaCm3_per_K * T_fit)
                       - bc16_mol.log10_Kp[Tmask])
     lnK_bc = log10_K_kurucz * np.log(10.0)
+    if saha is not None:
+        atomic_, ion_atom = saha
+        lnK_bc = lnK_bc + atomic_.log10_K_Saha(ion_atom, T_fit) * np.log(10.0)
 
     # Fixed pieces: D0 from Kurucz entry (which has been pinned to BC16)
     D0 = entry['E'][0]
@@ -281,24 +290,26 @@ def compute_diatomic(entry_orig, entry_upd, bc16_mol, atomic, exomol):
     bc16_log10K_pts = (np.log10(KB_PaCm3_per_K * bc16_T_pts)
                        - bc16_mol.log10_Kp[bc16_mol.T_grid >= 1000.0])
 
-    # --- Physical-form fit (refit a0..a4 against BC16 with D0 fixed)
-    phys_coeffs, _, _ = fit_physical_diatomic(entry_upd, bc16_mol)
+    # --- Saha channel for ions (needed by the fit and by plotting) ---
+    channel = None
+    saha_log10 = None
+    if ion == 1 and formula in ION_DISSOCIATION_CHANNEL:
+        channel = ION_DISSOCIATION_CHANNEL[formula]
+        saha_log10 = atomic.log10_K_Saha(channel[1], T)
+
+    # --- Physical-form fit (refit a0..a4 with D0 fixed).  Ions are fit
+    # in the Kurucz e- convention (BC16 * Saha, July 2026 fix), matching
+    # the filed rows, and converted back to BC16's axis for plotting.
+    saha_arg = (atomic, channel[1]) if channel is not None else None
+    phys_coeffs, _, _ = fit_physical_diatomic(entry_upd, bc16_mol,
+                                              saha=saha_arg)
     log10_K_phys = evaluate_physical(phys_coeffs, entry_upd['n_trans'], T) / np.log(10.0)
 
-    # --- Saha-correction for ions: convert Kurucz cgs to BC16 cgs
-    # NOTE: this applies ONLY to the polynomial-form (Kurucz original/updated)
-    # curves. The physical-form fit is fitted to BC16 directly and is
-    # therefore already on BC16's axis, so no Saha correction is needed
-    # for it. The raw BC16 points are also already on BC16's axis.
-    saha_log10 = None
-    channel = None
-    if ion == 1 and formula in ION_DISSOCIATION_CHANNEL and not is_new:
-        neutral_atom, ionized_atom = ION_DISSOCIATION_CHANNEL[formula]
-        saha_log10 = atomic.log10_K_Saha(ionized_atom, T)
+    if saha_log10 is not None and not is_new:
         log10_K_kur = log10_K_kur - saha_log10
         log10_K_upd = log10_K_upd - saha_log10
-        # log10_K_phys: NO Saha subtraction (already on BC16 axis)
-        channel = (neutral_atom, ionized_atom)
+    if saha_log10 is not None:
+        log10_K_phys = log10_K_phys - saha_log10
 
     # --- ExoMol-assembled (neutrals only)
     log10_K_em = None
@@ -748,7 +759,8 @@ def _plot_one(pdf, r):
                         zorder=5)
         if r.get('log10_K_janaf') is not None:
             ax_top.plot(T, r['log10_K_janaf'], '-', color='C3', lw=1.4,
-                        label='NIST-JANAF (GGchem/Stock-Kitzmann)',
+                        label=r.get('janaf_label',
+                                    'NIST-JANAF (GGchem/Stock-Kitzmann)'),
                         zorder=4)
         if r.get('log10_K_current') is not None:
             lbl = 'current molecules.dat row'
@@ -1150,6 +1162,31 @@ def run(orig_dat='molecules.dat',
         except Exception as exc:
             print(f'  poly self-fit {entry_orig["formula"]}: skipped ({exc})')
             continue
+        # H3+ : attach the ExoMol e--convention reference (July 2026 ion
+        # convention work); the filed row was refit to this assembly.
+        if entry_orig['formula'] == 'H3+' and exomol.has('H3p'):
+            from polyatomic_assembly import assemble_lnK_cation_kurucz
+            Tp = r['T']
+            lnref = assemble_lnK_cation_kurucz(
+                ['H', 'H', 'H'], -4.771,
+                lambda x: exomol.Q('H3p', x), atomic, Tp)
+            kp_ref = kurucz_to_bc16_pressure_convention(
+                lnref / np.log(10.0), Tp, r['N'])
+            r['log10_K_janaf'] = kp_ref
+            r['janaf_label'] = 'ExoMol MiZATeP + Saha (e$^-$ conv)'
+            dkj = r['log10_K_kurucz_orig'] - kp_ref
+            jm = ((Tp >= 1500.0) & (Tp <= 6000.0) & np.isfinite(dkj))
+            r['delta_kurucz_janaf'] = dkj
+            r['rms_kurucz_janaf'] = float(np.sqrt(np.mean(dkj[jm]**2)))
+            r['max_kurucz_janaf'] = float(np.max(np.abs(dkj[jm])))
+            r['rms_physical_janaf'] = r['rms_kurucz_janaf']
+            r['max_physical_janaf'] = r['max_kurucz_janaf']
+            if r.get('log10_K_current') is not None:
+                dcj = r['log10_K_current'] - kp_ref
+                r['delta_current_janaf'] = dcj
+                r['rms_current_janaf'] = float(np.sqrt(np.mean(dcj[jm]**2)))
+                r['max_current_janaf'] = float(np.max(np.abs(dcj[jm])))
+                r['D0_current'] = cur_by_code[entry_orig['code']]['E'][0]
         poly_selffit_results.append(r)
 
     poly_selffit_results.sort(key=lambda r: r['formula'])

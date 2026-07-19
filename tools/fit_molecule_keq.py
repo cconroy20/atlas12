@@ -165,11 +165,40 @@ def parse_molecules_rows():
     return
 
 
+# Saha channel (the atom that carries the charge) for the molecular-ion
+# rows, per BC16 Table 1 dissociation products: the lower-IP partner.
+ION_SAHA_CHANNEL = {'H2+': 'H', 'CH+': 'C', 'OH+': 'O', 'SiH+': 'Si',
+                    'CN+': 'C', 'N2+': 'N', 'NO+': 'O', 'O2+': 'O'}
+
+
+def fit_diatomic_ion(e1, log10_kp, tgrid, saha_atom):
+    """
+    Molecular-cation fit in the Kurucz e- convention:
+    K = n(M+) n_e / prod n(atoms) = [BC16 association K] * Saha(atom).
+    n_trans = 0 (M+ + e- vs two atoms).  E1 = D0(BC16) - IE(atom).
+    """
+    from atomic_saha import AtomicData
+    atomic = _ion_atomic.setdefault('a', AtomicData())
+    mask = tgrid >= T_FIT_MIN
+    t = tgrid[mask]
+    ln_k = (np.log10(KB_PA_CM3_PER_K * t) - log10_kp[mask]) * np.log(10.0)
+    ln_k = ln_k + atomic.log10_K_Saha(saha_atom, t) * np.log(10.0)
+    fixed = e1 / (K_BOLTZMANN_EV * t)          # n_trans = 0
+    basis = np.column_stack(
+        [np.ones_like(t), 1.0 / t, np.log(t), t, 1.0 / t**2])
+    coeffs, *_ = np.linalg.lstsq(basis, ln_k - fixed, rcond=None)
+    return coeffs
+
+
+_ion_atomic = {}
+
+
 def cmd_validate():
     tgrid, table7 = load_table7()
     n_ok = n_bad = n_skip = 0
     for _, label, code, d0, coeffs, comment in parse_molecules_rows():
-        if 'BC16 fit' not in comment or coeffs is None:
+        if ('BC16 fit' not in comment and 'BC16+Saha' not in comment) \
+                or coeffs is None:
             continue
         ion = int(round(code * 100)) % 100
         atoms = []
@@ -177,15 +206,22 @@ def cmd_validate():
         while n > 0:
             atoms.append(n % 100)
             n //= 100
-        if ion != 0 or len(atoms) != 2 or 100 in atoms:
+        if len(atoms) != 2 or 100 in atoms:
             n_skip += 1
             continue
-        name = bc16_name_for(atoms, table7)
-        if name is None:
-            print(f'  {label:<6s} NO BC16 MATCH')
-            n_bad += 1
+        if ion == 0:
+            name = bc16_name_for(atoms, table7)
+            if name is None:
+                print(f'  {label:<6s} NO BC16 MATCH')
+                n_bad += 1
+                continue
+            refit = fit_diatomic(d0, table7[name], tgrid)
+        elif label in ION_SAHA_CHANNEL and label in table7:
+            refit = fit_diatomic_ion(d0, table7[label], tgrid,
+                                     ION_SAHA_CHANNEL[label])
+        else:
+            n_skip += 1
             continue
-        refit = fit_diatomic(d0, table7[name], tgrid)
         same = all(f'{a:12.4E}' == f'{b:12.4E}'
                    for a, b in zip(refit, coeffs))
         if same:
@@ -196,7 +232,7 @@ def cmd_validate():
             for a, b in zip(refit, coeffs):
                 print(f'     refit {a:12.4E}   filed {b:12.4E}')
     print(f'validate: {n_ok} exact, {n_bad} mismatched, '
-          f'{n_skip} skipped (ions)')
+          f'{n_skip} skipped')
     return 1 if n_bad else 0
 
 
