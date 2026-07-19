@@ -493,6 +493,53 @@ def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym,
     }
 
 
+def compute_polyatomic_new(entry_cur, janaf_rec):
+    """
+    Page for a polyatomic added after the April refit: no Kurucz
+    ancestry, so the curves are the CURRENT filed row and the
+    NIST-JANAF (Stock/Kitzmann) reference it was fit to.
+    """
+    T = T_POLY
+    N = entry_cur['n_real_atoms']
+    from ggchem_loader import ln_K_kurucz as janaf_lnK
+    log10_Kp_janaf = kurucz_to_bc16_pressure_convention(
+        janaf_lnK(janaf_rec, T) / np.log(10.0), T, N)
+    E = entry_cur['E']
+    lnK_cur = (E[0] / (K_BOLTZMANN_EV * T)
+               - 1.5 * entry_cur['n_trans'] * np.log(T)
+               + E[1] + E[2] / T + E[3] * np.log(T) + E[4] * T + E[5] / T**2)
+    log10_Kp_cur = kurucz_to_bc16_pressure_convention(
+        lnK_cur / np.log(10.0), T, N)
+    T_pts = np.arange(100.0, 6001.0, 200.0)
+    pts = kurucz_to_bc16_pressure_convention(
+        janaf_lnK(janaf_rec, T_pts) / np.log(10.0), T_pts, N)
+    delta = log10_Kp_cur - log10_Kp_janaf
+    mask = (T >= T_STAT_LO_P) & (T <= T_STAT_HI_P)
+    return {
+        'kind': 'polyatomic', 'is_new': True, 'self_fit': False,
+        'ref_label': 'JANAF/SK', 'ref_points_label': 'JANAF/SK fit points',
+        'T': T, 'N': N,
+        'log10_K_kurucz_orig': None, 'log10_K_kurucz_updated': None,
+        'log10_K_exomol': None, 'log10_K_bc16': None,
+        'log10_K_janaf': log10_Kp_janaf, 'log10_K_physical': log10_Kp_cur,
+        'phys_coeffs': (E[0],) + tuple(E[1:]),
+        'em_T_pts': T_pts, 'em_log10K_pts': pts,
+        'delta_kurucz': None, 'delta_updated': None,
+        'delta_physical': delta,
+        'rms_kurucz': float('nan'), 'max_kurucz': float('nan'),
+        'rms_updated': float('nan'), 'max_updated': float('nan'),
+        'rms_physical': float(np.sqrt(np.mean(delta[mask]**2))),
+        'max_physical': float(np.max(np.abs(delta[mask]))),
+        'ion': 0, 'channel': None,
+        'D0_kurucz_orig': float('nan'), 'D0_kurucz_upd': E[0],
+        'D0_BC16': float('nan'), 'D0_uncert': float('nan'),
+        'D0_source': 'SK/JANAF', 'D0_verified': True,
+        'formula': entry_cur['formula'], 'bc16_name': entry_cur['formula'],
+        'atoms': [ELEMENT_SYMBOLS[a] for a in entry_cur['real_atoms']],
+        'Tmax_em': None,
+    }
+
+
 def compute_polyatomic(entry_orig, entry_upd, atoms, d0_info,
                        atomic, exomol):
     """
@@ -636,8 +683,9 @@ def _plot_one(pdf, r):
         # external reference), the points are Kurucz polynomial samples
         # over the fit window, marked with a different label.
         if r.get('em_T_pts') is not None:
-            scatter_label = ('Kurucz poly samples (fit target)'
-                             if r.get('self_fit') else 'ExoMol data')
+            scatter_label = r.get('ref_points_label') or (
+                'Kurucz poly samples (fit target)'
+                if r.get('self_fit') else 'ExoMol data')
             ax_top.plot(r['em_T_pts'], r['em_log10K_pts'],
                         'o', color='k', ms=4, label=scatter_label,
                         markerfacecolor='white', markeredgewidth=1.0,
@@ -691,7 +739,12 @@ def _plot_one(pdf, r):
     # there's no BC16 entry.
     if is_poly:
         atoms_str = '+'.join(r['atoms'])
-        if r.get('self_fit'):
+        if r.get('is_new'):
+            title = (f'{r["formula"]} ({atoms_str}; N={r["N"]})  '
+                     f'[new species, July 2026]\n'
+                     f'$D_0$ = {r["D0_kurucz_upd"]:.3f} eV (SK/JANAF '
+                     f'content); fit to NIST-JANAF (Stock-Kitzmann)')
+        elif r.get('self_fit'):
             # No external D0 reference. Title states the source data is
             # Kurucz's own polynomial fit over a stated T window.
             title = (f'{r["formula"]} ({atoms_str}; N={r["N"]})  '
@@ -760,7 +813,9 @@ def _plot_one(pdf, r):
                         label='Physical form')
     ax_bot.set_xscale('log')
     ax_bot.set_xlabel('Temperature [K]')
-    if r.get('self_fit'):
+    if r.get('ref_label'):
+        ref_label = r['ref_label']
+    elif r.get('self_fit'):
         ref_label = 'Kurucz poly'
     elif is_poly:
         ref_label = 'ExoMol'
@@ -815,7 +870,8 @@ def _plot_one(pdf, r):
             stats += (f'  |  current row: RMS={r["rms_current_janaf"]:.3f}, '
                       f'max={r["max_current_janaf"]:.3f}')
     elif r.get('is_new'):
-        stats = (f'In stat range:  physical vs BC16: '
+        ref = r.get('ref_label', 'BC16')
+        stats = (f'In stat range:  filed row vs {ref}: '
                  f'RMS={r["rms_physical"]:.3f}, max={r["max_physical"]:.3f}')
     else:
         stats = (f'In stat range:  '
@@ -1028,12 +1084,18 @@ def run(orig_dat='molecules.dat',
     # NIST-JANAF reference fits (GGchem's dispol_StockKitzmann.dat) for
     # self-fit species, matched by atom multiset (neutrals only).
     try:
-        from ggchem_loader import parse_dispol
+        from ggchem_loader import parse_dispol, ln_K_kurucz as _janaf_lnK
         janaf_by_atoms = {}
         for name, rec in parse_dispol('dispol_StockKitzmann.dat').items():
             key = tuple(sorted(
                 s for s, n in rec['atoms'].items() for _ in range(n)))
-            janaf_by_atoms[key] = rec
+            # Isomer collisions (AlOH vs HAlO, FOO vs OFO, ...): keep the
+            # more-bound (ground) isomer -- the larger K at 2000 K -- which
+            # dominates the equilibrium abundance.
+            old = janaf_by_atoms.get(key)
+            if (old is None or float(_janaf_lnK(rec, np.array([2000.0]))[0])
+                    > float(_janaf_lnK(old, np.array([2000.0]))[0])):
+                janaf_by_atoms[key] = rec
     except Exception as exc:
         print(f'  JANAF reference unavailable ({exc})')
         janaf_by_atoms = {}
@@ -1062,6 +1124,27 @@ def run(orig_dat='molecules.dat',
 
     poly_selffit_results.sort(key=lambda r: r['formula'])
 
+    # ----- NEW POLYATOMICS (post-April, fit to JANAF/SK) -----
+    poly_new = []
+    if current_dat is not None and janaf_by_atoms:
+        lineage_codes = {e['code'] for e in k_orig}
+        for e_cur in k_cur:
+            if (not e_cur['is_standard_molecule']
+                    or e_cur['n_real_atoms'] < 3
+                    or e_cur['ion'] != 0
+                    or e_cur['code'] in lineage_codes):
+                continue
+            atoms_sym = [ELEMENT_SYMBOLS[a] for a in e_cur['real_atoms']]
+            rec = janaf_by_atoms.get(tuple(sorted(atoms_sym)))
+            if rec is None:
+                print(f'  new polyatomic {e_cur["formula"]}: no JANAF match')
+                continue
+            try:
+                poly_new.append(compute_polyatomic_new(e_cur, rec))
+            except Exception as exc:
+                print(f'  new polyatomic {e_cur["formula"]}: skipped ({exc})')
+        poly_new.sort(key=lambda r: r['formula'])
+
     # ----- Write PDF -----
     with PdfPages(out_pdf) as pdf:
         _plot_cover(pdf, diat_neutrals, diat_ions, poly_results, diat_new)
@@ -1072,6 +1155,8 @@ def run(orig_dat='molecules.dat',
         for r in diat_new:
             _plot_one(pdf, r)
         for r in poly_results:
+            _plot_one(pdf, r)
+        for r in poly_new:
             _plot_one(pdf, r)
         for r in poly_selffit_results:
             _plot_one(pdf, r)
@@ -1089,6 +1174,7 @@ def run(orig_dat='molecules.dat',
             [(r, 'diatomic-ion')       for r in diat_ions]     +
             [(r, 'diatomic-new')       for r in diat_new]      +
             [(r, 'polyatomic')         for r in poly_results]  +
+            [(r, 'polyatomic-new')     for r in poly_new]      +
             [(r, 'polyatomic-selffit') for r in poly_selffit_results])
         for r, label in all_results:
             if label == 'polyatomic-selffit':
@@ -1127,6 +1213,7 @@ def run(orig_dat='molecules.dat',
                            ('diatomic ions',         diat_ions),
                            ('diatomics new (2026)',  diat_new),
                            ('polyatomics (ref)',     poly_results),
+                           ('polyatomics new (2026)', poly_new),
                            ('polyatomics (self-fit)', poly_selffit_results)]:
         if not results:
             continue
