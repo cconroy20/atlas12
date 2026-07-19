@@ -331,7 +331,8 @@ def compute_diatomic(entry_orig, entry_upd, bc16_mol, atomic, exomol):
     }
 
 
-def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym, T_lo=1000.0, T_hi=6000.0):
+def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym,
+                                T_lo=1000.0, T_hi=6000.0, janaf_rec=None):
     """
     Polyatomics where we have no external reference (BC16 doesn't tabulate,
     no ExoMol .pf available, or no POLYATOMIC_D0 entry). The "data" here
@@ -394,6 +395,29 @@ def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym, T_lo=1000.0, T
     else:
         rms_phys = max_phys = float('nan')
 
+    # --- Optional NIST-JANAF reference (GGchem dispol fit) ---
+    # For self-fit species with no ExoMol coverage, the Stock/Kitzmann
+    # kp(T) compilation (traceable to NIST-JANAF/Burcat) provides the
+    # modern external reference.  Overlaid for assessment; the physical
+    # fit itself remains anchored to the Kurucz polynomial.
+    log10_Kp_janaf = None
+    janaf_stats = {}
+    if janaf_rec is not None:
+        from ggchem_loader import ln_K_kurucz as janaf_lnK
+        log10_K_janaf_cgs = janaf_lnK(janaf_rec, T) / np.log(10.0)
+        log10_Kp_janaf = kurucz_to_bc16_pressure_convention(
+            log10_K_janaf_cgs, T, N)
+        jmask = (T >= 1500.0) & (T <= T_hi)
+        d_kur_j = log10_Kp_kur - log10_Kp_janaf
+        d_phys_j = log10_Kp_phys - log10_Kp_janaf
+        janaf_stats = {
+            'rms_kurucz_janaf': float(np.sqrt(np.mean(d_kur_j[jmask]**2))),
+            'max_kurucz_janaf': float(np.max(np.abs(d_kur_j[jmask]))),
+            'rms_physical_janaf': float(np.sqrt(np.mean(d_phys_j[jmask]**2))),
+            'max_physical_janaf': float(np.max(np.abs(d_phys_j[jmask]))),
+            'delta_kurucz_janaf': d_kur_j,
+        }
+
     return {
         'kind':        'polyatomic',
         'self_fit':    True,    # marker so _plot_one knows to label differently
@@ -404,6 +428,7 @@ def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym, T_lo=1000.0, T
         'log10_K_exomol':         None,
         'log10_K_physical':       log10_Kp_phys,
         'log10_K_bc16':           None,
+        'log10_K_janaf':          log10_Kp_janaf,
         'phys_coeffs':            phys_coeffs,
         # Fit-target scatter points
         'em_T_pts':               T_fit,
@@ -417,6 +442,7 @@ def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym, T_lo=1000.0, T
         'max_updated': 0.0,
         'rms_physical': rms_phys,
         'max_physical': max_phys,
+        **janaf_stats,
         'ion':         entry_orig['ion'],
         'channel':     None,
         'D0_kurucz_orig': entry_orig['E'][0],
@@ -583,6 +609,10 @@ def _plot_one(pdf, r):
                         'o', color='k', ms=4, label=scatter_label,
                         markerfacecolor='white', markeredgewidth=1.0,
                         zorder=5)
+        if r.get('log10_K_janaf') is not None:
+            ax_top.plot(T, r['log10_K_janaf'], '-', color='C3', lw=1.4,
+                        label='NIST-JANAF (GGchem/Stock-Kitzmann)',
+                        zorder=4)
 
     ax_top.set_xscale('log')
     if is_poly:
@@ -667,7 +697,11 @@ def _plot_one(pdf, r):
         # Kurucz orig/updated residuals are identically zero by
         # construction here; only plot the physical-form residual which
         # represents the difference between the new fit and the
-        # polynomial it was fit to.
+        # polynomial it was fit to.  When a JANAF reference is present,
+        # additionally show how far the legacy polynomial sits from it.
+        if r.get('delta_kurucz_janaf') is not None:
+            ax_bot.plot(T, r['delta_kurucz_janaf'], '-', color='C3',
+                        lw=1.4, label='Kurucz poly - JANAF')
         if r.get('delta_physical') is not None:
             ax_bot.plot(T, r['delta_physical'], '-', color='C2', lw=1.6,
                         label='Physical form - Kurucz poly')
@@ -699,8 +733,12 @@ def _plot_one(pdf, r):
         mask = (T >= T_STAT_LO_P) & (T <= T_STAT_HI_P)
     else:
         mask = (T >= T_STAT_LO_D) & (T <= T_STAT_HI_D)
-    d_ref = (r['delta_kurucz'] if r.get('delta_kurucz') is not None
-             else r['delta_physical'])
+    if r.get('delta_kurucz_janaf') is not None:
+        d_ref = r['delta_kurucz_janaf']
+    elif r.get('delta_kurucz') is not None:
+        d_ref = r['delta_kurucz']
+    else:
+        d_ref = r['delta_physical']
     d_all = np.concatenate([
         d_ref[mask],
         r['delta_updated'][mask]
@@ -725,6 +763,12 @@ def _plot_one(pdf, r):
         stats = (f'In fit window {r["fit_T_lo"]:.0f}-{r["fit_T_hi"]:.0f} K:  '
                  f'physical-vs-Kurucz: RMS={r["rms_physical"]:.4f}, '
                  f'max={r["max_physical"]:.4f}')
+        if r.get('rms_kurucz_janaf') is not None:
+            stats += (f'\n1500-{r["fit_T_hi"]:.0f} K vs JANAF:  '
+                      f'Kurucz: RMS={r["rms_kurucz_janaf"]:.3f}, '
+                      f'max={r["max_kurucz_janaf"]:.3f}  |  '
+                      f'physical: RMS={r["rms_physical_janaf"]:.3f}, '
+                      f'max={r["max_physical_janaf"]:.3f}')
     elif r.get('is_new'):
         stats = (f'In stat range:  physical vs BC16: '
                  f'RMS={r["rms_physical"]:.3f}, max={r["max_physical"]:.3f}')
@@ -934,6 +978,19 @@ def run(orig_dat='molecules.dat',
         atoms_key = tuple(sorted(r['atoms']))
         covered.add((atoms_key, r['ion']))
 
+    # NIST-JANAF reference fits (GGchem's dispol_StockKitzmann.dat) for
+    # self-fit species, matched by atom multiset (neutrals only).
+    try:
+        from ggchem_loader import parse_dispol
+        janaf_by_atoms = {}
+        for name, rec in parse_dispol('dispol_StockKitzmann.dat').items():
+            key = tuple(sorted(
+                s for s, n in rec['atoms'].items() for _ in range(n)))
+            janaf_by_atoms[key] = rec
+    except Exception as exc:
+        print(f'  JANAF reference unavailable ({exc})')
+        janaf_by_atoms = {}
+
     for entry_orig in k_orig:
         if not entry_orig['is_standard_molecule']:
             continue
@@ -944,8 +1001,11 @@ def run(orig_dat='molecules.dat',
         if key in covered:
             continue
         entry_upd = upd_by_code[entry_orig['code']]
+        janaf_rec = (janaf_by_atoms.get(tuple(sorted(atoms_sym)))
+                     if entry_orig['ion'] == 0 else None)
         try:
-            r = compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym)
+            r = compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym,
+                                            janaf_rec=janaf_rec)
         except Exception as exc:
             print(f'  poly self-fit {entry_orig["formula"]}: skipped ({exc})')
             continue
