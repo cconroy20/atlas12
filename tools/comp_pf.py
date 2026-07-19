@@ -769,16 +769,10 @@ def _plot_one(pdf, r):
         disp = display_formula(r['formula'])
     else:
         disp = display_formula(r['bc16_name'])
-    if r.get('is_new'):
-        title = f'{disp}  [new species, July 2026]'
-    elif r.get('self_fit') and r.get('log10_K_janaf') is None:
-        title = f'{disp}  [no external reference]'
-    elif not is_poly and r['channel'] is not None:
+    if not is_poly and r['channel'] is not None:
         ch = r['channel']
         title = (f'{disp} $\\rightarrow$ {display_formula(ch[0])} + '
                  f'{display_formula(ch[1] + "+")}')
-    elif not is_poly and r['ion'] != 0:
-        title = f'{disp} -- ion, no Saha channel mapped'
     else:
         title = disp
     ax_top.set_title(title, fontsize=12)
@@ -886,9 +880,15 @@ def _plot_one(pdf, r):
                 fontsize=7.5, va='top',
                 bbox=dict(facecolor='white', alpha=0.85, edgecolor='none'))
 
-    # Enforce common x-axis range across all pages
+    # Enforce common x-axis range across all pages, with explicit
+    # round-number tick labels (the default log locator labels only
+    # 10^3 and 10^4 over this range)
     ax_top.set_xlim(1000.0, 20000.0)
     ax_bot.set_xlim(1000.0, 20000.0)
+    xticks = [1000, 2000, 3000, 5000, 10000, 20000]
+    ax_bot.set_xticks(xticks)
+    ax_bot.set_xticklabels([f'{t:d}' for t in xticks])
+    ax_bot.xaxis.set_minor_formatter(plt.NullFormatter())
 
     fig.tight_layout()
     pdf.savefig(fig)
