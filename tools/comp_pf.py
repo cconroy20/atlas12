@@ -192,6 +192,10 @@ _DISPLAY_OVERRIDE = {
     'HOAl': 'AlOH', 'OAl2': 'Al2O', 'HO2Al': 'AlO2H', 'HOMg': 'MgOH',
     'HOCa': 'CaOH', 'HONa': 'NaOH', 'O2H': 'HO2', 'H2C': 'CH2',
     'H2N': 'NH2', 'C2Si': 'SiC2', 'CSi2': 'Si2C', 'COS': 'OCS',
+    # the generator's H-first branch mishandles these (ExoMol convention)
+    'H3C': 'CH3', 'H3N': 'NH3', 'H2C2': 'C2H2', 'H4C': 'CH4',
+    'H4Si': 'SiH4', 'H3P': 'PH3', 'H2Si': 'SiH2', 'HLiO': 'LiOH',
+    'HOK': 'KOH',
 }
 
 
@@ -887,7 +891,7 @@ def _plot_one(pdf, r):
     ax_bot.set_xlim(1000.0, 20000.0)
     xticks = [1000, 2000, 3000, 5000, 10000, 20000]
     ax_bot.set_xticks(xticks)
-    ax_bot.set_xticklabels([f'{t:d}' for t in xticks])
+    ax_bot.set_xticklabels([f'{t:,d}' for t in xticks])
     ax_bot.xaxis.set_minor_formatter(plt.NullFormatter())
 
     fig.tight_layout()
