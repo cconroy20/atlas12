@@ -332,7 +332,8 @@ def compute_diatomic(entry_orig, entry_upd, bc16_mol, atomic, exomol):
 
 
 def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym,
-                                T_lo=1000.0, T_hi=6000.0, janaf_rec=None):
+                                T_lo=1000.0, T_hi=6000.0, janaf_rec=None,
+                                cur_entry=None):
     """
     Polyatomics where we have no external reference (BC16 doesn't tabulate,
     no ExoMol .pf available, or no POLYATOMIC_D0 entry). The "data" here
@@ -418,6 +419,36 @@ def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym,
             'delta_kurucz_janaf': d_kur_j,
         }
 
+    # --- Overlay of the CURRENT data/molecules.dat row when it has been
+    # refit since April (e.g. the MgOH/HO2 D0-swap refits): the page's
+    # "physical form fit" reproduces the April state, so a materially
+    # different filed row is shown as its own curve, with its residual
+    # vs the JANAF reference when one is present.
+    log10_Kp_cur = None
+    cur_stats = {}
+    if cur_entry is not None and cur_entry['E'][0] != 0.0:
+        lnK_cur = (cur_entry['E'][0] / (K_BOLTZMANN_EV * T)
+                   - 1.5 * cur_entry['n_trans'] * np.log(T)
+                   + cur_entry['E'][1] + cur_entry['E'][2] / T
+                   + cur_entry['E'][3] * np.log(T) + cur_entry['E'][4] * T
+                   + cur_entry['E'][5] / T**2)
+        kp_cur = kurucz_to_bc16_pressure_convention(
+            lnK_cur / np.log(10.0), T, N)
+        wmask = (T >= T_lo) & (T <= T_hi)
+        if np.max(np.abs((kp_cur - log10_Kp_phys)[wmask])) > 0.02:
+            log10_Kp_cur = kp_cur
+            if log10_Kp_janaf is not None:
+                d_cur_j = kp_cur - log10_Kp_janaf
+                jm = (T >= 1500.0) & (T <= T_hi)
+                cur_stats = {
+                    'rms_current_janaf':
+                        float(np.sqrt(np.mean(d_cur_j[jm]**2))),
+                    'max_current_janaf':
+                        float(np.max(np.abs(d_cur_j[jm]))),
+                    'delta_current_janaf': d_cur_j,
+                    'D0_current': cur_entry['E'][0],
+                }
+
     return {
         'kind':        'polyatomic',
         'self_fit':    True,    # marker so _plot_one knows to label differently
@@ -429,7 +460,9 @@ def compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym,
         'log10_K_physical':       log10_Kp_phys,
         'log10_K_bc16':           None,
         'log10_K_janaf':          log10_Kp_janaf,
+        'log10_K_current':        log10_Kp_cur,
         'phys_coeffs':            phys_coeffs,
+        **cur_stats,
         # Fit-target scatter points
         'em_T_pts':               T_fit,
         'em_log10K_pts':          log10_Kp_fit,
@@ -613,6 +646,12 @@ def _plot_one(pdf, r):
             ax_top.plot(T, r['log10_K_janaf'], '-', color='C3', lw=1.4,
                         label='NIST-JANAF (GGchem/Stock-Kitzmann)',
                         zorder=4)
+        if r.get('log10_K_current') is not None:
+            lbl = 'current molecules.dat row'
+            if r.get('D0_current') is not None:
+                lbl += f' ($D_0$={r["D0_current"]:.3f})'
+            ax_top.plot(T, r['log10_K_current'], '--', color='C5', lw=1.7,
+                        label=lbl, zorder=6)
 
     ax_top.set_xscale('log')
     if is_poly:
@@ -702,6 +741,9 @@ def _plot_one(pdf, r):
         if r.get('delta_kurucz_janaf') is not None:
             ax_bot.plot(T, r['delta_kurucz_janaf'], '-', color='C3',
                         lw=1.4, label='Kurucz poly - JANAF')
+        if r.get('delta_current_janaf') is not None:
+            ax_bot.plot(T, r['delta_current_janaf'], '--', color='C5',
+                        lw=1.7, label='current row - JANAF')
         if r.get('delta_physical') is not None:
             ax_bot.plot(T, r['delta_physical'], '-', color='C2', lw=1.6,
                         label='Physical form - Kurucz poly')
@@ -769,6 +811,9 @@ def _plot_one(pdf, r):
                       f'max={r["max_kurucz_janaf"]:.3f}  |  '
                       f'physical: RMS={r["rms_physical_janaf"]:.3f}, '
                       f'max={r["max_physical_janaf"]:.3f}')
+        if r.get('rms_current_janaf') is not None:
+            stats += (f'  |  current row: RMS={r["rms_current_janaf"]:.3f}, '
+                      f'max={r["max_current_janaf"]:.3f}')
     elif r.get('is_new'):
         stats = (f'In stat range:  physical vs BC16: '
                  f'RMS={r["rms_physical"]:.3f}, max={r["max_physical"]:.3f}')
@@ -918,8 +963,10 @@ def run(orig_dat='molecules.dat',
     # have no Kurucz-polynomial ancestry: their pages show the BC16
     # reference and the physical-form fit only.
     diat_new = []
+    cur_by_code = {}
     if current_dat is not None:
         k_cur = parse_molecules_dat(current_dat)
+        cur_by_code = {e['code']: e for e in k_cur}
         lineage_codes = {e['code'] for e in k_orig}
         for e_cur, bc_name, _ in match_kurucz_to_bc16(k_cur, bc16):
             if bc_name is None or e_cur['code'] in lineage_codes:
@@ -1005,7 +1052,9 @@ def run(orig_dat='molecules.dat',
                      if entry_orig['ion'] == 0 else None)
         try:
             r = compute_polyatomic_self_fit(entry_orig, entry_upd, atoms_sym,
-                                            janaf_rec=janaf_rec)
+                                            janaf_rec=janaf_rec,
+                                            cur_entry=cur_by_code.get(
+                                                entry_orig['code']))
         except Exception as exc:
             print(f'  poly self-fit {entry_orig["formula"]}: skipped ({exc})')
             continue
