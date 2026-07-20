@@ -1,0 +1,33 @@
+# ATLAS12 equilibrium-condensate data (Cond-limit; no dust opacity)
+#
+# ln S = sum_i nu_i * ln(n_i * kB * T) + c0/T + c1*lnT + c2 + c3*T + c4*T^2
+#   n_i  : number density [cm^-3] of reference species i
+#          (element symbol = free neutral atom; else a molecules.dat label)
+#   kB   : 1.380662e-16 erg/K
+#   valid: 700-2600 K refit range (source validity varies; see atlas)
+#
+# Source: GGchem DustChem.dat (Woitke+ 2018) fits, re-referenced and refit
+# by tools/fit_condensates.py.  Atlas: ~/kurucz/upgrade/comp_cond.pdf
+#
+21
+Al2O3         2  2 Al     3 O                   3.6883600E+05 -7.7500300E+00 -1.1230005E+02  7.5336400E-03 -7.6414100E-07   ! fit5 dG-Stock-fit NIST-Janaf 100-3000K, +/- 0.54:
+CaTiO3        3  1 Ca     1 Ti     3 O          3.6747778E+05 -4.1140478E-02 -1.5737589E+02  1.4515991E-03 -5.7169670E-08   ! fit1 Sharp & Huebner (1990):
+Ti2O3         2  3 O      2 Ti                  3.9227815E+05  7.8360533E+00 -2.2114049E+02  1.8399457E-03 -7.4969491E-07   ! fit5 dG-Stock-fit Kitzmann+2024  (Tmax= 2115.00)
+Ti3O5         2  3 Ti     5 O                   6.1486800E+05 -5.0981500E+00 -2.2480708E+02  7.5540400E-03 -5.7046400E-07   ! fit5 dG-Stock-fit NIST-Janaf (100-2000)K, +/-1.3 kJ/m
+Ti4O7         2  4 Ti     7 O                   8.4796361E+05 -1.5340346E+00 -3.4584949E+02  6.3363386E-03 -6.2744167E-07   ! fit2 dG-fit NIST-Janaf 298-2400K, +/- 0.085:
+TiO2          1  1 TiO2                         7.7891531E+04  2.5573834E+00 -5.6632035E+01 -1.6456216E-04  2.6806187E-08   ! fit3 pvap NIST-Janaf 100-2500K, +/- 0.040:
+ZrO2          2  1 Zr     2 O                   2.6487227E+05 -3.3405496E+00 -7.5596222E+01  3.6352201E-03 -4.5843242E-07   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
+Ca2Al2SiO7    4  2 Ca     2 Al     1 Si     7 O      8.6259750E+05 -1.5334573E+01 -2.8009190E+02  1.6321285E-02 -1.8366782E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
+CaAl2Si2O8    4  1 Ca     2 Al     2 Si     8 O      9.5293176E+05 -2.0094889E+01 -2.8426091E+02  2.0000626E-02 -2.2776100E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
+MgAl2O4       3  1 Mg     2 Al     4 O          4.9091700E+05 -1.0178300E+01 -1.5766627E+02  1.0083900E-02 -9.2169700E-07   ! fit5 dG-Stock-fit NIST-Janaf 100-2800K, +/- 0.57:
+Ca2MgSi2O7    4  2 Ca     1 Mg     2 Si     7 O      8.4053180E+05 -1.2696761E+01 -2.9336493E+02  1.3714024E-02 -1.4501833E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
+CaMgSi2O6     4  1 Ca     1 Mg     2 Si     6 O      7.0870805E+05 -1.4846310E+01 -2.2234733E+02  1.5557222E-02 -1.7931144E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
+CaSiO3        3  1 Ca     1 Si     3 O          3.6034982E+05 -6.6904617E+00 -1.1484994E+02  7.1452647E-03 -8.1088405E-07   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/- 
+Mg2SiO4       3  2 Mg     1 Si     4 O          4.7158722E+05 -1.4043912E+00 -2.1235623E+02  2.7907469E-03 -1.4164099E-07   ! fit2 dG-fit NIST-Janaf 100-3000K, +/- 0.14:
+MgSiO3        3  1 Mg     1 Si     3 O          3.4848138E+05 -8.7557226E-01 -1.5386695E+02  2.0583904E-03 -2.1698122E-07   ! fit2 dG-fit NIST-Janaf extended 50-2500K, +/- 1.3:
+SiO2          1  1 SiO2                         7.0917245E+04 -5.7090902E+00 -1.0379029E-01  6.4085056E-03 -8.7970596E-07   ! fit3 pvap-fit NIST-Janaf 100-2000K, +/- 0.080:
+SiO           1  1 SiO                          4.9520000E+04  1.5189649E-11 -3.2520000E+01 -5.9675382E-14  2.9000413E-17   ! fit3 Gail et al. (2013):
+Fe            1  1 Fe                           4.6788908E+04 -9.5786414E+00  2.8980460E+01  9.6540523E-03 -1.2186548E-06   ! fit3 pvap-fit NIST-Janaf 100-2200K, +/- 0.050:
+Ni            1  1 Ni                           5.2232379E+04  1.3878507E+00 -4.1390817E+01 -6.4134018E-04  1.4775698E-07   ! fit3 pvap-fit NIST-Janaf 100-2500K, +/- 0.031:
+VO            1  1 VO                           6.8375296E+04  2.7619334E+00 -5.5894487E+01 -1.9088532E-04  1.0747844E-07   ! fit3 pvap-fit NIST-Janaf 100-2600K, +/- 0.016:
+V2O3          2  2 V      3 O                   3.5947400E+05 -4.0985700E+00 -1.3393315E+02  4.7377800E-03 -3.3613300E-07   ! fit5 dG-Stock-fit NIST-Janaf 100-2800K, +/- 0.32:
