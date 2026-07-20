@@ -30,13 +30,35 @@ LN_BAR = np.log(1.0e6)         # bar in dyn/cm^2
 KJMOL_TO_EV = 1.0 / 96.4853321233
 
 
+# GGchem's JANAF folder names files by formula, which collides on a
+# case-insensitive filesystem (CO carbon monoxide vs Co cobalt -- the
+# only such pair).  The cobalt table is renamed in the local clone.
+FILENAME_ALIAS = {'Co': 'Co_atom'}
+
+
 class JanafTable:
 
     def __init__(self, name):
-        path = JANAF_DIR / f'{name}.txt'
+        path = JANAF_DIR / f'{FILENAME_ALIAS.get(name, name)}.txt'
+        text = path.read_text()
+        # Guard against filename case collisions (CO vs Co): the header's
+        # formula field (e.g. "C1O1(g)") must contain the same element
+        # multiset as the requested name, compared case-sensitively.
+        # Element order differs between filename and header (JANAF writes
+        # MgOH as H1Mg1O1), so compare sorted element tokens.
+        import re as _re
+
+        def _elements(s):
+            return sorted(_re.findall(r'[A-Z][a-z]?', s.split('(')[0]))
+
+        header_formula = text.split('\n')[0].split('\t')[-1]
+        if _elements(header_formula) != _elements(name):
+            raise ValueError(
+                f"JANAF file {path.name} header says '{header_formula}', "
+                f"not '{name}' -- filename case collision?")
         T, logkf, dhf = [], [], []
         self.dHf0 = None
-        for line in path.read_text().split('\n')[2:]:
+        for line in text.split('\n')[2:]:
             parts = line.split('\t')
             if len(parts) < 8 or not parts[0].strip():
                 continue
