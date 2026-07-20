@@ -3788,6 +3788,20 @@ CONTAINS
     REAL(8), PARAMETER :: RY_HZ_LOCAL   = 3.289842D15  ! 1 Ry in Hz
 
     ! ------------------------------------------------------------------
+    !  Electron-density source (compile-time toggle)
+    !
+    !  .TRUE.  -- recompute XNE (with XNATOM and RHO) self-consistently
+    !             from the model's (T, P) via the current equilibrium
+    !             network: NMOLEC when IFMOL=1, NELECT when IFMOL=0.
+    !  .FALSE. -- keep the model atmosphere's converged XNE.  Note this
+    !             is a hybrid when IFMOL=1: the population tables NMOLEC
+    !             builds still reflect its own recomputed XNE, so Stark
+    !             broadening, Debye shielding, and electron scattering
+    !             see a different electron density than the populations.
+    ! ------------------------------------------------------------------
+    LOGICAL, PARAMETER :: RECOMPUTE_XNE = .TRUE.
+
+    ! ------------------------------------------------------------------
     !  IDMOL and MOMASS data (molecule codes and masses)
     !  These reproduce the DATA statements from xnfpelsyn.for exactly.
     ! ------------------------------------------------------------------
@@ -4082,15 +4096,23 @@ CONTAINS
     ! computation.  Subsequent calls find ITEMP_PREV==ITEMP and don't
     ! re-trigger NMOLEC at all.  So we call NMOLEC(1) explicitly here.
     !
-    ! NMOLEC also recalculates XNE as part of the molecular + ionisation
-    ! equilibrium.  The result is self-consistent but can differ slightly
-    ! (<1%) from the converged XNE stored in the model atmosphere.  We
-    ! save and restore XNE to keep the model's converged values.
+    ! NMOLEC recalculates XNE (with XNATOM and RHO) as part of the
+    ! molecular + ionisation equilibrium.  By default (RECOMPUTE_XNE)
+    ! the self-consistent value is kept, so the broadening and
+    ! scattering physics see the same electron density as the
+    ! populations, computed with the current equilibrium network rather
+    ! than whatever network produced the input atmosphere.  With
+    ! RECOMPUTE_XNE = .FALSE. the model's converged XNE is restored
+    ! (historical behaviour; differs by <~1% for solar-type models but
+    ! more where the networks diverge).  When molecules are off, NELECT
+    ! plays the role of NMOLEC.
     IF (IFMOL .EQ. 1) THEN
       xne_save(1:nrhox_a) = xne_a(1:nrhox_a)
       CALL NMOLEC(1)
       MOLEC_IREAD = 1
-      xne_a(1:nrhox_a) = xne_save(1:nrhox_a)
+      IF (.NOT. RECOMPUTE_XNE) xne_a(1:nrhox_a) = xne_save(1:nrhox_a)
+    ELSE IF (RECOMPUTE_XNE) THEN
+      CALL NELECT
     END IF
 
     ! Zero out all number densities before populating
