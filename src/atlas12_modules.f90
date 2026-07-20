@@ -161,7 +161,9 @@ MODULE mod_parameters
   INTEGER, PARAMETER :: mion = 1006    ! Number of ion species
   INTEGER, PARAMETER :: maxmol = 400   ! Maximum number of molecules
   INTEGER, PARAMETER :: max1 = maxmol + 1
-  INTEGER, PARAMETER :: maxeq = 50     ! Maximum number of equilibrium equations
+  INTEGER, PARAMETER :: maxeq = 64     ! Maximum number of equilibrium equations
+                                       ! (33 used + headroom for active
+                                       ! condensates in the augmented solve)
   INTEGER, PARAMETER :: maxloc = 3 * maxmol
 
   ! Line opacity cutoff: a line is dropped (in SELECTLINES, in the LINOP1/
@@ -1199,6 +1201,41 @@ MODULE mod_atlas_data
   REAL(8) :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
   INTEGER :: IFEQUA(101), KCOMPS(maxloc), LOCJ(max1), IDEQUA(maxeq)
   INTEGER :: NEQUA, NEQUA1, NEQNEQ, NUMMOL, NLOC
+  CHARACTER(10) :: MOLLABEL(maxmol)    ! molecules.dat row labels (READMOL)
+
+  ! --- Equilibrium condensation (Cond-limit) ---
+  ! Condensates deplete the gas phase inside NMOLEC's equilibrium solve
+  ! (augmented Newton: one extra unknown = condensed formula-unit density
+  ! and one extra equation ln S = 0 per active condensate).  No grain
+  ! opacity.  Data: data/condensates.dat (tools/fit_condensates.py);
+  ! ln S = sum_i nu_i ln(n_i kB T) + c0/T + c1 lnT + c2 + c3 T + c4 T^2
+  ! with kB = KB_COND (the GGchem value the fits were built with).
+  ! Developer option, set here; no CLI.
+  LOGICAL :: USE_CONDENSATION = .FALSE.
+  INTEGER, PARAMETER :: maxcond = 32   ! max condensate species
+  INTEGER, PARAMETER :: maxcref = 8    ! max reference/element entries each
+  REAL(8), PARAMETER :: KB_COND = 1.380662D-16    ! erg/K (GGchem datamod.f)
+  REAL(8), PARAMETER :: COND_TMAX = 2600.0D0      ! fit validity ceiling [K]
+  INTEGER :: NCOND = 0
+  CHARACTER(12) :: COND_NAME(maxcond)
+  ! Element composition per formula unit, resolved to equation indices
+  ! (molecule-referenced entries are expanded through the molecule's
+  ! components at READCOND time):
+  INTEGER :: COND_NEC(maxcond)                 ! # distinct elements
+  INTEGER :: COND_ECK(maxcref, maxcond)        ! equation index of element
+  INTEGER :: COND_ECN(maxcref, maxcond)        ! atoms per formula unit
+  ! Supersaturation bookkeeping:
+  INTEGER :: COND_JMOLREF(maxcond)             ! 0 = atom-referenced, else
+                                               ! molecules.dat row (JMOL)
+  REAL(8) :: COND_NREFTOT(maxcond)             ! sum nu_i of the reference
+                                               ! species (1 for molecule)
+  REAL(8) :: COND_COEF(5, maxcond)             ! lnK fit coefficients
+  ! Per-layer solver state (persists across NMOLEC calls: warm start)
+  REAL(8) :: COND_F(kw, maxcond) = 0.0D0       ! condensed formula units
+                                               ! per total nucleus
+  LOGICAL :: COND_ACT(kw, maxcond) = .FALSE.   ! active set
+  LOGICAL :: COND_SEEDED(kw) = .FALSE.         ! layer ever solved? (else
+                                               ! inherit neighbor's set)
 
   ! --- Population control flag ---
   INTEGER :: IFPOP
@@ -6487,6 +6524,7 @@ SUBROUTINE READIN(MODE)
     IFPRES = 1
     IFCORR = 1
     CALL READMOL
+    IF (USE_CONDENSATION) CALL READCOND
   ELSE
     !-------------------------------------------------------------------
     ! SYNTHE path: caller has already opened the model file on unit 5.
@@ -6501,6 +6539,7 @@ SUBROUTINE READIN(MODE)
     IFPRNT(1) = 2
     IFPNCH(1) = 2
     CALL READMOL
+    IF (USE_CONDENSATION) CALL READCOND
   END IF
 
   !---------------------------------------------------------------------
@@ -7138,6 +7177,7 @@ SUBROUTINE READMOL
     ! Store molecule data
     LOCJ(JMOL + 1) = KLOC
     XNMOLCODE(JMOL) = C
+    MOLLABEL(JMOL) = SPECIES_LABEL
     EQUIL(1:6, JMOL) = [E1, E2, E3, E4, E5, E6]
 
   END DO
@@ -7187,6 +7227,189 @@ SUBROUTINE READMOL
   RETURN
 
 END SUBROUTINE READMOL
+
+
+!***********************************************************************
+! SUBROUTINE READCOND
+!***********************************************************************
+! Reads the equilibrium-condensate table (condensates.dat) and resolves
+! every entry against the molecular-equilibrium network.  Must be called
+! AFTER READMOL: it needs IFEQUA (element -> equation index), MOLLABEL
+! (molecules.dat row labels), and LOCJ/KCOMPS (molecule compositions).
+!
+! File format (after '#' header comments): first data line = NCOND, then
+! one row per condensate:
+!
+!   name  nref  (nu sym)*nref  c0 c1 c2 c3 c4   ! provenance
+!
+! where sym is an element symbol (reference = free neutral atom) or a
+! molecules.dat label (reference = that gas molecule; vapor-pressure
+! sourced species).  Elements are tried first, so atom rows in
+! molecules.dat (e.g. label 'Fe') cannot shadow an element reference.
+!
+! Resolution products, per condensate IC:
+!   COND_ECK/ECN/NEC : element composition per formula unit as equation
+!       indices (molecule references expanded through the molecule's
+!       components) — drives element conservation.
+!   COND_JMOLREF     : 0 for atom-referenced entries, else the molecule
+!       row JMOL — ln S then uses ln EQUILJ(JMOL) + sum ln n(components).
+!   COND_NREFTOT     : sum of reference-species nu (1 for molecule
+!       references) — multiplies ln(kB T) in ln S.
+!***********************************************************************
+SUBROUTINE READCOND
+
+  IMPLICIT NONE
+
+  CHARACTER(256) :: BUFFER
+  CHARACTER(12)  :: CNAME
+  CHARACTER(10)  :: SYM(maxcref)
+  INTEGER  :: NU(maxcref), ECK(maxcref), ECN(maxcref)
+  REAL(8)  :: CF(5)
+  INTEGER  :: IOS, NREAD, NREF, NEC, I, IC, IZ, K, JM, JMOL
+  INTEGER  :: LOCK, IB, IE
+  LOGICAL  :: MERGED
+
+  OPEN(UNIT=2, FILE=trim(DATADIR)//'condensates.dat', STATUS='OLD', &
+       ACTION='READ', IOSTAT=IOS)
+  IF (IOS .NE. 0) THEN
+    WRITE(6, '(A)') ' READCOND ERROR: cannot open '// &
+                    trim(DATADIR)//'condensates.dat'
+    CALL EXIT(1)
+  END IF
+
+  NCOND = -1
+  NREAD = 0
+
+  read_loop: DO
+    READ(2, '(A)', IOSTAT=IOS) BUFFER
+    IF (IOS .NE. 0) EXIT read_loop
+    IF (LEN_TRIM(BUFFER) .EQ. 0) CYCLE
+    IF (BUFFER(1:1) .EQ. '#') CYCLE
+    IB = INDEX(BUFFER, '!')
+    IF (IB .GT. 0) BUFFER(IB:) = ' '
+    IF (LEN_TRIM(BUFFER) .EQ. 0) CYCLE
+
+    ! First data line: condensate count
+    IF (NCOND .LT. 0) THEN
+      READ(BUFFER, *, IOSTAT=IOS) NCOND
+      IF (IOS .NE. 0 .OR. NCOND .LT. 1 .OR. NCOND .GT. maxcond) THEN
+        WRITE(6, '(A,I6)') ' READCOND ERROR: bad condensate count; maxcond =', maxcond
+        CALL EXIT(1)
+      END IF
+      CYCLE
+    END IF
+
+    ! Condensate row: peel name + nref first, then the full row
+    READ(BUFFER, *, IOSTAT=IOS) CNAME, NREF
+    IF (IOS .NE. 0 .OR. NREF .LT. 1 .OR. NREF .GT. maxcref) THEN
+      WRITE(6, '(A)') ' READCOND ERROR: malformed row: '//trim(BUFFER)
+      CALL EXIT(1)
+    END IF
+    READ(BUFFER, *, IOSTAT=IOS) CNAME, NREF, (NU(I), SYM(I), I = 1, NREF), CF
+    IF (IOS .NE. 0) THEN
+      WRITE(6, '(A)') ' READCOND ERROR: malformed row: '//trim(BUFFER)
+      CALL EXIT(1)
+    END IF
+
+    NREAD = NREAD + 1
+    IF (NREAD .GT. NCOND) EXIT read_loop
+    IC = NREAD
+    COND_NAME(IC)      = CNAME
+    COND_COEF(1:5, IC) = CF
+    COND_JMOLREF(IC)   = 0
+    COND_NREFTOT(IC)   = 0.0D0
+    NEC = 0
+    ECK(:) = 0
+    ECN(:) = 0
+
+    DO I = 1, NREF
+      ! --- element symbol? (case-sensitive match against ELEM) ---
+      IZ = 0
+      DO K = 1, 99
+        IF (trim(SYM(I)) .EQ. trim(ELEM(K))) THEN
+          IZ = K
+          EXIT
+        END IF
+      END DO
+
+      IF (IZ .GT. 0) THEN
+        IF (IFEQUA(IZ) .LE. 1) THEN
+          WRITE(6, '(A)') ' READCOND ERROR: element '//trim(SYM(I))// &
+            ' of '//trim(CNAME)//' is not in the molecular network'
+          CALL EXIT(1)
+        END IF
+        NEC = NEC + 1
+        ECK(NEC) = IFEQUA(IZ)
+        ECN(NEC) = NU(I)
+        COND_NREFTOT(IC) = COND_NREFTOT(IC) + DBLE(NU(I))
+
+      ELSE
+        ! --- molecules.dat label ---
+        JM = 0
+        DO JMOL = 1, NUMMOL
+          IF (trim(SYM(I)) .EQ. trim(MOLLABEL(JMOL))) THEN
+            JM = JMOL
+            EXIT
+          END IF
+        END DO
+        IF (JM .EQ. 0) THEN
+          WRITE(6, '(A)') ' READCOND ERROR: reference '//trim(SYM(I))// &
+            ' of '//trim(CNAME)//' matches no element and no molecules.dat label'
+          CALL EXIT(1)
+        END IF
+        IF (NREF .NE. 1 .OR. NU(I) .NE. 1) THEN
+          WRITE(6, '(A)') ' READCOND ERROR: molecule reference of '// &
+            trim(CNAME)//' must be the sole entry with nu = 1'
+          CALL EXIT(1)
+        END IF
+        COND_JMOLREF(IC) = JM
+        COND_NREFTOT(IC) = 1.0D0
+        ! Expand the molecule's element composition (neutral gas only)
+        DO LOCK = LOCJ(JM), LOCJ(JM + 1) - 1
+          K = KCOMPS(LOCK)
+          IF (K .GE. NEQUA1 .OR. IDEQUA(K) .GE. 100) THEN
+            WRITE(6, '(A)') ' READCOND ERROR: molecule reference '// &
+              trim(SYM(I))//' of '//trim(CNAME)//' must be a neutral molecule'
+            CALL EXIT(1)
+          END IF
+          MERGED = .FALSE.
+          DO IE = 1, NEC
+            IF (ECK(IE) .EQ. K) THEN
+              ECN(IE) = ECN(IE) + 1
+              MERGED = .TRUE.
+              EXIT
+            END IF
+          END DO
+          IF (.NOT. MERGED) THEN
+            NEC = NEC + 1
+            ECK(NEC) = K
+            ECN(NEC) = 1
+          END IF
+        END DO
+      END IF
+
+      IF (NEC .GT. maxcref) THEN
+        WRITE(6, '(A)') ' READCOND ERROR: too many elements in '//trim(CNAME)
+        CALL EXIT(1)
+      END IF
+    END DO
+
+    COND_NEC(IC) = NEC
+    COND_ECK(1:maxcref, IC) = ECK(1:maxcref)
+    COND_ECN(1:maxcref, IC) = ECN(1:maxcref)
+  END DO read_loop
+
+  CLOSE(UNIT=2)
+
+  IF (NREAD .NE. NCOND) THEN
+    WRITE(6, '(A,I3,A,I3)') ' READCOND ERROR: expected ', NCOND, &
+                            ' condensates, read ', NREAD
+    CALL EXIT(1)
+  END IF
+
+  WRITE(6, '(A,I3,A)') ' READCOND: ', NCOND, ' condensates loaded'
+
+END SUBROUTINE READCOND
 
 !=========================================================================
 ! SUBROUTINE COMPUTE_ONE_POP(CODE, MODE, NUMBER)
@@ -8419,6 +8642,16 @@ SUBROUTINE NMOLEC(MODE)
   INTEGER :: IFERR
   INTEGER :: JMOL1, JMOL10, NN, NZ = 0, IZ, IZ1, IZ10
 
+  ! --- Condensation (outer quasi-Newton on condensed fractions) ---
+  REAL(8)  :: LNS, SMAX, CB, POT, ESUM, FNEW, BUDF
+  REAL(8)  :: DSCALE(maxcond), DSMAX
+  REAL(8)  :: CMAT(maxcond * maxcond), CVEC(maxcond), FAC(maxcond)
+  REAL(8)  :: SVEC(maxcond)
+  INTEGER :: CPIV(maxcond)
+  INTEGER :: NACT, ICACT(maxcond), NFLIPS(maxcond)
+  INTEGER :: JC, LC, IC, IC2, IE, IE2, KE, ITNEWT, ICMAX, NOUTER
+  LOGICAL :: CGIVEUP
+
   ! --- External functions ---
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING NMOLEC'
@@ -8536,11 +8769,117 @@ SUBROUTINE NMOLEC(MODE)
     END DO
 
     !-------------------------------------------------------------------
+    ! Chemical equilibrium with optional equilibrium condensation
+    ! (Cond-limit).  The legacy gas-phase Newton solve below is
+    ! untouched; condensation is an OUTER quasi-Newton on the condensed
+    ! fractions F_j (formula units per total nucleus): the effective
+    ! element abundances XAB_eff(k) = XAB_tot(k) - sum_j nu_jk F_j feed
+    ! the gas solve, and F is stepped on the small NACT x NACT system
+    !     d lnS_j / d F_l  ~=  - sum_e  nu_je nu_le / eps_gas(e)
+    ! (free-atom densities scale near-linearly with their element's
+    ! gas-phase abundance), so no nested chemistry evaluations are
+    ! needed.  Active-set management follows GGchem's equil_cond:
+    ! activate the highest-potential supersaturated candidate (simple,
+    ! abundant condensates first; repeat offenders soft-penalized),
+    ! deactivate the most-negative amount, and on persistent trouble
+    ! abandon condensation for the layer (the pure-gas solve is the
+    ! proven-convergent fallback) with a warning.
+    !-------------------------------------------------------------------
+    IF (USE_CONDENSATION .AND. T(J) .GT. COND_TMAX) THEN
+      DO IC = 1, NCOND
+        COND_ACT(J, IC) = .FALSE.
+        COND_F(J, IC)   = 0.0D0
+      END DO
+    END IF
+
+    ! First visit: inherit the neighboring (cooler) layer's assemblage
+    IF (USE_CONDENSATION .AND. .NOT. COND_SEEDED(J)) THEN
+      IF (J .GT. 1 .AND. T(J) .LE. COND_TMAX) THEN
+        DO IC = 1, NCOND
+          IF (COND_ACT(J - 1, IC)) THEN
+            COND_ACT(J, IC) = .TRUE.
+            COND_F(J, IC)   = 0.5D0 * COND_F(J - 1, IC)
+          END IF
+        END DO
+      END IF
+      COND_SEEDED(J) = .TRUE.
+    END IF
+    NFLIPS(:) = 0
+    NOUTER    = 0
+    CGIVEUP   = .FALSE.
+
+    cond_outer: DO
+
+      NOUTER = NOUTER + 1
+      IF (CGIVEUP) THEN
+        DO IC = 1, NCOND
+          COND_ACT(J, IC) = .FALSE.
+          COND_F(J, IC)   = 0.0D0
+        END DO
+      END IF
+
+      ! Normalize the condensed fractions to the shared-element budgets:
+      ! no element may be depleted past (1 - 1e-3) of its total, summed
+      ! over ALL active phases (per-phase clamps cannot see the sum).
+      ! Also rescues over-depleted warm starts from earlier calls.
+      IF (USE_CONDENSATION .AND. NCOND .GT. 0) THEN
+        FAC(:) = 1.0D0
+        DO K = 2, NEQUA
+          IF (IDEQUA(K) .GE. 100) CYCLE
+          CB = 0.0D0
+          DO IC = 1, NCOND
+            IF (.NOT. COND_ACT(J, IC)) CYCLE
+            DO IE = 1, COND_NEC(IC)
+              IF (COND_ECK(IE, IC) .EQ. K) &
+                CB = CB + DBLE(COND_ECN(IE, IC)) * COND_F(J, IC)
+            END DO
+          END DO
+          BUDF = (1.0D0 - 1.0D-12) * max(XABUND(J, IDEQUA(K)), 1.0D-20)
+          IF (CB .GT. BUDF) THEN
+            DO IC = 1, NCOND
+              IF (.NOT. COND_ACT(J, IC)) CYCLE
+              DO IE = 1, COND_NEC(IC)
+                IF (COND_ECK(IE, IC) .EQ. K) &
+                  FAC(IC) = MIN(FAC(IC), BUDF / CB)
+              END DO
+            END DO
+          END IF
+        END DO
+        DO IC = 1, NCOND
+          IF (COND_ACT(J, IC)) COND_F(J, IC) = COND_F(J, IC) * FAC(IC)
+        END DO
+      END IF
+
+      ! Effective (depleted) element abundances + active list.  The
+      ! budget normalization above bounds depletion at (1 - 1e-12) of
+      ! each element; the 1e-14 floor here only guards subtraction
+      ! roundoff.
+      DO K = 2, NEQUA
+        ID = IDEQUA(K)
+        IF (ID .LT. 100) XAB(K) = max(XABUND(J, ID), 1.0D-20)
+      END DO
+      NACT = 0
+      IF (USE_CONDENSATION) THEN
+        DO IC = 1, NCOND
+          IF (.NOT. COND_ACT(J, IC)) CYCLE
+          NACT = NACT + 1
+          ICACT(NACT) = IC
+          DO IE = 1, COND_NEC(IC)
+            KE = COND_ECK(IE, IC)
+            XAB(KE) = MAX(XAB(KE) - DBLE(COND_ECN(IE, IC)) * COND_F(J, IC), &
+                          1.0D-14 * max(XABUND(J, IDEQUA(KE)), 1.0D-20))
+          END DO
+        END DO
+      END IF
+
+    !-------------------------------------------------------------------
     ! Newton-Raphson iteration for chemical equilibrium
     !-------------------------------------------------------------------
     EQOLD(:) = 0.0D0
+    ITNEWT = 0
 
     newton_loop: DO
+      ITNEWT = ITNEWT + 1
 
       ! --- Build Jacobian (DEQ) and residual (EQ) ---
       DEQ(1:NEQNEQ) = 0.0D0
@@ -8658,7 +8997,224 @@ SUBROUTINE NMOLEC(MODE)
 
       IF (IFERR .EQ. 0) EXIT newton_loop
 
+      IF (ITNEWT .GE. 5000) THEN
+        WRITE(6, '(A,I4,A,F9.1,A,1PE10.2)') &
+          ' NMOLEC WARNING: no convergence in 5000 iterations at J=', J, &
+          '  T=', T(J), '  P=', P(J)
+        EXIT newton_loop
+      END IF
+
     END DO newton_loop
+
+    IF (.NOT. USE_CONDENSATION .OR. NCOND .EQ. 0 .OR. CGIVEUP .OR. &
+        T(J) .GT. COND_TMAX) EXIT cond_outer
+
+    IF (NOUTER .GT. 200) THEN
+      SMAX  = 0.0D0
+      ICMAX = 0
+      DO JC = 1, NACT
+        CB = ABS(COND_LNS(ICACT(JC), T(J)))
+        IF (CB .GT. SMAX) THEN
+          SMAX  = CB
+          ICMAX = JC
+        END IF
+      END DO
+      IF (NACT .GT. 0 .AND. SMAX .LT. 3.0D-2) THEN
+        ! nearly saturated (|dlog10 S| < 0.013): accept the assemblage
+        EXIT cond_outer
+      END IF
+      IF (ICMAX .GT. 0 .AND. NACT .GT. 1) THEN
+        ! evict only the unconverged phase; keep the healthy assemblage
+        IC = ICACT(ICMAX)
+        COND_ACT(J, IC) = .FALSE.
+        COND_F(J, IC)   = 0.0D0
+        NFLIPS(IC) = 12
+        WRITE(6, '(A,I4,A,A,A)') ' COND WARNING: J=', J, '  ', &
+          trim(COND_NAME(IC)), ' evicted at outer cap (unconverged)'
+        NOUTER = 140
+        CYCLE cond_outer
+      END IF
+      CGIVEUP = .TRUE.
+      WRITE(6, '(A,I4,A)') ' COND WARNING: J=', J, &
+        '  outer iteration cap -- condensation abandoned this layer'
+      CYCLE cond_outer
+    END IF
+
+    ! ---- Saturation step: quasi-Newton on the condensed fractions ----
+    IF (NACT .GT. 0) THEN
+      SMAX = 0.0D0
+      DO JC = 1, NACT
+        CVEC(JC) = COND_LNS(ICACT(JC), T(J))
+        SMAX = MAX(SMAX, ABS(CVEC(JC)))
+      END DO
+
+      IF (SMAX .GT. 1.0D-7) THEN
+        SVEC(1:NACT) = CVEC(1:NACT)          ! keep ln S per phase
+        ! M_jl = sum_e nu_je nu_le / eps_gas(e); dF = M^-1 lnS
+        CMAT(1:NACT*NACT) = 0.0D0
+        DO JC = 1, NACT
+          DO LC = 1, NACT
+            CB = 0.0D0
+            DO IE = 1, COND_NEC(ICACT(JC))
+              KE = COND_ECK(IE, ICACT(JC))
+              DO IE2 = 1, COND_NEC(ICACT(LC))
+                IF (COND_ECK(IE2, ICACT(LC)) .NE. KE) CYCLE
+                CB = CB + DBLE(COND_ECN(IE, ICACT(JC))) * &
+                          DBLE(COND_ECN(IE2, ICACT(LC))) / XAB(KE)
+              END DO
+            END DO
+            CMAT((LC - 1) * NACT + JC) = CB
+          END DO
+        END DO
+        CALL SOLVIT(CMAT, NACT, CVEC, CPIV)
+        ! progressive damping: late outer iterations take smaller steps
+        ! (settles limit cycles at phase boundaries)
+        IF (NOUTER .GT. 40) THEN
+          DO JC = 1, NACT
+            CVEC(JC) = CVEC(JC) * 40.0D0 / DBLE(NOUTER)
+          END DO
+        END IF
+
+        ! Apply dF with step damping; a non-positive F deactivates the
+        ! most-negative candidate only (thermodynamic competition)
+        ICMAX = 0
+        SMAX  = 0.0D0
+        DO JC = 1, NACT
+          IC = ICACT(JC)
+          BUDF = 1.0D300
+          DO IE = 1, COND_NEC(IC)
+            KE = COND_ECK(IE, IC)
+            CB = max(XABUND(J, IDEQUA(KE)), 1.0D-20) / DBLE(COND_ECN(IE, IC))
+            IF (CB .LT. BUDF) BUDF = CB
+          END DO
+          IF (SVEC(JC) .GT. 0.5D0) THEN
+            ! Deeply supersaturated: the linear step overshoots the
+            ! element budget wholesale.  Step the LIMITING element's
+            ! remnant multiplicatively instead: ln S is ~linear in
+            ! nu_lim * ln(remnant), so remnant -> remnant*exp(-lnS/nu),
+            ! which is exact in the single-limiting-element regime and
+            ! safe by construction (dF < remnant/nu).
+            CB   = 1.0D300
+            LC   = 0
+            DO IE = 1, COND_NEC(IC)
+              KE = COND_ECK(IE, IC)
+              IF (XAB(KE) / DBLE(COND_ECN(IE, IC)) .LT. CB) THEN
+                CB = XAB(KE) / DBLE(COND_ECN(IE, IC))
+                LC = COND_ECN(IE, IC)
+              END IF
+            END DO
+            FNEW = COND_F(J, IC) + CB * (1.0D0 - EXP(-SVEC(JC) / DBLE(LC)))
+          ELSE
+            FNEW = COND_F(J, IC) + MAX(MIN(CVEC(JC), 0.5D0 * BUDF), &
+                                       -0.5D0 * BUDF)
+          END IF
+          IF (FNEW .LE. 0.0D0) THEN
+            IF (FNEW / BUDF .LT. SMAX) THEN
+              SMAX  = FNEW / BUDF
+              ICMAX = JC
+            END IF
+          END IF
+          CVEC(JC) = MIN(FNEW, 0.999999D0 * BUDF)   ! stash candidate F
+        END DO
+
+        ! shared-element budget normalization of the candidate steps
+        FAC(:) = 1.0D0
+        DO K = 2, NEQUA
+          IF (IDEQUA(K) .GE. 100) CYCLE
+          CB = 0.0D0
+          DO JC = 1, NACT
+            DO IE = 1, COND_NEC(ICACT(JC))
+              IF (COND_ECK(IE, ICACT(JC)) .EQ. K) &
+                CB = CB + DBLE(COND_ECN(IE, ICACT(JC))) * MAX(CVEC(JC), 0.0D0)
+            END DO
+          END DO
+          BUDF = (1.0D0 - 1.0D-12) * max(XABUND(J, IDEQUA(K)), 1.0D-20)
+          IF (CB .GT. BUDF) THEN
+            DO JC = 1, NACT
+              DO IE = 1, COND_NEC(ICACT(JC))
+                IF (COND_ECK(IE, ICACT(JC)) .EQ. K) &
+                  FAC(ICACT(JC)) = MIN(FAC(ICACT(JC)), BUDF / CB)
+              END DO
+            END DO
+          END IF
+        END DO
+        DO JC = 1, NACT
+          IF (CVEC(JC) .GT. 0.0D0) CVEC(JC) = CVEC(JC) * FAC(ICACT(JC))
+        END DO
+
+        IF (ICMAX .GT. 0) THEN
+          IC = ICACT(ICMAX)
+          COND_ACT(J, IC) = .FALSE.
+          COND_F(J, IC)   = 0.0D0
+          NFLIPS(IC) = NFLIPS(IC) + 1
+          IF (NFLIPS(IC) .EQ. 12) WRITE(6, '(A,I4,A,A,A,F8.1)') &
+            ' COND WARNING: J=', J, '  ', trim(COND_NAME(IC)), &
+            ' locked out after 12 rejections, T=', T(J)
+          ! surviving members shrink instead of going negative
+          DO JC = 1, NACT
+            IF (JC .EQ. ICMAX) CYCLE
+            IC2 = ICACT(JC)
+            IF (CVEC(JC) .LE. 0.0D0) THEN
+              COND_F(J, IC2) = 0.5D0 * COND_F(J, IC2)
+            ELSE
+              COND_F(J, IC2) = CVEC(JC)
+            END IF
+          END DO
+          CYCLE cond_outer
+        END IF
+
+        DO JC = 1, NACT
+          COND_F(J, ICACT(JC)) = CVEC(JC)
+        END DO
+        CYCLE cond_outer
+      END IF
+    END IF
+
+    ! ---- Saturated set converged: activation scan ----
+    IF (T(J) .LE. COND_TMAX) THEN
+      ! activation potential (GGchem): simple + abundant first, repeat
+      ! offenders soft-penalized; hard cap guarantees termination
+      DSMAX = 0.0D0
+      DO IC = 1, NCOND
+        BUDF = 1.0D300
+        DO IE = 1, COND_NEC(IC)
+          KE = COND_ECK(IE, IC)
+          CB = max(XABUND(J, IDEQUA(KE)), 1.0D-20) / DBLE(COND_ECN(IE, IC))
+          IF (CB .LT. BUDF) BUDF = CB
+        END DO
+        DSCALE(IC) = MAX(BUDF, 1.0D-300)
+        IF (BUDF .GT. DSMAX) DSMAX = BUDF
+      END DO
+      SMAX  = 0.0D0
+      ICMAX = 0
+      DO IC = 1, NCOND
+        IF (COND_ACT(J, IC)) CYCLE
+        IF (NFLIPS(IC) .GE. 12) CYCLE
+        LNS = COND_LNS(IC, T(J))
+        ! activation hysteresis: a phase at its exact boundary (S barely
+        ! above 1) holds a negligible amount and only churns the active
+        ! set -- require ln S > 1e-3 to enter
+        IF (LNS .LE. 1.0D-3) CYCLE
+        ESUM = 0.0D0
+        DO IE = 1, COND_NEC(IC)
+          ESUM = ESUM + DBLE(COND_ECN(IE, IC))
+        END DO
+        POT = 1.0D0 / (ESUM**1.65D0 + 0.01D0 * DSMAX / DSCALE(IC)) &
+              / (1.0D0 + 1.0D3 * DBLE(NFLIPS(IC))**4)
+        IF (LNS * POT .GT. SMAX) THEN
+          SMAX  = LNS * POT
+          ICMAX = IC
+        END IF
+      END DO
+      IF (ICMAX .GT. 0) THEN
+        COND_ACT(J, ICMAX) = .TRUE.
+        COND_F(J, ICMAX)   = 1.0D-8 * DSCALE(ICMAX)
+        CYCLE cond_outer
+      END IF
+    END IF
+
+    EXIT cond_outer
+    END DO cond_outer
 
     !-------------------------------------------------------------------
     ! Store converged solution
@@ -8686,6 +9242,28 @@ SUBROUTINE NMOLEC(MODE)
     END DO
 
   END DO  ! depth loop J
+
+  !=====================================================================
+  ! Condensation diagnostics: one line per condensing layer per call
+  ! (suppressed for the EOS-derivative re-entries).  "COND:" lines are
+  ! consumed by the Stage-3 validation harness.
+  !=====================================================================
+  IF (USE_CONDENSATION .AND. IFEDNS .EQ. 0) THEN
+    DO J = 1, NRHOX
+      NACT = 0
+      DO IC = 1, NCOND
+        IF (COND_ACT(J, IC)) NACT = NACT + 1
+      END DO
+      IF (NACT .EQ. 0) CYCLE
+      WRITE(6, '(A,I4,A,F8.1)', ADVANCE='NO') ' COND: J=', J, '  T=', T(J)
+      DO IC = 1, NCOND
+        IF (.NOT. COND_ACT(J, IC)) CYCLE
+        WRITE(6, '(2X,A,A,1PE10.3)', ADVANCE='NO') &
+             trim(COND_NAME(IC)), '=', COND_F(J, IC) * XNATOM(J)
+      END DO
+      WRITE(6, '(A)') ''
+    END DO
+  END IF
 
   !=====================================================================
   ! If computing energy density (IFEDNS=1), jump to that section
@@ -8991,6 +9569,41 @@ CONTAINS
     END DO
 
   END SUBROUTINE nmolec_energy_density
+
+
+  !-------------------------------------------------------------------
+  ! ln S for condensate IC at temperature TJ, from the CURRENT Newton
+  ! state (host-associated XN and EQUILJ).  Filed convention
+  ! (condensates.dat / tools/fit_condensates.py):
+  !   ln S = sum_i nu_i ln(n_i * KB_COND * TJ) + c0/TJ + c1 lnTJ + c2
+  !          + c3 TJ + c4 TJ^2
+  ! For a molecule-referenced entry, n_ref = EQUILJ(JMOL) * prod n(comp)
+  ! so the composition sum runs over the molecule's component atoms and
+  ! ln EQUILJ(JMOL) is added (NREFTOT = 1).
+  !-------------------------------------------------------------------
+  REAL(8) FUNCTION COND_LNS(IC, TJ)
+    INTEGER, INTENT(IN) :: IC
+    REAL(8), INTENT(IN) :: TJ
+    INTEGER :: IE_c
+
+    COND_LNS = COND_COEF(1, IC) / TJ                                   &
+             + COND_COEF(2, IC) * LOG(TJ)                              &
+             + COND_COEF(3, IC)                                        &
+             + COND_COEF(4, IC) * TJ                                   &
+             + COND_COEF(5, IC) * TJ * TJ                              &
+             + COND_NREFTOT(IC) * LOG(KB_COND * TJ)
+    IF (COND_JMOLREF(IC) .GT. 0) THEN
+      IF (EQUILJ(COND_JMOLREF(IC)) .LE. 0.0D0) THEN
+        COND_LNS = -1.0D30           ! outside the gas fit range
+        RETURN
+      END IF
+      COND_LNS = COND_LNS + LOG(EQUILJ(COND_JMOLREF(IC)))
+    END IF
+    DO IE_c = 1, COND_NEC(IC)
+      COND_LNS = COND_LNS                                              &
+               + DBLE(COND_ECN(IE_c, IC)) * LOG(XN(COND_ECK(IE_c, IC)))
+    END DO
+  END FUNCTION COND_LNS
 
 END SUBROUTINE NMOLEC
 
