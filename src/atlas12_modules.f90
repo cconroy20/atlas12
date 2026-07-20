@@ -1197,6 +1197,18 @@ MODULE mod_atlas_data
   !       cool/warm stars where convection pins the deep structure.
   INTEGER :: IQUAD = 0
 
+  ! Hard lower bound on T(J), applied after every TCORR step (developer
+  ! option, set here; no CLI).  Lower-edge audit (2026-07): the binding
+  ! data edges are the Bell & Berrington H- free-free theta grid
+  ! (1400 K; linear theta extrapolation below, <=7% at 1000 K, diluted
+  ! by the tiny n_e there), the CH/OH photodissociation tables (2000 K,
+  ! log-linear extrapolated -- already crossed at any pinned layer), and
+  ! the PFIRON iron-group grid (2089 K -- extended with Barklem & Collet
+  ! below; see the PFIRON low-T extension).  H2 CIA (1000 K, clamped),
+  ! condensate fits (700 K), B&C atomic PFs, H2 PF (100 K), and the
+  ! molecular-equilibrium fit forms all remain in validity above 1000 K.
+  REAL(8) :: TFLOOR_ATM = 1500.0D0
+
   ! --- Molecular equilibrium ---
   REAL(8) :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
   INTEGER :: IFEQUA(101), KCOMPS(maxloc), LOCJ(max1), IDEQUA(maxeq)
@@ -2745,9 +2757,9 @@ SUBROUTINE TCORR(MODE, RCOWT)
     T(J) = min(T(J), T(J+1) - 1.0D0)
   END DO
 
-  ! Floor temperature options
-  ! various opacity tables only extend to 2000K (extrapolated below)
-   T = max(T, 1500.0D0)
+  ! Floor temperature (TFLOOR_ATM, mod_atlas_data; see the audit notes
+  ! there for which data tables bound it from below)
+   T = max(T, TFLOOR_ATM)
   ! T(J) = max(T(J),0.7*TEFF)
 
   !---------------------------------------------------------------------
@@ -20405,6 +20417,9 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
 
   ! --- Local variables ---
   REAL(8)  :: TLOG, POTLOW, F, P
+  REAL(8)  :: T_here, U_low, x_lo, w_lo    ! low-T B&C extension
+  REAL(8), PARAMETER :: PFIRON_BC_TLO = 1900.0D0   ! pure B&C below
+  REAL(8), PARAMETER :: PFIRON_BC_THI = 2100.0D0   ! pure legacy at/above
   INTEGER :: IT, LOW, I, J, K, L, IELEM
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING PFIRON'
@@ -20445,7 +20460,11 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
       REAL(8), PARAMETER :: T_HIGH_BC = 10000.0d0
       DO IELEM = 1, NELEM_TAB
         DO ION_init = 1, 3
-          DO IT_init = 2, 31
+          ! IT_init = 1 included: the runtime interpolation reads node 1
+          ! whenever T is at/below the grid bottom, and an unpopulated
+          ! BC_RATIO(1) = 1.0 would fade the hybrid back to pure Kurucz
+          ! exactly where the B&C anchoring matters most.
+          DO IT_init = 1, 31
             IF (IT_init .LE. 21) THEN
               TLOG_IT = 3.32D0 + (IT_init - 2) * 0.02D0
             ELSE
@@ -20562,6 +20581,32 @@ SUBROUTINE PFIRON(NELEM, ION, TLOG8, POTLOW8, PF)
   IF (ION .LE. 3 .AND. IT .GE. 2) THEN
     PF = PF * (F * BC_RATIO(IT, ION, IELEM) &
             + (1.0D0 - F) * BC_RATIO(IT-1, ION, IELEM))
+  END IF
+
+  ! --- Low-temperature extension (below the Kurucz grid) ---------------
+  !     The PFTAB grid bottoms out at log T = 3.32 (2089 K); below it the
+  !     clamped interpolation freezes PF at the lowest node.  For ions
+  !     I-III blend to the Barklem & Collet U(T) instead (tabulated to
+  !     arbitrarily low T): pure B&C below PFIRON_BC_TLO, legacy at/above
+  !     PFIRON_BC_THI, C^1 smoothstep between (finite-difference EOS
+  !     derivatives sample PF; a kink would imprint on grad_ad).  The
+  !     pressure-lowering correction is dropped in the pure-B&C regime --
+  !     POTLOW is negligible at these temperatures (n_e is tiny).
+  !     Ion stages >= 4 keep the frozen clamp (unpopulated below 2000 K).
+  IF (USE_BC_PARTITION_FUNCTIONS .AND. ION .LE. 3) THEN
+    T_here = 10.0D0**TLOG
+    IF (T_here .LT. PFIRON_BC_THI) THEN
+      U_low = U_BC(NELEM, ION, T_here)
+      IF (U_low .GT. 0.0D0 .AND. U_low .LT. 1.0D6) THEN
+        IF (T_here .LE. PFIRON_BC_TLO) THEN
+          PF = U_low
+        ELSE
+          x_lo = (T_here - PFIRON_BC_TLO) / (PFIRON_BC_THI - PFIRON_BC_TLO)
+          w_lo = x_lo * x_lo * (3.0D0 - 2.0D0 * x_lo)   ! smoothstep
+          PF = w_lo * PF + (1.0D0 - w_lo) * U_low
+        END IF
+      END IF
+    END IF
   END IF
 
 END SUBROUTINE PFIRON
