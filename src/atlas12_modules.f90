@@ -9262,6 +9262,24 @@ SUBROUTINE NMOLEC(MODE)
              trim(COND_NAME(IC)), '=', COND_F(J, IC) * XNATOM(J)
       END DO
       WRITE(6, '(A)') ''
+      ! companion line: per-element gas-phase fraction (Stage-3 harness)
+      WRITE(6, '(A,I4)', ADVANCE='NO') ' CONDEPS: J=', J
+      DO K = 2, NEQUA
+        ID = IDEQUA(K)
+        IF (ID .GE. 100) CYCLE
+        CB = 0.0D0
+        DO IC = 1, NCOND
+          IF (.NOT. COND_ACT(J, IC)) CYCLE
+          DO IE = 1, COND_NEC(IC)
+            IF (COND_ECK(IE, IC) .EQ. K) &
+              CB = CB + DBLE(COND_ECN(IE, IC)) * COND_F(J, IC)
+          END DO
+        END DO
+        IF (CB .LE. 0.0D0) CYCLE
+        WRITE(6, '(2X,A,A,1PE10.3)', ADVANCE='NO') trim(ELEM(ID)), '=', &
+          1.0D0 - CB / max(XABUND(J, ID), 1.0D-20)
+      END DO
+      WRITE(6, '(A)') ''
     END DO
   END IF
 
