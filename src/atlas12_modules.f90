@@ -1212,6 +1212,8 @@ MODULE mod_atlas_data
   ! with kB = KB_COND (the GGchem value the fits were built with).
   ! Developer option, set here; no CLI.
   LOGICAL :: USE_CONDENSATION = .FALSE.
+  INTEGER :: COND_DBGJ = 0             ! developer: trace cond_outer at this
+                                       ! layer (0 = off)
   INTEGER, PARAMETER :: maxcond = 32   ! max condensate species
   INTEGER, PARAMETER :: maxcref = 8    ! max reference/element entries each
   REAL(8), PARAMETER :: KB_COND = 1.380662D-16    ! erg/K (GGchem datamod.f)
@@ -9094,6 +9096,17 @@ SUBROUTINE NMOLEC(MODE)
         SMAX = MAX(SMAX, ABS(CVEC(JC)))
       END DO
 
+      IF (J .EQ. COND_DBGJ .AND. IFEDNS .EQ. 0) THEN
+        WRITE(6, '(A,I4,A,I4,A,I5)', ADVANCE='NO') &
+          ' CDBG J=', J, ' NO=', NOUTER, ' NEWT=', ITNEWT
+        DO JC = 1, NACT
+          WRITE(6, '(2X,A,A,1PE10.3,A,1PE10.2)', ADVANCE='NO') &
+            trim(COND_NAME(ICACT(JC))), ' F=', COND_F(J, ICACT(JC)), &
+            ' lnS=', CVEC(JC)
+        END DO
+        WRITE(6, '(A)') ''
+      END IF
+
       IF (SMAX .GT. 1.0D-7) THEN
         SVEC(1:NACT) = CVEC(1:NACT)          ! keep ln S per phase
         ! M_jl = sum_e nu_je nu_le / eps_gas(e); dF = M^-1 lnS
@@ -9160,7 +9173,11 @@ SUBROUTINE NMOLEC(MODE)
               ICMAX = JC
             END IF
           END IF
-          CVEC(JC) = MIN(FNEW, 0.999999D0 * BUDF)   ! stash candidate F
+          ! stash candidate F; cap at the same (1 - 1e-12) depletion
+          ! ceiling as the budget normalization (a tighter per-phase cap
+          ! deadlocks trace refractories whose equilibrium remnant lies
+          ! below it: ZrO2 at 2500 K froze at lnS = +0.59 this way)
+          CVEC(JC) = MIN(FNEW, (1.0D0 - 1.0D-12) * BUDF)
         END DO
 
         ! shared-element budget normalization of the candidate steps
@@ -9193,6 +9210,10 @@ SUBROUTINE NMOLEC(MODE)
           COND_ACT(J, IC) = .FALSE.
           COND_F(J, IC)   = 0.0D0
           NFLIPS(IC) = NFLIPS(IC) + 1
+          IF (J .EQ. COND_DBGJ .AND. IFEDNS .EQ. 0) &
+            WRITE(6, '(A,I4,A,I4,A,A,A,1PE10.2)') ' CDBG J=', J, &
+              ' NO=', NOUTER, '  DEACT ', trim(COND_NAME(IC)), &
+              '  FNEW/BUD=', SMAX
           IF (NFLIPS(IC) .EQ. 12) WRITE(6, '(A,I4,A,A,A,F8.1)') &
             ' COND WARNING: J=', J, '  ', trim(COND_NAME(IC)), &
             ' locked out after 12 rejections, T=', T(J)
@@ -9255,6 +9276,10 @@ SUBROUTINE NMOLEC(MODE)
       IF (ICMAX .GT. 0) THEN
         COND_ACT(J, ICMAX) = .TRUE.
         COND_F(J, ICMAX)   = 1.0D-8 * DSCALE(ICMAX)
+        IF (J .EQ. COND_DBGJ .AND. IFEDNS .EQ. 0) &
+          WRITE(6, '(A,I4,A,I4,A,A,A,1PE10.2)') ' CDBG J=', J, &
+            ' NO=', NOUTER, '  ACT   ', trim(COND_NAME(ICMAX)), &
+            '  lnS=', COND_LNS(ICMAX, T(J))
         CYCLE cond_outer
       END IF
     END IF
