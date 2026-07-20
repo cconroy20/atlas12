@@ -8427,7 +8427,9 @@ SUBROUTINE NMOLEC(MODE)
   NEQNEQ = NEQUA**2
 
   !=====================================================================
-  ! Initialize abundances (constant with depth in this version)
+  ! Initialize abundances from the surface layer (refreshed per depth
+  ! inside the main loop; XABUND is depth-uniform unless condensation
+  ! depletes the gas phase)
   !=====================================================================
   XAB(:) = 0.0D0
   J = 1
@@ -8447,13 +8449,20 @@ SUBROUTINE NMOLEC(MODE)
   END DO
   IF (ID .EQ. 100) XN(NEQUA) = X
   XNE(1) = X
-  
+
   !=====================================================================
   ! Main depth loop: solve molecular equilibrium at each depth
   !=====================================================================
   DO J = 1, NRHOX
-     
+
     XNTOT = P(J) / TK(J)
+
+    ! Element abundances at this depth (electron row stays 0; ID after
+    ! this loop is IDEQUA(NEQUA), matching the surface-guess block above)
+    DO K = 2, NEQUA
+      ID = IDEQUA(K)
+      IF (ID .LT. 100) XAB(K) = max(XABUND(J, ID), 1.0D-20)
+    END DO
 
     ! Extrapolate from previous depth as initial guess
     IF (J .GT. 1) THEN
