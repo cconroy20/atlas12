@@ -8850,10 +8850,17 @@ SUBROUTINE NMOLEC(MODE)
         END DO
       END IF
 
+      ! Recover from a NaN gas state (poisoned warm start): re-seed the
+      ! solution vector from scratch, as at the surface layer
+      IF (XN(1) .NE. XN(1)) THEN
+        XN(1) = XNTOT
+        IF (T(J) .GE. 4000.0D0) XN(1) = XNTOT / 2.0D0
+      END IF
+
       ! Effective (depleted) element abundances + active list.  The
       ! budget normalization above bounds depletion at (1 - 1e-12) of
-      ! each element; the 1e-14 floor here only guards subtraction
-      ! roundoff.
+      ! each element; the 1e-14 relative + 1e-20 absolute floors (the
+      ! legacy solver's own floor) only guard arithmetic.
       DO K = 2, NEQUA
         ID = IDEQUA(K)
         IF (ID .LT. 100) XAB(K) = max(XABUND(J, ID), 1.0D-20)
@@ -8867,10 +8874,20 @@ SUBROUTINE NMOLEC(MODE)
           DO IE = 1, COND_NEC(IC)
             KE = COND_ECK(IE, IC)
             XAB(KE) = MAX(XAB(KE) - DBLE(COND_ECN(IE, IC)) * COND_F(J, IC), &
-                          1.0D-14 * max(XABUND(J, IDEQUA(KE)), 1.0D-20))
+                          1.0D-14 * max(XABUND(J, IDEQUA(KE)), 1.0D-20), &
+                          1.0D-20)
           END DO
         END DO
       END IF
+
+    ! (NaN rescue, part 2: rebuild species entries from the fresh XAB)
+    IF (NACT .GE. 0) THEN
+      DO K = 2, NEQUA
+        IF (XN(K) .NE. XN(K)) XN(K) = 0.1D0 * XN(1) * XAB(K)
+      END DO
+      IF (IDEQUA(NEQUA) .GE. 100 .AND. XN(NEQUA) .NE. XN(NEQUA)) &
+        XN(NEQUA) = 0.1D0 * XN(1)
+    END IF
 
     !-------------------------------------------------------------------
     ! Newton-Raphson iteration for chemical equilibrium
@@ -8995,6 +9012,19 @@ SUBROUTINE NMOLEC(MODE)
         EQOLD(K) = EQ(K)
       END DO
 
+      ! NaN never satisfies a .GT. test, so a poisoned state would
+      ! otherwise "converge" silently -- catch it explicitly
+      IF (XN(1) .NE. XN(1) .OR. EQ(1) .NE. EQ(1)) THEN
+        IF (USE_CONDENSATION .AND. NACT .GT. 0) THEN
+          CGIVEUP = .TRUE.
+          WRITE(6, '(A,I4,A)') ' COND WARNING: J=', J, &
+            '  NaN in gas solve -- condensation abandoned this layer'
+          CYCLE cond_outer
+        END IF
+        WRITE(6, '(A,I4)') ' NMOLEC WARNING: NaN in gas solve at J=', J
+        EXIT newton_loop
+      END IF
+
       IF (IFERR .EQ. 0) EXIT newton_loop
 
       IF (ITNEWT .GE. 5000) THEN
@@ -9044,7 +9074,23 @@ SUBROUTINE NMOLEC(MODE)
     IF (NACT .GT. 0) THEN
       SMAX = 0.0D0
       DO JC = 1, NACT
-        CVEC(JC) = COND_LNS(ICACT(JC), T(J))
+        IC = ICACT(JC)
+        CVEC(JC) = COND_LNS(IC, T(J))
+        ! Fully-condensed phases: if the limiting element's gas remnant
+        ! sits at the floor and the phase is still supersaturated, the
+        ! equilibrium remnant is below double-precision reach -- that is
+        ! exhaustion, not a solver residual.  Treat as converged.
+        IF (CVEC(JC) .GT. 0.0D0) THEN
+          DO IE = 1, COND_NEC(IC)
+            KE = COND_ECK(IE, IC)
+            CB = MAX(1.0D-14 * max(XABUND(J, IDEQUA(KE)), 1.0D-20), &
+                     1.0D-20)
+            IF (XAB(KE) .LE. 1.5D0 * CB) THEN
+              CVEC(JC) = 0.0D0
+              EXIT
+            END IF
+          END DO
+        END IF
         SMAX = MAX(SMAX, ABS(CVEC(JC)))
       END DO
 
