@@ -329,46 +329,16 @@ The original ATLAS12 was ~23,000 lines of Fortran 77 fixed-format code.
 The original SYNTHE suite comprised three separate programs (XNFPELSYN,
 SYNTHE, SPECTRV) communicating through intermediate files.
 
-The summary below describes the current state of the modernization.
-The full change ledger — design rationale, solver post-mortems, and
-per-change validation numbers — is in [CHANGELOG.md](CHANGELOG.md).
-
-**Structural**
-
-- Free-format Fortran 90 source; explicit typing throughout; `-r8` flag removed
-- 58 COMMON blocks consolidated into two modules (`mod_parameters`, `mod_atlas_data`)
-- 829 EQUIVALENCE statements eliminated
-- Full GOTO elimination pass: 38 → 0 active GOTOs across all four files, including a refactor of the `JOSH` radiative transfer solver
-- Command-line argument parsing replaces card-based input for ATLAS12 driver options
-- The `mklinelist` line-list preprocessor (formerly a standalone shell pipeline) absorbed into the SYNTHE executable as `mod_mklinelist`, dispatching from the plain-text `lines.list` manifest
-- SYNTHE three-program pipeline merged into a single executable with all inter-stage data flow in memory; intermediate `fort.*` scratch files eliminated; ASCII spectrum output written directly (no `syntoascanga` step)
-
-**Numerical and physical**
-
-- Atmosphere state arrays (T, P, ρ, χ, populations) promoted from REAL(4) to REAL(8); physical constants consolidated into `mod_constants` with CODATA 2018 values
-- Atomic partition functions from Barklem & Collet (2016) direct NIST level summation, Z = 1–92 in ion stages I–III (`partfn_bc2016.dat`); the legacy Kurucz sums survive only as an internal safety net.  Iron-group species keep `PFIRON` for its pressure-lowering correction, anchored to B&C, and evaluate B&C directly below the Kurucz table's 2089 K edge (C¹ blend at 1900–2100 K).  The H₂ partition function is read from `partfnh2.dat` rather than hardcoded.  All partition-function tables are evaluated with natural cubic splines — linear-interpolation kinks, amplified by F_conv ∝ (∇−∇_ad)^{3/2}, had injected large flux errors into cool-dwarf convection zones
-- Metal continuum bound-free opacity from R-matrix calculations: `MBF_TOPBASE` supplies 30 species from Opacity Project cross sections processed by Allende Prieto et al. (2003); `MBF_HIGH_ION` covers higher ionization stages from a filtered `hotop.dat`; `FELO_OPACITY` supplies Fe I/II (Bautista 1997; Nahar & Pradhan 1994).  Replaces the legacy analytic Seaton/Peach fits (toggle `USE_TOPBASE_MBF`)
-- H⁻ bound-free from McLaughlin et al. (2017), replacing the Wishart (1979)/Mathisen (1984) table, which ran ~0.1–1.4% high through the optical; free-free remains Bell & Berrington (1987), extrapolated linearly in θ below its 1400 K edge (verified ≤2% at 1200 K)
-- Hydrogen line profiles from the Stehlé & Hutcheon (1999) tabulated Stark profiles, with the Kurucz–Peterson analytic approximation retained as a fallback above the Inglis–Teller density limit (`USE_KP_HYDROGEN`)
-- Voigt function via Weideman (1994) N=32 rational approximation plus Humlíček (1982) asymptotic: ~10⁻⁵ relative accuracy with no regime boundaries, replacing a three-regime table with ~4% seam error
-- The `JOSH` scattering solution is a direct dense solve of the 51-point integral-operator system, replacing a Gauss–Seidel Λ-iteration that silently stalled at scattering albedo ≳0.99 and whose early-exit tolerance quantized every scattering solve.  Exact at comparable cost
-- Optional Steffen (1990) monotone-cubic quadrature for `INTEG` (`IQUAD=1`), 3–6× more accurate than the legacy blended-parabola; default remains legacy, since switching moves hot-star deep-envelope temperatures by 0.1–0.5%
-- Molecular equilibrium network overhauled (July 2026): 190 → 297 rows, 23 → 33 equilibrium equations, with every diatomic — including the 8 molecular ions, refit into the code's electron convention — validating exactly against Barklem & Collet (2016) via `tools/fit_molecule_keq.py --validate`, and H₃⁺ rebuilt from ExoMol (the legacy polynomial was ~4.5 dex low).  New species and elements close real gaps: the s-process oxides ZrO/YO/LaO lock ≳99.9% of their elements at 2500 K (neutral Zr I/Y I/La I resonance lines, previously computed fully atomic, collapse by up to 10⁴); Co/Ni/Cu/Zn join the charge balance, recovering a Ni-dominated +0.5–0.7% electron-density deficit that cools solar-type photospheres 1–3 K; P, the metal halides, and a completeness pass (KH … BS) enter; and the new polyatomics — TiO₂, VO₂, AlOH, Al₂O, AlO₂H, KOH, LiOH, HBO, SiH₂, PH₃ — change cool-star chemistry qualitatively: at 2500 K TiO₂ holds ~23% of Ti (the TiO-banded optical moves a median ~12%; late-M TiO bands were systematically too strong before), aluminium goes majority-molecular, and HBO holds 94–99.5% of boron.  Legacy polyatomic rows audited against NIST-JANAF (10 of 12 agree to ≤0.09 dex; MgOH and HO₂ deliberately refit).  The fit pipeline and per-species atlas `comp_pf.pdf` live in `tools/`
-- Equilibrium condensation (Cond-limit: condensate formation depletes the gas-phase abundances inside `NMOLEC`'s equilibrium solve; no grain opacity), ON by default (`USE_CONDENSATION`).  `data/condensates.dat` files 21 solids — the Al/Ca/Ti/Mg silicate and oxide sequence, metallic Fe/Ni, VO/V₂O₃, ZrO₂ — as saturation fits referenced to the network's own species, refit from the GGchem compilation (Woitke et al. 2018).  The solver is an outer quasi-Newton iteration on condensed fractions wrapped around the untouched legacy gas-phase Newton solve, with GGchem-style active-set management (potential-ordered activation, linear-dependence guard, shared-element budget normalization, sign-flip damping, exhaustion handling).  Validated two ways: point-matched GGchem eqcond reruns reproduce the phase assemblage exactly and major-element gas abundances to ≤0.04 dex down to 1200 K surfaces; structure A/Bs cool 2500–2800 K dwarf surfaces by 25–42 K over the condensing layers (the same class as the published MSG ~25 K benchmark), the 2800 K giant condenses only trace ZrO₂, and solar/3500 K models are bit-identical to flag-OFF — condensation is a per-layer T ≤ 2600 K + supersaturation decision, so warm models pay nothing.  Known species-list gaps vs GGchem: no Cr condensates (MgCr₂O₄) and no zircon (ZrSiO₄)
-- Temperature-correction floor lowered from 1500 K to 1200 K (`TFLOOR_ATM`).  An audit of every temperature-indexed data path showed the old clamp protecting almost nothing while pinning the top third of the coolest models' grids in an isothermal plateau; the true lower bound is the gas-phase equilibrium solver, which loses the charge row in double precision near 1050 K.  Surfaces relax 115–300 K at Teff 2500–2800 K, and releasing the plateau improves the 2500 K dwarf's peak flux error 7.8% → 2.25%; solar and 3500 K models are bit-identical
-- Deep convection-zone convergence overhauled ("CZ constructor"): where convection is efficient the classical flux-error correction is structurally dead, so the required gradient is obtained by inverting the Böhm–Vitense relation in closed form, applied as incremental interval-space corrections blended into the Kurucz correction by convective flux fraction.  Cool dwarfs (2500–3500 K) now converge from cold starts in ~10–30 iterations — grid points that previously never converged; solar and hot-star models never engage it
-- Terminal deep-CZ polish (`CZC_POLISH`): over the last iterations, the CZ-constructor block's temperatures are re-placed by a Newton solve of the node-gradient system, closing the MLT flux relation to ≲0.1% where the iterative floor was 5–30% — deep-CZ flux balance is stiff (F_conv ∝ (∇−∇_ad)^{3/2} demands milli-Kelvin placement, unreachable while each remap re-perturbs T at the Kelvin level).  Authority tapers by convective-flux fraction, leaving the CZ-top transition to the normal iteration; the post-polish state is appended to `.iter` as a final block.  Deep CZs close from ±11–34% to <0.04% on 2500–3500 K dwarfs; solar and hot stars are untouched
-- Convective boundary fixes: marginally subadiabatic layers at the grid bottom take the flux-conservation value F_c = F_tot − F_rad instead of zero (Koester 1980), and the deepest-layer gradient uses the log-space one-sided slope, removing a ~13% systematic overestimate of ∇ — the long-standing "deepest layer never converges" artifact
-- The `.atm` deck gains a `TAU5000` column (continuum optical depth at 5000 Å, the reference depth scale tabulated by MARCS/PHOENIX), and the deck-count field is widened `I3`→`I4`, fixing the round-trip failure of models with ≥ 100 depth points
-- SYNTHE recomputes the electron density self-consistently by default (`RECOMPUTE_XNE`).  The old behavior was a hybrid: populations came from `NMOLEC`'s own solve while broadening, Debye shielding, H⁻, and electron scattering saw the model file's stored `XNE`.  For atmospheres converged with the current code the two agree to solver tolerance
-
-**Data and code hygiene**
-
-- Hardcoded data arrays (partition functions, Feautrier matrices, Karzas–Latter tables, ionization potentials, isotope fractions) externalized to readable data files
-- Dead-code audit with static call-graph analysis: ~233 lines removed from `atlas12_modules.f90`
-- He I line-profile island (`HE1_GENERIC_PROFILE` and 11 helpers, ~904 lines) retained but marked `PORT INCOMPLETE` and not currently called; `stark_quasistatic_profile` handles He I until that port is completed
-- All remaining Fortran 2008 `BLOCK...END BLOCK` constructs eliminated
-- All routines carry descriptive header comments
+The port modernizes both the engineering and the physics — free-format
+Fortran 90 with modules in place of COMMON blocks and EQUIVALENCE
+statements, full GOTO elimination, and the SYNTHE pipeline merged into
+one executable with all data flow in memory; Barklem & Collet (2016)
+partition functions, TOPbase/Iron Project metal continua, McLaughlin
+(2017) H⁻, Stehlé & Hutcheon (1999) hydrogen Stark profiles, a 297-row
+molecular equilibrium network, equilibrium condensation, and rebuilt
+deep convection-zone convergence machinery.  The complete change
+ledger — every change, with design rationale and validation numbers —
+is in [CHANGELOG.md](CHANGELOG.md).
 
 ## References
 
