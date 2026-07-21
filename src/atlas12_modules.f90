@@ -1200,14 +1200,19 @@ MODULE mod_atlas_data
   ! Hard lower bound on T(J), applied after every TCORR step (developer
   ! option, set here; no CLI).  Lower-edge audit (2026-07): the binding
   ! data edges are the Bell & Berrington H- free-free theta grid
-  ! (1400 K; linear theta extrapolation below, <=7% at 1000 K, diluted
+  ! (1400 K; linear theta extrapolation below, <=2% at 1200 K, diluted
   ! by the tiny n_e there), the CH/OH photodissociation tables (2000 K,
   ! log-linear extrapolated -- already crossed at any pinned layer), and
   ! the PFIRON iron-group grid (2089 K -- extended with Barklem & Collet
   ! below; see the PFIRON low-T extension).  H2 CIA (1000 K, clamped),
   ! condensate fits (700 K), B&C atomic PFs, H2 PF (100 K), and the
-  ! molecular-equilibrium fit forms all remain in validity above 1000 K.
-  REAL(8) :: TFLOOR_ATM = 1500.0D0
+  ! molecular-equilibrium fit forms all remain in validity.
+  ! The value is bounded below by the SOLVER, not the data: at
+  ! T(1) ~ 1050 K the NMOLEC gas-phase Newton diverges (n_e ~ 1e2 cm^-3
+  ! against 1e12+ atoms and K_eq ~ e^100+ spans ~90 orders -- the charge
+  ! row is lost in double precision; GGchem handles this regime in quad
+  ! precision).  1200 K keeps a safe margin above that wall.
+  REAL(8) :: TFLOOR_ATM = 1200.0D0
 
   ! --- Molecular equilibrium ---
   REAL(8) :: XNMOLCODE(maxmol), EQUIL(6, maxmol)
@@ -11858,67 +11863,66 @@ END SUBROUTINE H2PLOP
 ! cached and only recomputed when ITEMP changes.
 !
 ! -------------------------------------------------------------------------
-! MODERNIZATION REVIEW (2026):
+! MODERNIZATION REVIEW (2026; last updated 2026-07-20):
 !
-! Both data sources here were reviewed against the modern literature as
-! part of the F90 modernization, with the conclusion that NO UPGRADE is
-! warranted.  The reasoning, for posterity:
+! BOUND-FREE: McLaughlin et al. (2017, J.Phys.B 50, 114001), adopted
+!   2026-07-08.  An earlier pass of this review had retained the
+!   Wishart (1979) / Mathisen (1984) table, reasoning that McLaughlin
+!   mainly adds far-UV resonance structure and that the two agree
+!   closely redward of 1700 Å.  True at the few-percent level, but not
+!   at the ~1% level that matters for continuum work: the Wishart table
+!   ran ~0.1-1.4% high through the optical and produced a visible ~1%
+!   continuum offset against Korg, which uses McLaughlin.  See the
+!   header above for resampling details.  John (1988, A&A 193, 189) is
+!   an analytic fit to Wishart -- lower accuracy than either table,
+!   never an upgrade path.
 !
-! BOUND-FREE: Wishart (1979) / Broad & Reinhardt (1976), as tabulated by
-!   Mathisen (1984), remains the community standard reference.  It is the
-!   cross-section used by the 2024 Barklem & Amarsi non-LTE H⁻ study
-!   (A&A 689, A100), which explicitly adopted Wishart (1979) after reviewing
-!   alternatives.  McLaughlin et al. (2017, ApJ 842, 65) provide new
-!   R-matrix calculations that add Feshbach+shape resonances between 10.92
-!   and 14.35 eV (88-113 nm), but from their Fig. 1:
-!     "The differences compared to the Wishart (1979) data are very small
-!      in the visual and UV (photon energies up to 7 eV, roughly redward
-!      of 1700 Å)."
-!   The current 85-point table already captures the first resonance at
-!   ~113 nm (10.97 eV) with 10 points reaching a peak of 95e-18 cm².  The
-!   additional resonances at 11.5-14.35 eV fall below the shortest non-
-!   resonance point of the current grid (~100 nm) and are only relevant
-!   for the far-UV spectra of hot stars (Teff >~ 20,000 K).
-!
-!   John (1988, A&A 193, 189) is NOT a higher-accuracy calculation: it is
-!   an analytic fit formula to the Wishart data.  Adopting John (1988)
-!   would be a convenience-for-accuracy trade that cannot represent the
-!   resonance structure at all, and is not an improvement.
-!
-! FREE-FREE: Bell & Berrington (1987) is an R-matrix calculation using 1s,
-!   2s, 2p hydrogen states plus three pseudostates, quoted in the paper as
-!   "currently the most accurate available" and still so as of this writing.
-!   No modern replacement exists; Barklem & Amarsi (2024) also use this
-!   source.  Again, John (1988) gives an analytic fit to these same
-!   Bell & Berrington values -- a convenience formulation, not a new
-!   calculation.
-!
-! NET RESULT: Both the bound-free and free-free cross-sections currently in
-!   use here are the same data that modern 2024-era non-LTE studies adopt.
-!   Any replacement would either be (a) the same data in a different form
-!   (John 1988 fit formulas), which is lower accuracy, or (b) McLaughlin
-!   (2017), which only changes things below 108 nm -- outside the regime
-!   where ATLAS is typically used and which the current table already
-!   covers adequately via Mathisen's tabulation of the first resonance.
+! FREE-FREE: Bell & Berrington (1987) is an R-matrix calculation using
+!   1s, 2s, 2p hydrogen states plus three pseudostates.  It remains the
+!   most accurate calculation at stellar temperatures and is what
+!   modern work (e.g. Barklem & Amarsi 2024) adopts; no replacement
+!   exists as of a literature check on 2026-07-20.  John (1988) is an
+!   analytic fit to these same values.  The table ends at theta = 3.6
+!   (T = 1400 K); below that this routine linearly extrapolates in
+!   theta from the last interval, which is mild and stays positive for
+!   any plausible atmospheric layer (unlike the John 1988 polynomials,
+!   which diverge below 1400 K).  A physically grounded low-T
+!   alternative exists: Schleicher et al. (2008, A&A 490, 521,
+!   Appendix A) evaluate the Dalgarno & Lane (1966) leading-order
+!   formalism with the modern e-H elastic cross section of Dalgarno,
+!   Yan & Liu (1999) and give a closed-form fit valid 0.1-2000 K.  In
+!   the overlap (1400-2000 K) it agrees with Bell & Berrington to
+!   +25%/-15% where ff dominates (lambda > 1.64 um) but runs up to
+!   ~+38% high near 1 um, where its low-photon-energy approximation is
+!   worst; if ever adopted below the table edge it should be
+!   renormalized to match the theta = 3.6 column at the seam.  Not
+!   adopted: the existing linear extrapolation agrees with such an
+!   S08-anchored tail to within ~2-7% down to 1000 K (~15% at 800 K),
+!   and layers below 1400 K have negligible electron pressure anyway,
+!   so the ff contribution there is tiny in any regime ATLAS is used.
+!   (A hard cap at the 1400 K column would be WORSE than the current
+!   extrapolation: 10-30% low in the IR by 1000-800 K, since k_ff
+!   rises as ~T^-0.7 toward low T in both B&B and S08.)
 !
 ! -------------------------------------------------------------------------
 !
 ! References:
-!   Wishart, A.W. 1979, MNRAS 187, 59P           [bound-free cross-section]
-!   Broad, J.T. & Reinhardt, W.P. 1976, Phys.Rev.A 14, 2159
-!                                                [resonance region of bf]
-!   Mathisen, R. 1984, Inst.Theor.Astrophys.Oslo Pub.Series No. 1
-!                                                [85-point tabulation used]
+!   McLaughlin, B.M., Stancil, P.C., Sadeghpour, H.R. & Forrey, R.C.
+!     2017, J.Phys.B 50, 114001                  [bound-free cross-section]
 !   Bell, K.L. & Berrington, K.A. 1987, J.Phys.B 20, 801  [free-free]
 !   Hotop, H. & Lineberger, W.C. 1985, J.Phys.Chem.Ref.Data 14, 731
 !                                  [H⁻ electron affinity = 0.754209 eV]
 !
-!   McLaughlin, B.M. et al. 2017, ApJ 842, 65    [modern bf; for far-UV
-!                                                 resonances only, not
-!                                                 adopted here]
+!   Wishart, A.W. 1979, MNRAS 187, 59P; Broad, J.T. & Reinhardt, W.P.
+!     1976, Phys.Rev.A 14, 2159; as tabulated by Mathisen, R. 1984,
+!     Inst.Theor.Astrophys.Oslo Pub.Series No. 1
+!                                  [previous bf table, until 2026-07-08]
 !   Barklem, P.S. & Amarsi, A.M. 2024, A&A 689, A100
 !                                  [modern non-LTE H⁻ study using the
 !                                   same Wishart/Bell-Berrington data]
+!   Schleicher, D.R.G. et al. 2008, A&A 490, 521, Appendix A
+!                                  [low-T (0.1-2000 K) ff extension;
+!                                   reviewed 2026-07-20, not adopted]
 !=========================================================================
 
 SUBROUTINE HMINOP
