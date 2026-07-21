@@ -1228,7 +1228,7 @@ MODULE mod_atlas_data
   ! ln S = sum_i nu_i ln(n_i kB T) + c0/T + c1 lnT + c2 + c3 T + c4 T^2
   ! with kB = KB_COND (the GGchem value the fits were built with).
   ! Developer option, set here; no CLI.
-  LOGICAL :: USE_CONDENSATION = .FALSE.
+  LOGICAL :: USE_CONDENSATION = .TRUE.
   INTEGER :: COND_DBGJ = 0             ! developer: trace cond_outer at this
                                        ! layer (0 = off)
   INTEGER, PARAMETER :: maxcond = 32   ! max condensate species
@@ -8670,6 +8670,12 @@ SUBROUTINE NMOLEC(MODE)
   INTEGER :: NACT, ICACT(maxcond), NFLIPS(maxcond)
   INTEGER :: JC, LC, IC, IC2, IE, IE2, KE, ITNEWT, ICMAX, NOUTER
   LOGICAL :: CGIVEUP
+  ! linear-dependence guard at activation (see COND_DEPCHECK)
+  REAL(8)  :: CCOEF(maxcond)
+  INTEGER :: IDEP, ICVICT
+  ! per-phase sign-flip damping of the outer quasi-Newton step
+  REAL(8)  :: DFOLD(maxcond), DFSTEP
+  INTEGER :: CFLIP(maxcond)
 
   ! --- External functions ---
 
@@ -8824,6 +8830,8 @@ SUBROUTINE NMOLEC(MODE)
       COND_SEEDED(J) = .TRUE.
     END IF
     NFLIPS(:) = 0
+    DFOLD(:)  = 0.0D0
+    CFLIP(:)  = 0
     NOUTER    = 0
     CGIVEUP   = .FALSE.
 
@@ -9058,7 +9066,7 @@ SUBROUTINE NMOLEC(MODE)
     IF (.NOT. USE_CONDENSATION .OR. NCOND .EQ. 0 .OR. CGIVEUP .OR. &
         T(J) .GT. COND_TMAX) EXIT cond_outer
 
-    IF (NOUTER .GT. 200) THEN
+    IF (NOUTER .GT. 400) THEN
       SMAX  = 0.0D0
       ICMAX = 0
       DO JC = 1, NACT
@@ -9080,7 +9088,7 @@ SUBROUTINE NMOLEC(MODE)
         NFLIPS(IC) = 12
         WRITE(6, '(A,I4,A,A,A)') ' COND WARNING: J=', J, '  ', &
           trim(COND_NAME(IC)), ' evicted at outer cap (unconverged)'
-        NOUTER = 140
+        NOUTER = 340
         CYCLE cond_outer
       END IF
       CGIVEUP = .TRUE.
@@ -9098,11 +9106,23 @@ SUBROUTINE NMOLEC(MODE)
         ! Fully-condensed phases: if the limiting element's gas remnant
         ! sits at the floor and the phase is still supersaturated, the
         ! equilibrium remnant is below double-precision reach -- that is
-        ! exhaustion, not a solver residual.  Treat as converged.
-        IF (CVEC(JC) .GT. 0.0D0) THEN
+        ! exhaustion, not a solver residual.  Treat as converged.  The
+        ! same applies to a floored phase a HAIR undersaturated (a trace
+        ! refractory pinned at e.g. lnS = -2e-7, just outside the 1e-7
+        ! tolerance: no representable F change can move it, and it spins
+        ! the outer loop to the cap) -- accept within |lnS| < 1e-3
+        ! (4e-4 dex, far below the thermochemistry's own scatter).
+        IF (CVEC(JC) .GT. 0.0D0 .OR. ABS(CVEC(JC)) .LT. 1.0D-3) THEN
           DO IE = 1, COND_NEC(IC)
             KE = COND_ECK(IE, IC)
-            CB = MAX(1.0D-14 * max(XABUND(J, IDEQUA(KE)), 1.0D-20), &
+            ! exhaustion threshold = the (1 - 1e-12) depletion CEILING's
+            ! remnant (1e-12*eps), not the arithmetic floor (1e-14*eps):
+            ! with the floor reference the test could only ever fire for
+            ! elements with eps <~ 1e-8 -- it caught ZrO2 by Zr's tiny
+            ! abundance and structurally missed Ti/Ca/Mg/Si/Al/Fe
+            ! (CaTiO3 as sole Ti sink pinned at lnS = +7.6 for 400
+            ! outers at the Ti ceiling).
+            CB = MAX(1.0D-12 * max(XABUND(J, IDEQUA(KE)), 1.0D-20), &
                      1.0D-20)
             IF (XAB(KE) .LE. 1.5D0 * CB) THEN
               CVEC(JC) = 0.0D0
@@ -9179,11 +9199,22 @@ SUBROUTINE NMOLEC(MODE)
                 LC = COND_ECN(IE, IC)
               END IF
             END DO
-            FNEW = COND_F(J, IC) + CB * (1.0D0 - EXP(-SVEC(JC) / DBLE(LC)))
+            DFSTEP = CB * (1.0D0 - EXP(-SVEC(JC) / DBLE(LC)))
           ELSE
-            FNEW = COND_F(J, IC) + MAX(MIN(CVEC(JC), 0.5D0 * BUDF), &
-                                       -0.5D0 * BUDF)
+            DFSTEP = MAX(MIN(CVEC(JC), 0.5D0 * BUDF), -0.5D0 * BUDF)
           END IF
+          ! sign-flip damping: an oscillating phase (near-degenerate
+          ! multi-phase slow modes at 1300-1400 K) halves its step per
+          ! consecutive reversal -- breaks period-2/3 cycles in a few
+          ! outers instead of waiting out the 40/NOUTER global damping
+          IF (DFOLD(IC) * DFSTEP .LT. 0.0D0) THEN
+            CFLIP(IC) = MIN(CFLIP(IC) + 1, 8)
+            DFSTEP = DFSTEP * 0.5D0**CFLIP(IC)
+          ELSE
+            CFLIP(IC) = 0
+          END IF
+          DFOLD(IC) = DFSTEP
+          FNEW = COND_F(J, IC) + DFSTEP
           IF (FNEW .LE. 0.0D0) THEN
             IF (FNEW / BUDF .LT. SMAX) THEN
               SMAX  = FNEW / BUDF
@@ -9291,8 +9322,60 @@ SUBROUTINE NMOLEC(MODE)
         END IF
       END DO
       IF (ICMAX .GT. 0) THEN
+        ! Linear-dependence guard: 180 minimal dependent subsets exist
+        ! among the 21 filed condensates (e.g. diopside = wollastonite
+        ! + enstatite; any three Ti oxides), and a dependent active set
+        ! makes the saturation-step matrix M singular -- garbage steps,
+        ! then chronic evictions.  Never admit a candidate that is a
+        ! linear combination of the current actives: swap it in for the
+        ! combination member with the smallest condensed amount instead
+        ! (NFLIPS hysteresis bounds any swap ping-pong; the penalized
+        ! activation potential handles re-entry).
+        IDEP = 0
+        IF (NACT .GT. 0) CALL COND_DEPCHECK(NACT, ICACT, ICMAX, IDEP, CCOEF)
+        IF (IDEP .EQ. -1) THEN
+          ! inherited (pre-guard) dependent active set: prune the
+          ! smallest-amount member and retry before admitting anyone
+          ICVICT = 0
+          DO JC = 1, NACT
+            IF (ICVICT .EQ. 0) THEN
+              ICVICT = ICACT(JC)
+            ELSE IF (COND_F(J, ICACT(JC)) .LT. COND_F(J, ICVICT)) THEN
+              ICVICT = ICACT(JC)
+            END IF
+          END DO
+          COND_ACT(J, ICVICT) = .FALSE.
+          COND_F(J, ICVICT)   = 0.0D0
+          NFLIPS(ICVICT) = NFLIPS(ICVICT) + 1
+          IF (J .EQ. COND_DBGJ .AND. IFEDNS .EQ. 0) &
+            WRITE(6, '(A,I4,A,I4,A,A)') ' CDBG J=', J, ' NO=', NOUTER, &
+              '  PRUNE ', trim(COND_NAME(ICVICT))
+          CYCLE cond_outer
+        END IF
+        IF (IDEP .EQ. 1) THEN
+          ICVICT = 0
+          DO JC = 1, NACT
+            IF (ABS(CCOEF(JC)) .LT. 1.0D-6) CYCLE
+            IF (ICVICT .EQ. 0) THEN
+              ICVICT = ICACT(JC)
+            ELSE IF (COND_F(J, ICACT(JC)) .LT. COND_F(J, ICVICT)) THEN
+              ICVICT = ICACT(JC)
+            END IF
+          END DO
+          IF (ICVICT .GT. 0) THEN
+            COND_ACT(J, ICVICT) = .FALSE.
+            COND_F(J, ICVICT)   = 0.0D0
+            NFLIPS(ICVICT) = NFLIPS(ICVICT) + 1
+            IF (J .EQ. COND_DBGJ .AND. IFEDNS .EQ. 0) &
+              WRITE(6, '(A,I4,A,I4,A,A,A,A)') ' CDBG J=', J, &
+                ' NO=', NOUTER, '  SWAP  ', trim(COND_NAME(ICMAX)), &
+                ' <- ', trim(COND_NAME(ICVICT))
+          END IF
+        END IF
         COND_ACT(J, ICMAX) = .TRUE.
         COND_F(J, ICMAX)   = 1.0D-8 * DSCALE(ICMAX)
+        DFOLD(ICMAX) = 0.0D0
+        CFLIP(ICMAX) = 0
         IF (J .EQ. COND_DBGJ .AND. IFEDNS .EQ. 0) &
           WRITE(6, '(A,I4,A,I4,A,A,A,1PE10.2)') ' CDBG J=', J, &
             ' NO=', NOUTER, '  ACT   ', trim(COND_NAME(ICMAX)), &
@@ -9710,6 +9793,90 @@ CONTAINS
                + DBLE(COND_ECN(IE_c, IC)) * LOG(XN(COND_ECK(IE_c, IC)))
     END DO
   END FUNCTION COND_LNS
+
+  !-------------------------------------------------------------------
+  ! Linear-dependence check for condensate activation.  Solves
+  !   sum_j c_j nu(active_j) = nu(candidate)
+  ! by Gaussian elimination with partial pivoting over the element
+  ! (equation-index) rows.  Returns
+  !   IDEP_c =  1  candidate is a linear combination of the actives
+  !             (coefficients in CC_c(1:NACT_c)),
+  !   IDEP_c =  0  candidate is independent,
+  !   IDEP_c = -1  the actives are already dependent among themselves
+  !             (inherited pre-guard warm start; caller should prune).
+  ! Stoichiometries are small integers, so the tolerances are far from
+  ! any real pivot.
+  !-------------------------------------------------------------------
+  SUBROUTINE COND_DEPCHECK(NACT_c, ICACT_c, ICNEW_c, IDEP_c, CC_c)
+    INTEGER, INTENT(IN)  :: NACT_c, ICACT_c(maxcond), ICNEW_c
+    INTEGER, INTENT(OUT) :: IDEP_c
+    REAL(8),  INTENT(OUT) :: CC_c(maxcond)
+
+    REAL(8) :: A_d(maxeq, maxcond), V_d(maxeq), PIVMAX, SW
+    INTEGER :: JD, ED, PRow(maxcond), PROWD, ID_c, IE_d
+    LOGICAL :: USED(maxeq)
+
+    A_d(:, 1:NACT_c) = 0.0D0
+    V_d(:) = 0.0D0
+    DO JD = 1, NACT_c
+      DO IE_d = 1, COND_NEC(ICACT_c(JD))
+        A_d(COND_ECK(IE_d, ICACT_c(JD)), JD) = &
+          DBLE(COND_ECN(IE_d, ICACT_c(JD)))
+      END DO
+    END DO
+    DO IE_d = 1, COND_NEC(ICNEW_c)
+      V_d(COND_ECK(IE_d, ICNEW_c)) = DBLE(COND_ECN(IE_d, ICNEW_c))
+    END DO
+
+    USED(:) = .FALSE.
+    DO JD = 1, NACT_c
+      ! pivot: largest remaining |A(:,JD)|
+      PIVMAX = 0.0D0
+      PROWD  = 0
+      DO ED = 1, NEQUA
+        IF (USED(ED)) CYCLE
+        IF (ABS(A_d(ED, JD)) .GT. PIVMAX) THEN
+          PIVMAX = ABS(A_d(ED, JD))
+          PROWD  = ED
+        END IF
+      END DO
+      IF (PIVMAX .LT. 1.0D-8) THEN
+        IDEP_c = -1                  ! actives mutually dependent
+        RETURN
+      END IF
+      USED(PROWD) = .TRUE.
+      PRow(JD) = PROWD
+      ! eliminate column JD from all other rows
+      DO ED = 1, NEQUA
+        IF (ED .EQ. PROWD) CYCLE
+        IF (A_d(ED, JD) .EQ. 0.0D0) CYCLE
+        SW = A_d(ED, JD) / A_d(PROWD, JD)
+        DO ID_c = JD, NACT_c
+          A_d(ED, ID_c) = A_d(ED, ID_c) - SW * A_d(PROWD, ID_c)
+        END DO
+        V_d(ED) = V_d(ED) - SW * V_d(PROWD)
+      END DO
+    END DO
+
+    ! residual on the non-pivot rows: nonzero => independent
+    DO ED = 1, NEQUA
+      IF (USED(ED)) CYCLE
+      IF (ABS(V_d(ED)) .GT. 1.0D-6) THEN
+        IDEP_c = 0
+        RETURN
+      END IF
+    END DO
+
+    ! dependent: back out the coefficients (A is diagonal on pivot rows)
+    DO JD = NACT_c, 1, -1
+      SW = V_d(PRow(JD))
+      DO ID_c = JD + 1, NACT_c
+        SW = SW - A_d(PRow(JD), ID_c) * CC_c(ID_c)
+      END DO
+      CC_c(JD) = SW / A_d(PRow(JD), JD)
+    END DO
+    IDEP_c = 1
+  END SUBROUTINE COND_DEPCHECK
 
 END SUBROUTINE NMOLEC
 
