@@ -31,7 +31,7 @@ import subprocess
 GGCHEM_DIR = os.path.expanduser("~/kurucz/upgrade/raw_data/ggchem")
 ELEMENTS_LINE = ("H He C N O Na Mg Si Fe Al Ca Ti S Cl K Li F P V Cr "
                  "Mn Ni Zr W el")
-COMPARE_ELS = ["Ti", "Al", "Ca", "Mg", "Si", "Fe", "V", "Zr", "Ni"]
+COMPARE_ELS = ["Ti", "Al", "Ca", "Mg", "Si", "Fe", "V", "Zr", "Ni", "Cr"]
 IGNORE_PHASES = {"W"}
 
 

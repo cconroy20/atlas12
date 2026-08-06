@@ -9,7 +9,7 @@
 # Source: GGchem DustChem.dat (Woitke+ 2018) fits, re-referenced and refit
 # by tools/fit_condensates.py.  Atlas: ~/kurucz/upgrade/comp_cond.pdf
 #
-21
+23
 Al2O3         2  2 Al     3 O                   3.6883600E+05 -7.7500300E+00 -1.1230005E+02  7.5336400E-03 -7.6414100E-07   ! fit5 dG-Stock-fit NIST-Janaf 100-3000K, +/- 0.54:
 CaTiO3        3  1 Ca     1 Ti     3 O          3.6747778E+05 -4.1140478E-02 -1.5737589E+02  1.4515991E-03 -5.7169670E-08   ! fit1 Sharp & Huebner (1990):
 Ti2O3         2  3 O      2 Ti                  3.9227815E+05  7.8360533E+00 -2.2114049E+02  1.8399457E-03 -7.4969491E-07   ! fit5 dG-Stock-fit Kitzmann+2024  (Tmax= 2115.00)
@@ -17,9 +17,11 @@ Ti3O5         2  3 Ti     5 O                   6.1486800E+05 -5.0981500E+00 -2.
 Ti4O7         2  4 Ti     7 O                   8.4796361E+05 -1.5340346E+00 -3.4584949E+02  6.3363386E-03 -6.2744167E-07   ! fit2 dG-fit NIST-Janaf 298-2400K, +/- 0.085:
 TiO2          1  1 TiO2                         7.7891531E+04  2.5573834E+00 -5.6632035E+01 -1.6456216E-04  2.6806187E-08   ! fit3 pvap NIST-Janaf 100-2500K, +/- 0.040:
 ZrO2          2  1 Zr     2 O                   2.6487227E+05 -3.3405496E+00 -7.5596222E+01  3.6352201E-03 -4.5843242E-07   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
+ZrSiO4        3  1 Zr     1 Si     4 O          4.9006111E+05 -8.7871138E+00 -1.3816445E+02  8.6130741E-03 -1.0272493E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
 Ca2Al2SiO7    4  2 Ca     2 Al     1 Si     7 O      8.6259750E+05 -1.5334573E+01 -2.8009190E+02  1.6321285E-02 -1.8366782E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
 CaAl2Si2O8    4  1 Ca     2 Al     2 Si     8 O      9.5293176E+05 -2.0094889E+01 -2.8426091E+02  2.0000626E-02 -2.2776100E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
 MgAl2O4       3  1 Mg     2 Al     4 O          4.9091700E+05 -1.0178300E+01 -1.5766627E+02  1.0083900E-02 -9.2169700E-07   ! fit5 dG-Stock-fit NIST-Janaf 100-2800K, +/- 0.57:
+MgCr2O4       3  1 Mg     2 Cr     4 O          4.4310075E+05 -8.9386631E+00 -1.6506834E+02  1.0666790E-02 -1.2964840E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
 Ca2MgSi2O7    4  2 Ca     1 Mg     2 Si     7 O      8.4053180E+05 -1.2696761E+01 -2.9336493E+02  1.3714024E-02 -1.4501833E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
 CaMgSi2O6     4  1 Ca     1 Mg     2 Si     6 O      7.0870805E+05 -1.4846310E+01 -2.2234733E+02  1.5557222E-02 -1.7931144E-06   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/-0
 CaSiO3        3  1 Ca     1 Si     3 O          3.6034982E+05 -6.6904617E+00 -1.1484994E+02  7.1452647E-03 -8.1088405E-07   ! fit5 Stock-fit to SUPCRTBL database (100-2500)K, +/- 

@@ -8676,6 +8676,10 @@ SUBROUTINE NMOLEC(MODE)
   ! per-phase sign-flip damping of the outer quasi-Newton step
   REAL(8)  :: DFOLD(maxcond), DFSTEP
   INTEGER :: CFLIP(maxcond)
+  ! exhausted-element competition gate at activation (phase handoff)
+  LOGICAL :: ELIG(maxcond)
+  REAL(8)  :: LNSMAX, SDMIN, SD, FDON
+  INTEGER :: NEXH, KEX, NUC, ICDON, NUDON, IHANDOFF
 
   ! --- External functions ---
 
@@ -9070,7 +9074,15 @@ SUBROUTINE NMOLEC(MODE)
       SMAX  = 0.0D0
       ICMAX = 0
       DO JC = 1, NACT
-        CB = ABS(COND_LNS(ICACT(JC), T(J)))
+        LNS = COND_LNS(ICACT(JC), T(J))
+        CB  = ABS(LNS)
+        ! a converged-exhausted phase (see the CVEC clamp below) is not
+        ! "unconverged": mask it from the victim ranking, or the cap
+        ! evicts a healthy fully-condensed trace carrier (zircon read
+        ! raw lnS = +1.8 while holding 100% of Zr)
+        IF (LNS .GT. 0.0D0 .OR. CB .LT. 1.0D-3) THEN
+          IF (COND_EXHAUSTED(ICACT(JC), J, XAB)) CB = 0.0D0
+        END IF
         IF (CB .GT. SMAX) THEN
           SMAX  = CB
           ICMAX = JC
@@ -9113,22 +9125,7 @@ SUBROUTINE NMOLEC(MODE)
         ! the outer loop to the cap) -- accept within |lnS| < 1e-3
         ! (4e-4 dex, far below the thermochemistry's own scatter).
         IF (CVEC(JC) .GT. 0.0D0 .OR. ABS(CVEC(JC)) .LT. 1.0D-3) THEN
-          DO IE = 1, COND_NEC(IC)
-            KE = COND_ECK(IE, IC)
-            ! exhaustion threshold = the (1 - 1e-12) depletion CEILING's
-            ! remnant (1e-12*eps), not the arithmetic floor (1e-14*eps):
-            ! with the floor reference the test could only ever fire for
-            ! elements with eps <~ 1e-8 -- it caught ZrO2 by Zr's tiny
-            ! abundance and structurally missed Ti/Ca/Mg/Si/Al/Fe
-            ! (CaTiO3 as sole Ti sink pinned at lnS = +7.6 for 400
-            ! outers at the Ti ceiling).
-            CB = MAX(1.0D-12 * max(XABUND(J, IDEQUA(KE)), 1.0D-20), &
-                     1.0D-20)
-            IF (XAB(KE) .LE. 1.5D0 * CB) THEN
-              CVEC(JC) = 0.0D0
-              EXIT
-            END IF
-          END DO
+          IF (COND_EXHAUSTED(IC, J, XAB)) CVEC(JC) = 0.0D0
         END IF
         SMAX = MAX(SMAX, ABS(CVEC(JC)))
       END DO
@@ -9300,27 +9297,105 @@ SUBROUTINE NMOLEC(MODE)
         DSCALE(IC) = MAX(BUDF, 1.0D-300)
         IF (BUDF .GT. DSMAX) DSMAX = BUDF
       END DO
-      SMAX  = 0.0D0
-      ICMAX = 0
-      DO IC = 1, NCOND
-        IF (COND_ACT(J, IC)) CYCLE
-        IF (NFLIPS(IC) .GE. 12) CYCLE
-        LNS = COND_LNS(IC, T(J))
-        ! activation hysteresis: a phase at its exact boundary (S barely
-        ! above 1) holds a negligible amount and only churns the active
-        ! set -- require ln S > 1e-3 to enter
-        IF (LNS .LE. 1.0D-3) CYCLE
-        ESUM = 0.0D0
-        DO IE = 1, COND_NEC(IC)
-          ESUM = ESUM + DBLE(COND_ECN(IE, IC))
+      ELIG(:)  = .TRUE.
+      IHANDOFF = 0
+      scan_loop: DO
+        SMAX   = 0.0D0
+        ICMAX  = 0
+        LNSMAX = 0.0D0
+        DO IC = 1, NCOND
+          IF (COND_ACT(J, IC)) CYCLE
+          IF (.NOT. ELIG(IC)) CYCLE
+          IF (NFLIPS(IC) .GE. 12) CYCLE
+          LNS = COND_LNS(IC, T(J))
+          ! activation hysteresis: a phase at its exact boundary (S barely
+          ! above 1) holds a negligible amount and only churns the active
+          ! set -- require ln S > 1e-3 to enter
+          IF (LNS .LE. 1.0D-3) CYCLE
+          ESUM = 0.0D0
+          DO IE = 1, COND_NEC(IC)
+            ESUM = ESUM + DBLE(COND_ECN(IE, IC))
+          END DO
+          POT = 1.0D0 / (ESUM**1.65D0 + 0.01D0 * DSMAX / DSCALE(IC)) &
+                / (1.0D0 + 1.0D3 * DBLE(NFLIPS(IC))**4)
+          IF (LNS * POT .GT. SMAX) THEN
+            SMAX   = LNS * POT
+            ICMAX  = IC
+            LNSMAX = LNS
+          END IF
         END DO
-        POT = 1.0D0 / (ESUM**1.65D0 + 0.01D0 * DSMAX / DSCALE(IC)) &
-              / (1.0D0 + 1.0D3 * DBLE(NFLIPS(IC))**4)
-        IF (LNS * POT .GT. SMAX) THEN
-          SMAX  = LNS * POT
-          ICMAX = IC
+        IF (ICMAX .EQ. 0) EXIT scan_loop
+
+        ! Exhausted-element competition gate.  At the (1 - 1e-12)
+        ! depletion ceiling the gas remnant of a fully condensed trace
+        ! element sits far ABOVE the true equilibrium remnant (which is
+        ! below double-precision reach), so EVERY phase of that element
+        ! reads supersaturated at the floored gas -- an artifact of the
+        ! ceiling, not chemistry.  A candidate in that situation must
+        ! not be admitted to fight the incumbent through the remnant:
+        ! zircon/baddeleyite ping-ponged via the forsterite-enstatite
+        ! SiO2 lattice vector (each swap evicting the fully-condensed
+        ! trace phase as the smallest-F combination member) until the
+        ! outer cap locked both out.  Decide by thermodynamics instead:
+        ! per-shared-atom ln S at the SAME gas state ranks the phases
+        ! independently of the floored remnant.  The winner takes the
+        ! holder's inventory in a direct handoff; the loser is skipped.
+        NEXH = 0
+        KEX  = 0
+        NUC  = 1
+        DO IE = 1, COND_NEC(ICMAX)
+          KE = COND_ECK(IE, ICMAX)
+          CB = MAX(1.0D-12 * max(XABUND(J, IDEQUA(KE)), 1.0D-20), &
+                   1.0D-20)
+          IF (XAB(KE) .LE. 1.5D0 * CB) THEN
+            NEXH = NEXH + 1
+            KEX  = KE
+            NUC  = COND_ECN(IE, ICMAX)
+          END IF
+        END DO
+        IF (NEXH .EQ. 0) EXIT scan_loop      ! normal activation path
+        IF (NEXH .GE. 2) THEN
+          ELIG(ICMAX) = .FALSE.              ! multiply exhausted: skip
+          CYCLE scan_loop
         END IF
-      END DO
+        ! weakest active holder (per-atom raw ln S) of the element
+        ICDON = 0
+        NUDON = 1
+        SDMIN = 1.0D300
+        DO JC = 1, NACT
+          IC2 = ICACT(JC)
+          DO IE = 1, COND_NEC(IC2)
+            IF (COND_ECK(IE, IC2) .NE. KEX) CYCLE
+            SD = COND_LNS(IC2, T(J)) / DBLE(COND_ECN(IE, IC2))
+            IF (SD .LT. SDMIN) THEN
+              SDMIN = SD
+              ICDON = IC2
+              NUDON = COND_ECN(IE, IC2)
+            END IF
+          END DO
+        END DO
+        IF (ICDON .EQ. 0 .OR. &
+            LNSMAX / DBLE(NUC) .LE. SDMIN + 1.0D-3) THEN
+          ELIG(ICMAX) = .FALSE.     ! no donor, or loses the tiebreak
+          CYCLE scan_loop
+        END IF
+        ! handoff: candidate supersedes the weakest holder
+        FDON = COND_F(J, ICDON)
+        COND_ACT(J, ICDON) = .FALSE.
+        COND_F(J, ICDON)   = 0.0D0
+        NFLIPS(ICDON) = NFLIPS(ICDON) + 1
+        COND_ACT(J, ICMAX) = .TRUE.
+        COND_F(J, ICMAX)   = FDON * DBLE(NUDON) / DBLE(NUC)
+        DFOLD(ICMAX) = 0.0D0
+        CFLIP(ICMAX) = 0
+        IHANDOFF = 1
+        IF (J .EQ. COND_DBGJ .AND. IFEDNS .EQ. 0) &
+          WRITE(6, '(A,I4,A,I4,A,A,A,A,A,1PE10.2)') ' CDBG J=', J, &
+            ' NO=', NOUTER, '  XFER  ', trim(COND_NAME(ICMAX)), &
+            ' <- ', trim(COND_NAME(ICDON)), '  F=', COND_F(J, ICMAX)
+        EXIT scan_loop
+      END DO scan_loop
+      IF (IHANDOFF .EQ. 1) CYCLE cond_outer
       IF (ICMAX .GT. 0) THEN
         ! Linear-dependence guard: 180 minimal dependent subsets exist
         ! among the 21 filed condensates (e.g. diopside = wollastonite
@@ -9877,6 +9952,34 @@ CONTAINS
     END DO
     IDEP_c = 1
   END SUBROUTINE COND_DEPCHECK
+
+!-----------------------------------------------------------------------
+! COND_EXHAUSTED: does any element of condensate IC_x sit at the gas
+! exhaustion band in this layer?  The threshold is the (1 - 1e-12)
+! depletion CEILING's remnant (1e-12*eps), not the arithmetic floor
+! (1e-14*eps): with the floor reference the test could only ever fire
+! for elements with eps <~ 1e-8 -- it caught ZrO2 by Zr's tiny
+! abundance and structurally missed Ti/Ca/Mg/Si/Al/Fe (CaTiO3 as sole
+! Ti sink pinned at lnS = +7.6 for 400 outers at the Ti ceiling).
+! Shared by the saturation-step convergence clamp, the outer-cap
+! eviction ranking, and the activation competition gate.
+!-----------------------------------------------------------------------
+  LOGICAL FUNCTION COND_EXHAUSTED(IC_x, J_x, XAB_x)
+    INTEGER, INTENT(IN) :: IC_x, J_x
+    REAL(8),  INTENT(IN) :: XAB_x(maxeq)
+    INTEGER :: IE_x, KE_x
+    REAL(8)  :: CB_x
+    COND_EXHAUSTED = .FALSE.
+    DO IE_x = 1, COND_NEC(IC_x)
+      KE_x = COND_ECK(IE_x, IC_x)
+      CB_x = MAX(1.0D-12 * max(XABUND(J_x, IDEQUA(KE_x)), 1.0D-20), &
+                 1.0D-20)
+      IF (XAB_x(KE_x) .LE. 1.5D0 * CB_x) THEN
+        COND_EXHAUSTED = .TRUE.
+        RETURN
+      END IF
+    END DO
+  END FUNCTION COND_EXHAUSTED
 
 END SUBROUTINE NMOLEC
 

@@ -81,13 +81,25 @@ Full ledger in CHANGELOG.md.
 
 ## 5. Condensate Species Extension
 
-**Status: open.**
+**Status: COMPLETED August 5, 2026.**
 
-The two species-list gaps identified by the GGchem validation at 1200 K
-surfaces: MgCr2O4 (no Cr condensates are filed at all) and ZrSiO4
-(zircon, which supersedes baddeleyite ZrO2 at low T).  They account for
-the Si (-0.18 dex) and trace-Zr deviations vs GGchem.  Add both to
-data/condensates.dat via tools/fit_condensates.py and rerun --validate.
+ZrSiO4 (zircon) and MgCr2O4 (magnesiochromite) filed from their
+SUPCRTBL Stock fits (21 -> 23 solids; --validate 23/23).  Admitting a
+second Zr phase exposed a solver deadlock (both Zr phases supersaturated
+at the double-precision depletion-ceiling remnant; the dependence
+guard's smallest-F victim rule evicted the fully-condensed trace
+carrier), fixed by an exhausted-element competition gate: per-shared-atom
+ln S tiebreak at the same gas state, direct budget handoff to the
+winner (COND_EXHAUSTED helper shared by clamp, cap eviction, and gate).
+Battery: solar and 2800 K pairs bit-identical vs a 21-species control;
+2500 K structural effect <= 0.2 K with 2 one-shot warnings (= record).
+GGchem validation: cold-layer assemblages exact incl. both new phases,
+Cr -0.01 dex, coldest-layer Zr -1.4 -> -0.11 dex.  NOTE: the Si
+-0.18 dex deviation did NOT close and its old attribution to these
+species gaps was wrong — it is the SiO gas-network source difference
+(our BC16 vs GGchem's effective Stock-Kitzmann: -0.22 dex at 1200 K),
+vanishing wherever amorphous SiO[s] pins gas Si in both codes.  Full
+ledger in CHANGELOG.md.
 
 ---
 
