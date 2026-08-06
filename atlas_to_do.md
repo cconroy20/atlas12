@@ -1,5 +1,8 @@
 # SYNTHE/ATLAS F90 Upgrade To-Do List
 
+Open items only; completed work is recorded in
+[CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## 1. H2 Collision-Induced Absorption
@@ -43,67 +46,7 @@ saturated lines.
 
 ---
 
-## 3. Molecular Equilibrium Network Overhaul
-
-**Status: COMPLETED July 18-19, 2026** (commits fecddd0..0056192).
-
-Network grew 190 rows / 23 equations -> 297 rows / 33 equations.  All 96
-diatomics validate against BC16 in the correct conventions
-(tools/fit_molecule_keq.py --validate); polyatomics are ExoMol-fit,
-JANAF/SK-referenced, or deliberately reconciled (MgOH via Koput D0, HO2
-via ATcT).  Fixes along the way: READMOL integer decoder (La exposed it),
-electron budget closed (Co/Ni/Cu/Zn -- solar photospheres cool 1-3 K vs
-all prior models), Y/Zr/Co ionization potentials, molecular-ion Saha
-convention (8 rows were 4-13 dex low since April), H3+ (Kurucz original
-was 4.5 dex low, missing one T^3/2).  Headline physics: TiO2 takes 23%
-of Ti at 2500 K (TiO bands -12%), HBO holds ~99% of B, s-process oxides
-lock Zr/Y/La.  Full pipeline + fit atlas (comp_pf.pdf, 138 pp) live in
-tools/; regenerate after any molecules.dat change.
-
----
-
-## 4. Equilibrium Condensation (Cond-limit)
-
-**Status: COMPLETED July 20-21, 2026** (commits d60069d..5e3a493);
-**ON by default** (`USE_CONDENSATION = .TRUE.`).
-
-Cond-limit solver inside NMOLEC (depletion only, no grain opacity):
-21 condensates in data/condensates.dat refit from the GGchem
-compilation (tools/fit_condensates.py --validate), outer quasi-Newton
-active-set iteration wrapped around the untouched legacy gas solve.
-GGchem point-matched validation: phase assemblages exact, major-element
-gas abundances to <=0.04 dex down to 1200 K surfaces.  A/B: 2500-2800 K
-dwarf surfaces cool 25-42 K over the condensing layers (same class as
-the MSG ~25 K benchmark); solar/3500 K bit-identical to flag-OFF.
-Full ledger in CHANGELOG.md.
-
----
-
-## 5. Condensate Species Extension
-
-**Status: COMPLETED August 5, 2026.**
-
-ZrSiO4 (zircon) and MgCr2O4 (magnesiochromite) filed from their
-SUPCRTBL Stock fits (21 -> 23 solids; --validate 23/23).  Admitting a
-second Zr phase exposed a solver deadlock (both Zr phases supersaturated
-at the double-precision depletion-ceiling remnant; the dependence
-guard's smallest-F victim rule evicted the fully-condensed trace
-carrier), fixed by an exhausted-element competition gate: per-shared-atom
-ln S tiebreak at the same gas state, direct budget handoff to the
-winner (COND_EXHAUSTED helper shared by clamp, cap eviction, and gate).
-Battery: solar and 2800 K pairs bit-identical vs a 21-species control;
-2500 K structural effect <= 0.2 K with 2 one-shot warnings (= record).
-GGchem validation: cold-layer assemblages exact incl. both new phases,
-Cr -0.01 dex, coldest-layer Zr -1.4 -> -0.11 dex.  NOTE: the Si
--0.18 dex deviation did NOT close and its old attribution to these
-species gaps was wrong — it is the SiO gas-network source difference
-(our BC16 vs GGchem's effective Stock-Kitzmann: -0.22 dex at 1200 K),
-vanishing wherever amorphous SiO[s] pins gas Si in both codes.  Full
-ledger in CHANGELOG.md.
-
----
-
-## 6. Low-Temperature Gas-Solve Hardening
+## 3. Low-Temperature Gas-Solve Hardening
 
 **Status: open; blocks lowering TFLOOR_ATM below 1200 K.**
 
@@ -117,7 +60,7 @@ extended precision for the charge row, or charge-row preconditioning.
 
 ---
 
-## 7. Dust Opacity (Dusty Mode)
+## 4. Dust Opacity (Dusty Mode)
 
 **Status: open; only relevant if the grid floor drops below ~2400 K.**
 
