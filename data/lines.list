@@ -6,7 +6,7 @@ mol 	mol/c2ax.dat
 mol 	mol/c2ba.dat
 mol 	mol/c2dabrooke.dat
 mol 	mol/c2ea.dat
-mol 	mol/cah.dat
+mol 	mol/cah_owens22.dat
 mol 	mol/chjorg.dat
 mol 	mol/cnaxbrooke.dat
 mol 	mol/cnbxbrooke.dat
@@ -37,3 +37,5 @@ mol	mol/voax.asc
 mol	mol/vobx.asc
 mol	mol/vocx.asc
 h2o 	h2ofastfix.bin
+polymol	mol/caoh_oyt6_super_blue.dat
+polymol	mol/caoh_oyt6_super.dat

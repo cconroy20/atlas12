@@ -94,6 +94,12 @@ MODULE mod_mklinelist
   ! --- Module-level ionisation potential table (replaces COMMON /potion/)
   REAL(8), SAVE :: potion(999)
 
+  ! --- Teff gate for polyatomic (polymol) line lists.  CaOH and its kin
+  !     only reach significant number density in late-M photospheres
+  !     (measured: n(CaOH)/n(CaH) ~ 1e-3 at 3689 K, ~0.1 at 2700 K), so
+  !     skip the multi-GB super-line files for anything warmer. ----------
+  REAL(8), PARAMETER :: TEFF_POLYMOL_LIMIT = 3500.0D0
+
   ! --- Teff gate for cool-atmosphere molecular lines (H2O, TiO) ---------
   ! Species skipped when Teff > this, even if listed in lines.list.
   REAL(8), PARAMETER :: TEFF_COOL_LIMIT = 8000.0D0
@@ -120,6 +126,8 @@ CONTAINS
     CHARACTER(LEN=512) :: gfall_file, predict_file, h2o_file
     CHARACTER(LEN=512), SAVE :: mol_files(256)
     INTEGER :: nmol
+    CHARACTER(LEN=512), SAVE :: polymol_files(16)
+    INTEGER :: npolymol
 
     ! Temporary per-reader arrays (LTE)
     TYPE(lte_line_t),  ALLOCATABLE :: lte_gfall(:),   lte_predict(:)
@@ -156,7 +164,7 @@ CONTAINS
     nmol         = 0
     CALL parse_lines_list(lines_list_path, datadir, &
                           gfall_file, predict_file, h2o_file, &
-                          mol_files, nmol)
+                          mol_files, nmol, polymol_files, npolymol)
 
     n_lte_gfall   = 0
     n_lte_predict = 0
@@ -203,6 +211,21 @@ CONTAINS
       IF (VERBOSE .EQ. 1) &
         WRITE(6,ROW_FMT) 'mol', n_lte_mol - n_lte_mol_before, 0, &
           TRIM(basename(mol_files(imol)))
+    END DO
+
+    DO imol = 1, npolymol
+      IF (teff .GT. TEFF_POLYMOL_LIMIT) THEN
+        IF (VERBOSE .EQ. 1) &
+          WRITE(6,SKIP_FMT) 'pol', 'skip', '', &
+            'Teff > 3500 K: ', TRIM(basename(polymol_files(imol)))
+        CYCLE
+      END IF
+      n_lte_mol_before = n_lte_mol
+      CALL read_molec_poly(polymol_files(imol), wlbeg, wlend, ratiolg, ixwlbeg, &
+                           lte_mol, n_lte_mol)
+      IF (VERBOSE .EQ. 1) &
+        WRITE(6,ROW_FMT) 'pol', n_lte_mol - n_lte_mol_before, 0, &
+          TRIM(basename(polymol_files(imol)))
     END DO
 
     IF (h2o_file .NE. '') THEN
@@ -259,12 +282,14 @@ CONTAINS
   !  PARSE_LINES_LIST — read lines.list and populate file path variables
   ! ============================================================================
   SUBROUTINE parse_lines_list(listfile, datadir, gfall_file, predict_file, h2o_file, &
-                               mol_files, nmol)
+                               mol_files, nmol, polymol_files, npolymol)
     CHARACTER(LEN=*),   INTENT(IN)  :: listfile
     CHARACTER(LEN=*),   INTENT(IN)  :: datadir
     CHARACTER(LEN=512), INTENT(OUT) :: gfall_file, predict_file, h2o_file
     CHARACTER(LEN=512), INTENT(OUT) :: mol_files(256)
     INTEGER,            INTENT(OUT) :: nmol
+    CHARACTER(LEN=512), INTENT(OUT) :: polymol_files(16)
+    INTEGER,            INTENT(OUT) :: npolymol
 
     INTEGER, PARAMETER :: LU = 50
     CHARACTER(LEN=1024) :: line
@@ -276,6 +301,7 @@ CONTAINS
     predict_file = ''
     h2o_file     = ''
     nmol         = 0
+    npolymol     = 0
 
     OPEN(UNIT=LU, FILE=listfile, STATUS='old', ACTION='read', IOSTAT=ios)
     IF (ios .NE. 0) THEN
@@ -326,6 +352,13 @@ CONTAINS
           mol_files(nmol) = TRIM(filepath)
         ELSE
           WRITE(6,'(a)') 'WARNING: more than 256 mol entries in lines.list; extras ignored'
+        END IF
+      CASE ('polymol')
+        IF (npolymol .LT. 16) THEN
+          npolymol = npolymol + 1
+          polymol_files(npolymol) = TRIM(filepath)
+        ELSE
+          WRITE(6,'(a)') 'WARNING: more than 16 polymol entries in lines.list; extras ignored'
         END IF
       CASE ('h2o')
         h2o_file = TRIM(filepath)
@@ -1206,6 +1239,155 @@ CONTAINS
 
 
   ! ============================================================================
+  !  READ_MOLEC_POLY — polyatomic molecular line reader (ascii)
+  !
+  !  Same physical content as READ_MOLEC_ASCII but for polyatomic species
+  !  whose Kurucz codes exceed the diatomic I4 field.  Record format:
+  !    (F10.4,F7.3,F5.1,F10.3,F5.1,F11.3,I6,A8,A8,I2,I4)
+  !     wl     gflog  J"    E"     J'   E'      code lab" lab'  iso loggr
+  !  The gf values must be bare (no isotope weighting) and NUCLEAR-SPIN-FREE
+  !  (divide ExoMol g_tot by g_ns): NMOLEC's XNFPMOL is built from the
+  !  spin-free atomic partition functions, so the implied molecular U
+  !  excludes nuclear degeneracy.  No isotope correction is applied here:
+  !  polyatomic lists are single-isotopologue (main species) for now.
+  !
+  !  Species dispatch: POLY_NELION maps the code to the opacity slot
+  !  nelion = 6 * (39 + position in the xnfpelsyn IDMOL table).  Add a case
+  !  when wiring a new polyatomic (and confirm run_xnfpelsyn fills it).
+  ! ============================================================================
+  SUBROUTINE read_molec_poly(filename, wlbeg, wlend, ratiolg, ixwlbeg, &
+                             lte_arr, n_lte)
+    CHARACTER(LEN=*),              INTENT(IN)    :: filename
+    REAL(8),                       INTENT(IN)    :: wlbeg, wlend, ratiolg
+    INTEGER,                       INTENT(IN)    :: ixwlbeg
+    TYPE(lte_line_t), ALLOCATABLE, INTENT(INOUT) :: lte_arr(:)
+    INTEGER,                       INTENT(INOUT) :: n_lte
+
+    TYPE(lte_line_t), ALLOCATABLE :: lte_old(:), lte_buf(:)
+    INTEGER, PARAMETER :: CHUNK = 200000
+    CHARACTER(LEN=256) :: linebuf
+    CHARACTER(LEN=8)   :: clabel, clabelp
+    REAL(8)            :: wl, e, ep, wlvac, elo, gf, freq, congf, frq4pi
+    REAL(8)            :: gammar, gammas, gammaw, gamrf, gamsf, gamwf
+    REAL(4)            :: gflog, xj, xjp
+    INTEGER            :: icode, iso, loggr, nelion
+    INTEGER            :: ios, lte_cap, n_new, n_old, nbad, ixwl, nbuff, lt
+
+    OPEN(UNIT=11, FILE=filename, STATUS='old', ACTION='read', IOSTAT=ios)
+    IF (ios .NE. 0) THEN
+      WRITE(6,'(a,a)') 'ERROR: cannot open polymol file: ', TRIM(filename)
+      CALL EXIT(1)
+    END IF
+
+    lte_cap = CHUNK
+    ALLOCATE(lte_buf(lte_cap))
+    n_new = 0
+    nbad  = 0
+
+    DO
+      READ(11, '(A)', IOSTAT=ios) linebuf
+      IF (ios .LT. 0) EXIT
+      IF (ios .GT. 0) THEN
+        WRITE(6,'(a,i0)') ' ERROR: read_molec_poly: I/O error near line ', n_new
+        EXIT
+      END IF
+      IF (LEN_TRIM(linebuf) .EQ. 0) CYCLE
+      lt = LEN_TRIM(linebuf)
+      IF (linebuf(lt:lt) .EQ. CHAR(13)) linebuf(lt:lt) = ' '
+
+      READ(linebuf, '(F10.4,F7.3,F5.1,F10.3,F5.1,F11.3,I6,A8,A8,I2,I4)', &
+           IOSTAT=ios) wl, gflog, xj, e, xjp, ep, icode, clabel, clabelp, iso, loggr
+      IF (ios .NE. 0) THEN
+        nbad = nbad + 1
+        IF (nbad .LE. 3) THEN
+          WRITE(6,'(a,i0,a,a)') ' WARNING: read_molec_poly: malformed line ', &
+            n_new + nbad, ' in ', TRIM(filename)
+          WRITE(6,'(a,a,a)')    '          [', TRIM(linebuf), ']'
+        END IF
+        CYCLE
+      END IF
+
+      IF (ABS(wl) .GT. wlend + 2.0D0) EXIT
+
+      wlvac = 1.0D7 / ABS(ABS(ep) - ABS(e))
+      IF (wlvac .LT. wlbeg - 1.0D0) CYCLE
+      IF (wlvac .GT. wlend + 1.0D0) CYCLE
+
+      nelion = poly_nelion(icode)
+      IF (nelion .EQ. 0) CYCLE
+
+      gf  = EXP(gflog * 2.30258509299405D0)
+      elo = MIN(ABS(e), ABS(ep))
+
+      ixwl   = INT(LOG(wlvac) / ratiolg + 0.5D0)
+      nbuff  = ixwl - ixwlbeg + 1
+      freq   = 2.99792458D17 / wlvac
+      congf  = 0.026538D0 / 1.77245D0 * gf / freq
+      frq4pi = freq * 12.5664D0
+
+      IF (loggr .EQ. 0) THEN
+        gammar = 2.223D13 / wlvac**2
+      ELSE
+        gammar = 10.0D0**(loggr * 0.01D0)
+      END IF
+
+      IF (clabelp(1:1) .EQ. 'X') THEN
+        gammas = 3.0D-8
+        gammaw = 1.0D-8
+      ELSE
+        gammas = 3.0D-5
+        gammaw = 1.0D-7
+      END IF
+
+      gamrf = gammar / frq4pi
+      gamsf = gammas / frq4pi
+      gamwf = gammaw / frq4pi
+
+      IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
+      n_new = n_new + 1
+      lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), nelion, &
+        REAL(elo,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4), &
+        REAL(icode,4))
+    END DO
+
+    CLOSE(11)
+
+    IF (nbad .GT. 0) THEN
+      WRITE(6,'(a,i0,a,a)') ' NOTE: read_molec_poly: skipped ', nbad, &
+        ' malformed line(s) in ', TRIM(filename)
+    END IF
+
+    n_old = n_lte
+    IF (n_old .GT. 0 .AND. ALLOCATED(lte_arr)) THEN
+      ALLOCATE(lte_old(n_old), SOURCE=lte_arr(1:n_old))
+    END IF
+    IF (ALLOCATED(lte_arr)) DEALLOCATE(lte_arr)
+    n_lte = n_old + n_new
+    ALLOCATE(lte_arr(n_lte))
+    IF (n_old .GT. 0) lte_arr(1:n_old) = lte_old(1:n_old)
+    IF (n_new .GT. 0) lte_arr(n_old+1:n_lte) = lte_buf(1:n_new)
+    IF (ALLOCATED(lte_old)) DEALLOCATE(lte_old)
+    DEALLOCATE(lte_buf)
+
+  END SUBROUTINE read_molec_poly
+
+
+  ! Map a polyatomic Kurucz species code to its XNFDOP opacity slot:
+  ! nelion = 6 * (39 + IDMOL position) in the xnfpelsyn molecule table.
+  ! Verified anchors: TiO 822 -> 366, H2O 10108 -> 534.
+  pure FUNCTION poly_nelion(icode) RESULT(nelion)
+    INTEGER, INTENT(IN) :: icode
+    INTEGER :: nelion
+    SELECT CASE (icode)
+    CASE (10820)          ! CaOH (IDMOL position 67 -> slot 106)
+      nelion = 636
+    CASE DEFAULT
+      nelion = 0
+    END SELECT
+  END FUNCTION poly_nelion
+
+
+  ! ============================================================================
   !  READ_H2O — read Partridge-Schwenke H2O binary line list
   !              (translated from rh2ofast.for)
   ! ============================================================================
@@ -1371,7 +1553,8 @@ CONTAINS
 
     CHARACTER(LEN=512) :: gfall_file, predict_file, h2o_file
     CHARACTER(LEN=512) :: mol_files(256)
-    INTEGER            :: nmol, k, plen
+    CHARACTER(LEN=512) :: polymol_files(16)
+    INTEGER            :: nmol, npolymol, k, plen
     LOGICAL            :: file_exists
 
     INTEGER, PARAMETER :: CHUNK = 200000
@@ -1385,7 +1568,7 @@ CONTAINS
     ! Parse manifest (reuses SYNTHE's parser, which already extracts the
     ! mol_files list; non-mol entries are ignored here).
     CALL parse_lines_list(lines_list_path, datadir, gfall_file, predict_file, &
-                          h2o_file, mol_files, nmol)
+                          h2o_file, mol_files, nmol, polymol_files, npolymol)
 
     DO k = 1, nmol
       ! Skip .bin entries — only TiO uses .bin format and that is handled
