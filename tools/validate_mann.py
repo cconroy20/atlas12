@@ -51,8 +51,8 @@ RSUN   = 6.957e10
 PC     = 3.0856776e18
 C_ANG  = 2.99792458e18       # speed of light in Angstrom/s
 
-# Observed resolving power: SNIFS in the optical, SpeX SXD in the NIR
-OBS_R_BLUE  = 1000.0
+# Observed resolution: SNIFS constant-dlam (see SNIFS_DLAM_FWHM below),
+# SpeX SXD R=2000 in the NIR; 2016-library splice at 9500 A
 OBS_R_RED   = 2000.0
 OBS_R_SPLIT = 9500.0         # Angstrom
 
@@ -150,14 +150,39 @@ def smooth_to_R(flux, model_R, obs_R):
     return gaussian_filter1d(flux, sigma_pix, mode="nearest")
 
 
+# SNIFS effective LSF: constant-FWHM Gaussian, measured 2026-08-09 by
+# chunk-fitting R=300k syntheses to three stars (GJ887, PM_I10113+4927,
+# GJ105A): dlam ~ 11 A FWHM, i.e. R rising ~400 (blue) -> ~850 (9500 A).
+# The old flat R=1000 was ~2x too sharp in the blue.
+SNIFS_DLAM_FWHM = 11.0     # Angstrom
+
+
+def smooth_mann(wave, flux, model_R):
+    """Smooth a constant-R model to the Mann-library LSF: SNIFS
+    constant-dlam Gaussian below OBS_R_SPLIT, SpeX R=2000 above."""
+    from scipy.ndimage import gaussian_filter1d
+    step = wave[0] / model_R                    # finest linear spacing
+    wl = np.arange(wave[0], min(wave[-1], OBS_R_SPLIT + 200.0), step)
+    fl = np.interp(wl, wave, flux)
+    fsnifs = gaussian_filter1d(fl, SNIFS_DLAM_FWHM / 2.3548 / step,
+                               mode="nearest")
+    out = smooth_to_R(flux, model_R, OBS_R_RED)
+    m = wave < OBS_R_SPLIT
+    out[m] = np.interp(wave[m], wl, fsnifs)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--star", help="Mann star name, e.g. PM_I11054+4331")
     ap.add_argument("--list", action="store_true", help="list the sample and exit")
     ap.add_argument("--vturb", type=float, default=1.0, help="microturbulence km/s")
     ap.add_argument("--numit", type=int, default=30, help="atlas12 iterations")
-    ap.add_argument("--resolu", type=float, default=50000.0,
-                    help="synthe resolving power before smoothing")
+    ap.add_argument("--resolu", type=float, default=300000.0,
+                    help="synthe resolving power before smoothing "
+                         "(>=300000: R=50k over-absorbs the molecular haze "
+                         "by ~10 percent median in the optical, see "
+                         "GJ887_resolution_test.png 2026-08-09)")
     ap.add_argument("--wlbeg", type=float, default=300.0, help="nm")
     ap.add_argument("--wlend", type=float, default=2500.0, help="nm")
     ap.add_argument("--use-mh", action="store_true",
@@ -166,6 +191,13 @@ def main():
                     help="solar reference pattern for atlas12 (ag89, agss09, "
                          "berg25; default berg25). Pass an empty string to "
                          "keep the table carried by the input model.")
+    ap.add_argument("--theta-mas", type=float, default=None,
+                    help="interferometric limb-darkened angular diameter "
+                         "[mas].  Overrides Teff (from table FBOL + theta via "
+                         "Stefan-Boltzmann), radius (theta/2 * d), logg "
+                         "(table mass + that radius), and hence the flux "
+                         "dilution -- a fully model-free comparison.  "
+                         "Default tag becomes 'int'.")
     ap.add_argument("--tag", default=None,
                     help="suffix for the run directory (workdir/mann/<star>_<tag>)")
     ap.add_argument("--force", action="store_true", help="rerun even if outputs exist")
@@ -195,6 +227,20 @@ def main():
 
     print(f"{args.star} ({t['spt'][i]}):  Teff={teff:.0f} K  logg={logg:.2f}  "
           f"[Fe/H]={feh:+.2f}  [M/H]={mh:+.2f}  R={radius:.3f} Rsun  d={dist:.2f} pc")
+
+    if args.theta_mas:
+        SIGMA_SB = 5.670374419e-5                       # cgs
+        theta_rad = args.theta_mas * 1.0e-3 / 206264.806
+        fbol = t["fbol"][i] * 1.0e-8                    # Mann convention
+        teff = (4.0 * fbol / (SIGMA_SB * theta_rad ** 2)) ** 0.25
+        radius = (theta_rad / 2.0) * dist * PC / RSUN
+        logg = np.log10(GRAV * t["mass"][i] * MSUN / (radius * RSUN) ** 2)
+        print(f"INTERFEROMETRIC MODE: theta_LD={args.theta_mas:.3f} mas  ->  "
+              f"Teff={teff:.0f} K (table {t['teff'][i]:.0f})  "
+              f"R={radius:.3f} Rsun (table {t['radius'][i]:.3f})  "
+              f"logg={logg:.2f}")
+        if args.tag is None:
+            args.tag = "int"
 
     # --------------- run atlas12 ---------------
     rundir = os.path.join(RUN_ROOT,
@@ -238,9 +284,7 @@ def main():
     dilute = (radius * RSUN / (dist * PC)) ** 2
     flam = 4.0 * np.pi * hnu * C_ANG / wmod ** 2 * dilute     # erg/s/cm^2/A
 
-    fsm_b = smooth_to_R(flam, args.resolu, OBS_R_BLUE)
-    fsm_r = smooth_to_R(flam, args.resolu, OBS_R_RED)
-    fsm = np.where(wmod < OBS_R_SPLIT, fsm_b, fsm_r)
+    fsm = smooth_mann(wmod, flam, args.resolu)
 
     # --------------- observed spectrum ---------------
     wobs_um, fobs, eobs = np.loadtxt(obs_file, unpack=True)
@@ -253,9 +297,7 @@ def main():
     if c3k is not None:
         c3k_teff, wc3k, hnu_c3k = c3k
         flam_c3k = 4.0 * np.pi * hnu_c3k * C_ANG / wc3k ** 2 * dilute
-        cb = smooth_to_R(flam_c3k, C3K_R, OBS_R_BLUE)
-        cr = smooth_to_R(flam_c3k, C3K_R, OBS_R_RED)
-        csm = np.where(wc3k < OBS_R_SPLIT, cb, cr)
+        csm = smooth_mann(wc3k, flam_c3k, C3K_R)
         okc = ok & (wobs >= wc3k[0]) & (wobs <= wc3k[-1])
         fc3k_i = np.interp(wobs, wc3k, csm)
         c3k_label = f"C3K v2.3 f77 (t{c3k_teff:.0f} g4.5 [Fe/H]=0)"

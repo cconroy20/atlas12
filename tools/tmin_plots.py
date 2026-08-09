@@ -36,7 +36,7 @@ def smooth_to_R(f, mR, oR):
 def model_on_obs(spec_path):
     w, hnu, _ = np.loadtxt(spec_path, unpack=True)
     f = 4 * np.pi * hnu * C_ANG / w ** 2
-    fs = smooth_to_R(f, 50000., 1000.)
+    fs = smooth_to_R(f, 300000., 1000.)
     return np.interp(WOBS, w, fs, left=np.nan, right=np.nan)
 
 scores = json.load(open(f"{FIT}/scores.json"))

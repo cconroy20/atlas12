@@ -71,3 +71,23 @@ the condensed fractions) would be needed.  Settling/microphysics
 (BT-Settl/StaticWeather style) is brown-dwarf territory -- out of scope.
 
 ---
+
+## 5. Mann-Validation Open Items (post D0-audit + resolution fixes, 2026-08-09)
+
+**Status: open.**  At converged synthesis resolution (R=300k) with the
+corrected molecular network, the RE GJ887 model matches the Mann spectrum
+at the percent level; what survives:
+
+- **CaH bands ~10% too strong** (CaH2 index 0.587 vs 0.659): no plausible
+  T-structure fixes it without breaking TiO; candidates are the Owens+22
+  CaH gf scale and the D0 tail (1.699 +/- ~0.02 eV = 8% lever).  Test:
+  A/B the old CaH line list and D0 = 1.679.
+- **4700-5400 A: both ATLAS12 and PHOENIX ~10-15% BRIGHTER than data**
+  (shared -> common missing opacity or SNIFS blue calibration).
+- **8000-8800 A: models few % low; 9100-9600 few % high** (shared with
+  PHOENIX; SNIFS red edge / telluric splice caveats).
+- **Ca II IRT cores too deep** (LTE; known).
+- **~4100 K limit cycle worsened**: PM_I10113+4927 reconverged at 18% RMS
+  (was ~2.9%) on the corrected network -- rerun the limit-cycle diagnosis.
+- **Solar absolute (+2.1%) recheck at R=300k**; then the sample-wide
+  rerun (all medians shift with the resolution fix).

@@ -58,8 +58,8 @@ def smooth_to_R(f, mR, oR):
 def model_on_obs(spec_path):
     w, hnu, _ = np.loadtxt(spec_path, unpack=True)
     f = 4 * np.pi * hnu * C_ANG / w ** 2
-    b = smooth_to_R(f, 50000., 1000.)
-    r = smooth_to_R(f, 50000., 2000.)
+    b = smooth_to_R(f, 300000., 1000.)
+    r = smooth_to_R(f, 300000., 2000.)
     fs = np.where(w < 9500., b, r)
     m = (WOBS > w[0] + 30) & (WOBS < w[-1] - 30)
     return m, np.interp(WOBS[m], w, fs)
@@ -68,7 +68,7 @@ def run_synthe(atm, cwd, wlbeg, wlend, log):
     env = dict(os.environ, ATLAS12=REPO)
     with open(log, "w") as fh:
         subprocess.run([f"{REPO}/bin/synthe.exe", atm,
-                        f"wlbeg={wlbeg}", f"wlend={wlend}", "resolu=50000"],
+                        f"wlbeg={wlbeg}", f"wlend={wlend}", "resolu=300000"],
                        cwd=cwd, env=env, stdout=fh, stderr=subprocess.STDOUT,
                        check=True)
 
