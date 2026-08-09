@@ -170,6 +170,38 @@ def parse_molecules_rows():
 ION_SAHA_CHANNEL = {'H2+': 'H', 'CH+': 'C', 'OH+': 'O', 'SiH+': 'Si',
                     'CN+': 'C', 'N2+': 'N', 'NO+': 'O', 'O2+': 'O'}
 
+# Rows whose filed D0 deliberately deviates from BC16 Table 1 because the
+# BC16-adopted value is refuted by better spectroscopy.  The a0..a4 stay
+# the BC16-Table-7 fit made with the BC16 D0 (keeping BC16's implied
+# partition function); lowering only the row D0 shifts ln K_eq by
+# -dD0/(k_B T), which corrects the binding.  Validate therefore refits
+# the coefficients with the BC16 D0 but requires the row to carry the
+# override value.  {label: (row_d0, bc16_fit_d0)}
+D0_OVERRIDES = {
+    # ExoMol XAB X2S+ potential D0 = 13700 cm-1 (Owens+22 MNRAS 511,
+    # 5448 s3.1.3); HH 1.700; expt 1.679(15).  BC16 adopted Luo07's
+    # no-uncertainty 2.281 outlier -> ~8x CaH excess at 3200 K.
+    'CaH': (1.699, 2.281),
+    # 2026-08-08 audit batch (see CHANGELOG + row comments for sources):
+    'FeH': (1.598, 1.497),   # Schultz & Armentrout 91 / Dulick+03
+    'CrH': (2.114, 1.930),   # Cheng+17 revision of Chen+93
+    'CuH': (2.686, 2.602),   # Mohammadian & Shayesteh 23
+    'BeH': (2.063, 1.973),   # Dattani 15
+    'MgH': (1.285, 1.270),   # Shayesteh+07, 10365.6 cm-1
+    'C2':  (6.248, 6.371),   # Borsovszky+21 PNAS, 50390.5 cm-1
+    'TiS': (4.690, 4.294),   # Sorensen+20 predissociation
+    'VO':  (6.545, 6.566),   # Merriles+20 R3PI
+    'CaO': (4.110, 3.986),   # Irvin & Dagdigian 80 + Vasiliu+10
+    'BN':  (4.491, 3.877),   # Karton & Martin 06 W4
+    'BF':  (7.840, 7.550),   # Hildenbrand 65 / JANAF
+    'NS':  (4.850, 4.801),   # Peebles & Marshall 02
+    'SiN': (4.700, 4.493),   # Xing+18 MRCI
+    'SiF': (5.700, 5.937),   # Farber 78 / JANAF
+    'PS':  (4.540, 4.289),   # Drowart 73 / HH
+    'BS':  (6.010, 5.711),   # Uy & Drowart 70 / HH
+    'AlN': (2.860, 3.778),   # JANAF; low confidence, theory ~2.3
+}
+
 
 def fit_diatomic_ion(e1, log10_kp, tgrid, saha_atom):
     """
@@ -215,7 +247,16 @@ def cmd_validate():
                 print(f'  {label:<6s} NO BC16 MATCH')
                 n_bad += 1
                 continue
-            refit = fit_diatomic(d0, table7[name], tgrid)
+            fit_d0 = d0
+            if label in D0_OVERRIDES:
+                row_d0, bc16_d0 = D0_OVERRIDES[label]
+                if abs(d0 - row_d0) > 5e-4:
+                    print(f'  {label:<6s} OVERRIDE MISMATCH: row D0 {d0} '
+                          f'!= documented override {row_d0}')
+                    n_bad += 1
+                    continue
+                fit_d0 = bc16_d0
+            refit = fit_diatomic(fit_d0, table7[name], tgrid)
         elif label in ION_SAHA_CHANNEL and label in table7:
             refit = fit_diatomic_ion(d0, table7[label], tgrid,
                                      ION_SAHA_CHANNEL[label])
@@ -243,6 +284,9 @@ def cmd_fit(names, write):
 
     new_rows = []
     for name in names:
+        if name in D0_OVERRIDES:
+            sys.exit(f'{name}: has a D0 override (see D0_OVERRIDES) -- '
+                     f'refitting from BC16 Table 1 would undo it')
         atoms = parse_formula(name)
         code = species_code(atoms)
         if float(code) in existing:
