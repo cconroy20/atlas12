@@ -328,6 +328,9 @@ not in the repository.)
 | `uves_compare.py` | High-resolution line-profile comparison of a ladder star's R=300k synthesis against ESO UVES spectra |
 | `tmin_perturb.py`, `tmin_fit.py`, `tmin_rf.py` (+ plot drivers) | T(τ) perturbation / T-min fitting / response-function machinery on converged models |
 | `build_h2o_pokazatel.py` | Build `data/h2opokazatel.bin` from ExoMol POKAZATEL: exact raw-transition binning (`--raw`/`--validate-raw`/`--write-raw`) plus the super-line NNLS cross-check route |
+| `build_cia_table.py` | Build `data/h2collop.dat` from the HITRAN CIA sets (+ BJF01 for the H₂–H₂ continuation above Abel's range); `--validate` re-derives the published Abel/Borysow comparison, the ν² low-frequency slope, and seam continuity from the raw files.  Source URLs in the docstring |
+| `cia_ab.py` | Same-structure A/B of CIA variants at 2700 K against the PHOENIX NewEra spectrum: per-window flux and continuum ratios |
+| `tio_ttau_plot.py` | T(τ) comparison of two ATLAS12 runs (used for the TiO line-list swap); reads a partial `.iter` file to preview a run still converging |
 
 Discipline: after **any** edit to `molecules.dat` or `condensates.dat`,
 rerun the corresponding `--validate` and regenerate the fit atlas.

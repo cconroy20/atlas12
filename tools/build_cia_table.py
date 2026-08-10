@@ -69,8 +69,22 @@ Usage:
     python3 tools/build_cia_table.py --raw <dir> [--out data/h2collop.dat]
     python3 tools/build_cia_table.py --raw <dir> --validate
 
-<dir> holds the downloaded H2-H2_2011.cia, H2-He_2011.cia,
-H2-H_2011.cia, He-H_2011.cia and CIA.H2-H2.Yi.dat.
+<dir> holds the five source files, none of which are kept in the repo
+(~180 MB).  Fetch them with:
+
+    H=https://hitran.org/data/CIA/main
+    for f in H2-H2_2011 H2-He_2011 H2-H_2011 He-H_2011; do
+        curl -sSLO $H/$f.cia
+    done
+    curl -sSLO https://raw.githubusercontent.com/bertrandplez/\\
+Turbospectrum2019/master/COM-v19.1/DATA/CIA.H2-H2.Yi.dat
+
+The HITRAN four are the "Main" (recommended) sets; the Turbospectrum
+file supplies only the H2-H2 continuation above Abel's range.  Run
+--validate after any re-fetch: it re-derives Saumon et al. (2012)'s
+published Abel/BJF01 comparison from the raw files, so a changed or
+truncated download shows up as a failed check rather than a silently
+different table.
 """
 
 import argparse

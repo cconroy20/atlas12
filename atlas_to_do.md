@@ -28,6 +28,29 @@ Two residual limitations, neither blocking:
 
 ---
 
+## 1b. Reconverge the cool-star structures
+
+**Status: open, and now overdue.**  Every cool-star ATLAS12 structure on
+disk predates the opacity fixes and none has CIA feedback: the dropped-
+absorber fix (106d8b7), H2- free-free (dff6224), and now the CIA
+modernization + TiO unification.  The M-dwarf ladder (GJ644C, GJ905,
+GJ699 especially) must be reconverged before any further Mann-validation
+analysis; band-level conclusions drawn on the old structures are not
+safe.  Cost is the limiting factor, not correctness.
+
+---
+
+## 1c. Retired line lists staged for deletion
+
+**Status: awaiting a decision.**  4.2 GB moved out of `data/` on
+2026-08-10 to `~/kurucz/superseded_linelists/`, unreferenced by either
+code: `schwenke.bin` (Schwenke 1997 TiO, replaced by ExoMol Toto),
+`mol/tiototo.bin` (previous Toto), `h2ofastfix.bin` (P&S H2O, replaced by
+POKAZATEL).  All were gitignored, so deleting them is unrecoverable from
+the repo -- hence staged rather than removed.  Delete when satisfied.
+
+---
+
 ## 2. vdW -> ABO Transition for Line Broadening
 
 **Status: open.**
@@ -89,6 +112,11 @@ at the percent level; what survives:
   (shared -> common missing opacity or SNIFS blue calibration).
 - **8000-8800 A: models few % low; 9100-9600 few % high** (shared with
   PHOENIX; SNIFS red edge / telluric splice caveats).
+- **H/K windows ~4-7% bright vs PHOENIX at 2700 K on THEIR structure.**
+  The two leading data hypotheses are now both excluded by measurement:
+  modern CIA (Abel/HITRAN, + H2-H/H-He, + the stimulated-emission double
+  count) moved K by +0.4% on the continuum, and unifying TiO with SYNTHE's
+  ExoMol Toto moved the 2800 K structure by <10 K.  Look elsewhere.
 - **Ca II IRT cores too deep** (LTE; known).
 - **~4100 K limit cycle worsened**: PM_I10113+4927 reconverged at 18% RMS
   (was ~2.9%) on the corrected network -- rerun the limit-cycle diagnosis.
