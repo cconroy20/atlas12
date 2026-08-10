@@ -364,6 +364,7 @@ is in [CHANGELOG.md](CHANGELOG.md).
 - Barklem, P. S., & Collet, R. 2016, A&A, 588, A96 (atomic and molecular partition functions)
 - Bautista, M. A. 1997, A&AS, 122, 167 (Fe I R-matrix bound-free)
 - Bell, K. L., & Berrington, K. A. 1987, J. Phys. B, 20, 801 (H⁻ free-free)
+- John, T. L. 1975, MNRAS, 172, 305 (H₂⁻ free-free; table as filed for MARCS)
 - Bergemann, M., Lodders, K., & Palme, H. 2025, Zenodo record 14988840 (solar abundance scale, `solar=berg25`)
 - Borysow, A., Jørgensen, U. G., & Zheng, C. 1997, A&A, 324, 185 (H₂ collision-induced absorption)
 - Humlíček, J. 1982, JQSRT, 27, 437 (Voigt function asymptotic)

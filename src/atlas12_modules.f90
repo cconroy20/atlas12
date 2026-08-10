@@ -1476,6 +1476,7 @@ MODULE mod_atlas_data
   REAL(8)  :: AHE1(kw), AHE2(kw), AHEMIN(kw), SIGHE(kw)
   REAL(8)  :: ACOOL(kw), ALUKE(kw), AHOT(kw)
   REAL(8)  :: AH2COLL(kw)           ! H2-H2 collision-induced absorption
+  REAL(8)  :: AH2MIN(kw)            ! H2- free-free absorption
   REAL(8)  :: ACONT_METAL(kw)       ! consolidated metal+molecular continuum
   REAL(8)  :: SIGEL(kw), SIGH2(kw), AHLINE(kw), ALINES(kw), SIGLIN(kw)
   REAL(8)  :: AXLINE(kw), SIGXL(kw), SIGX(kw)
@@ -11070,6 +11071,7 @@ SUBROUTINE KAPP
   ALUKE  = 0.0D0
   AHOT   = 0.0D0
   AH2COLL = 0.0D0
+  AH2MIN = 0.0D0
   ACONT_METAL = 0.0D0
   SIGEL  = 0.0D0
   SIGH2  = 0.0D0
@@ -11093,6 +11095,7 @@ SUBROUTINE KAPP
   CALL HOP
   CALL H2PLOP
   CALL HMINOP
+  CALL H2MINOP
   CALL HRAYOP
   CALL HE1OP
   CALL HE2OP
@@ -11138,7 +11141,8 @@ SUBROUTINE KAPP
   ! etc.) remain populated and available for diagnostics.
   DO J = 1, NRHOX
     ! Sources weighted by BNU in the source function
-    A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) + ACONT_METAL(J)
+    A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) + AH2MIN(J) &
+      + ACONT_METAL(J)
 
     ! Total continuum absorption
     ACONT(J) = A + AHYD(J) + AHMIN(J)
@@ -12394,6 +12398,139 @@ SUBROUTINE HMINOP
   RETURN
 
 END SUBROUTINE HMINOP
+
+!=========================================================================
+! SUBROUTINE H2MINOP
+!
+! H2- free-free absorption:  H2 + e- + photon -> H2 + e-.
+!
+! This absorber is ABSENT from the entire Kurucz lineage (ATLAS9/ATLAS12
+! carry H- bf/ff, H2+, He- ff, H2 Rayleigh and H2-H2/H2-He CIA, but no
+! H2-).  It is standard in the MARCS family and matters wherever
+! hydrogen is molecular and free electrons are present -- i.e. M-dwarf
+! photospheres, where it competes with H- ff because n(H2) >> n(H I)
+! while both scale with P_e.  Added 2026-08-10 after the PHOENIX 2700 K
+! same-structure test left a smooth continuum-shaped excess peaking at
+! the 1.6 um opacity minimum.
+!
+! Data: John (1975, MNRAS 172, 305) as tabulated for MARCS (jonabs
+! entry "H2- John, MNRAS 172, 305 (1975) extr long wav"), including the
+! long-wavelength lambda^2 extension point at 210 um.  k(lambda,T) is
+! the absorption coefficient per H2 molecule per unit electron pressure
+! in cm^4/dyn, so
+!
+!   kappa_H2-ff [cm^2/g] = k(lambda,T) * P_e * n(H2) / rho * STIM
+!
+! Stimulated emission is NOT contained in these coefficients: MARCS
+! applies its global (1 - exp(-hnu/kT)) factor to this component, in
+! contrast to the Bell & Berrington (1987) H- ff table which it
+! pre-divides by that factor (detabs.f: AB(19)/STIM but AB(22) plain).
+! Our per-source convention therefore applies STIM here and omits it in
+! HMINOP's free-free term -- the two are consistent, not contradictory.
+!
+! n(H2) is built from the same expression used by H2COLLOP so that CIA
+! and this share one H2 density.  Interpolation is bilinear in
+! (log lambda, log T) on log k; power-law extrapolation off the blue end
+! of the table (5001 A) using the local slope, clamped in T.
+!=========================================================================
+
+SUBROUTINE H2MINOP
+
+  IMPLICIT NONE
+
+  INTEGER, PARAMETER :: NWH2M = 10, NTH2M = 7
+
+  ! Tabulated wavelengths [nm, vacuum] and temperatures [K]
+  REAL(8), PARAMETER :: WH2M(NWH2M) = (/ &
+       500.140D0,   750.207D0,  1000.274D0,  1500.410D0,  2500.682D0, &
+      5001.363D0, 10002.727D0, 15004.089D0, 20005.452D0, 210057.25D0 /)
+  REAL(8), PARAMETER :: TH2M(NTH2M) = (/ &
+      1000.0D0, 2500.0D0, 5000.0D0, 7500.0D0, 10000.0D0, 12500.0D0, &
+      15000.0D0 /)
+
+  ! k(lambda, T) in cm^4/dyn; rows are temperatures, columns wavelengths
+  REAL(8), PARAMETER :: KH2M(NWH2M, NTH2M) = reshape( (/ &
+    0.210D-26, 0.419D-26, 0.695D-26, 1.46D-26,  3.92D-26,  &
+    16.2D-26,  67.9D-26,  152.8D-26, 271.0D-26, 2.994D-22, &
+    0.123D-26, 0.265D-26, 0.470D-26, 1.09D-26,  3.19D-26,  &
+    13.4D-26,  54.6D-26,  122.8D-26, 218.0D-26, 2.408D-22, &
+    0.0893D-26, 0.207D-26, 0.380D-26, 0.894D-26, 2.59D-26, &
+    10.6D-26,  42.7D-26,  96.1D-26,  171.0D-26, 1.883D-22, &
+    0.0748D-26, 0.176D-26, 0.322D-26, 0.750D-26, 2.14D-26, &
+    8.69D-26,  34.8D-26,  78.3D-26,  139.0D-26, 1.535D-22, &
+    0.0647D-26, 0.152D-26, 0.277D-26, 0.638D-26, 1.80D-26, &
+    7.29D-26,  29.3D-26,  65.9D-26,  117.0D-26, 1.292D-22, &
+    0.0558D-26, 0.130D-26, 0.237D-26, 0.542D-26, 1.52D-26, &
+    6.13D-26,  24.6D-26,  55.3D-26,  98.4D-26,  1.085D-22, &
+    0.0482D-26, 0.112D-26, 0.203D-26, 0.463D-26, 1.30D-26, &
+    5.21D-26,  20.9D-26,  47.0D-26,  83.6D-26,  9.217D-23  /), &
+    (/ NWH2M, NTH2M /) )
+
+  REAL(8), SAVE :: LOGW(NWH2M), LOGT(NTH2M), LOGK(NWH2M, NTH2M)
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
+  INTEGER, SAVE :: ITEMP_H2M = 0
+  REAL(8), SAVE :: XNH2M(kw)
+
+  REAL(8) :: KT(NTH2M)              ! log k at current lambda, each T
+  REAL(8) :: WL, XW, XT, LKV
+  INTEGER :: I, J, IW, IT
+
+  IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING H2MINOP'
+
+  AH2MIN = 0.0D0
+
+  IF (.NOT. INITIALIZED) THEN
+    DO I = 1, NWH2M
+      LOGW(I) = log(WH2M(I))
+    END DO
+    DO J = 1, NTH2M
+      LOGT(J) = log(TH2M(J))
+      DO I = 1, NWH2M
+        LOGK(I, J) = log(KH2M(I, J))
+      END DO
+    END DO
+    INITIALIZED = .TRUE.
+  END IF
+
+  ! H2 number density, cached per temperature structure (same expression
+  ! as H2COLLOP so the two absorbers cannot drift apart)
+  IF (ITEMP_H2M .NE. ITEMP) THEN
+    ITEMP_H2M = ITEMP
+    DO J = 1, NRHOX
+      XNH2M(J) = (XNFP(J,1) * 2.0D0 * BHYD(J,1))**2 * EQUILH2(T(J))
+    END DO
+  END IF
+
+  ! --- interpolate log k in log lambda, once per frequency ---
+  WL = WAVE
+  IF (WL .GT. WH2M(NWH2M)) WL = WH2M(NWH2M)      ! clamp beyond 210 um
+  IW = 1
+  DO I = 1, NWH2M - 1
+    IF (WL .GE. WH2M(I)) IW = I
+  END DO
+  XW = (log(WL) - LOGW(IW)) / (LOGW(IW+1) - LOGW(IW))
+  DO J = 1, NTH2M
+    KT(J) = LOGK(IW, J) * (1.0D0 - XW) + LOGK(IW+1, J) * XW
+  END DO
+
+  ! --- per depth: interpolate in log T, assemble opacity ---
+  DO J = 1, NRHOX
+    IT = 1
+    DO I = 1, NTH2M - 1
+      IF (T(J) .GE. TH2M(I)) IT = I
+    END DO
+    XT = (log(max(T(J), 1.0D0)) - LOGT(IT)) / (LOGT(IT+1) - LOGT(IT))
+    XT = max(0.0D0, min(1.0D0, XT))              ! clamp outside table
+    LKV = KT(IT) * (1.0D0 - XT) + KT(IT+1) * XT
+
+    ! k * P_e * n(H2) / rho, with stimulated emission
+    AH2MIN(J) = exp(LKV) * XNE(J) * KBOL * T(J) * XNH2M(J) &
+              / RHO(J) * STIM(J)
+  END DO
+
+  RETURN
+
+END SUBROUTINE H2MINOP
 
 !=========================================================================
 ! SUBROUTINE HRAYOP
