@@ -300,8 +300,10 @@ The full contents of the data directory, organized by purpose:
 | `lowobsat12.bin` †       | SELECTLINES      | Low-excitation observed atomic lines |
 | `nltelinobsat12.bin` †   | ATLAS12 / XLINOP | NLTE line data |
 | `mol.tar.gz` †           | —                | Archive of molecular sub-lists referenced from `lines.list`; unpack in place |
+| `h2opokazatel.bin` ‡     | ATLAS12 / SYNTHE | H₂O pseudo-line list (51.3M records) built from ExoMol POKAZATEL; replaces `h2ofastfix.bin` (P&S 1997).  Rebuild with `tools/build_h2o_pokazatel.py --raw --write-raw` |
 
 † Not tracked in the repository; download from the Google Drive folder above.
+‡ Not tracked; regenerated from ExoMol by the named tool.
 
 ## Tools
 
@@ -326,6 +328,7 @@ not in the repository.)
 | `mann_lsf_fit.py` | Per-star effective-resolution measurement of the Mann spectra (chunk fits with velocity nuisance) |
 | `uves_compare.py` | High-resolution line-profile comparison of a ladder star's R=300k synthesis against ESO UVES spectra |
 | `tmin_perturb.py`, `tmin_fit.py`, `tmin_rf.py` (+ plot drivers) | T(τ) perturbation / T-min fitting / response-function machinery on converged models |
+| `build_h2o_pokazatel.py` | Build `data/h2opokazatel.bin` from ExoMol POKAZATEL: exact raw-transition binning (`--raw`/`--validate-raw`/`--write-raw`) plus the super-line NNLS cross-check route |
 
 Discipline: after **any** edit to `molecules.dat` or `condensates.dat`,
 rerun the corresponding `--validate` and regenerate the fit atlas.

@@ -19043,9 +19043,9 @@ SUBROUTINE SELECTLINES
   ! Same hot-star skip as TiO: H2O is fully dissociated above a few
   ! thousand K and contributes nothing to the opacity.
   IF (TEFF .GT. 8000.0D0) THEN
-    WRITE(6, '(A)') '           0 lines from h2ofastfix (skip: Teff > 8000 K)'
+    WRITE(6, '(A)') '           0 lines from h2opokazatel (skip: Teff > 8000 K)'
   ELSE
-    OPEN(UNIT=51, FILE=trim(DATADIR)//'h2ofastfix.bin', &
+    OPEN(UNIT=51, FILE=trim(DATADIR)//'h2opokazatel.bin', &
          STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
          ACCESS='STREAM', IOSTAT=IOS_OPEN)
     IF (IOS_OPEN .EQ. 0) THEN
@@ -19104,7 +19104,7 @@ SUBROUTINE SELECTLINES
         WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading H2OFAST'
         CALL EXIT(1)
       END IF
-      WRITE(6, '(I12,A)') N52, ' lines from h2ofastfix'
+      WRITE(6, '(I12,A)') N52, ' lines from h2opokazatel'
       CLOSE(UNIT=51)
     END IF
   END IF
