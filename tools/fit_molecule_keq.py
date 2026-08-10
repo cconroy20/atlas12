@@ -203,6 +203,80 @@ D0_OVERRIDES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# ExoMol-refit polyatomic rows.  POLY_REFITS pins the assembly ingredients
+# and the fit range for molecules.dat rows fit against ExoMol partition
+# functions rather than BC16 Table 7; --validate regenerates these rows too.
+#
+# H2O (2026-08-09): the April fit ran on the ExoMol native 1 K grid over
+# 1000-10000 K, so half the fit points sat above 5000 K where n(H2O) is
+# negligible; the 5-term basis spent its freedom there and left -4%
+# implied-U residuals at 1500-2000 K -- exactly the M-dwarf water-forming
+# layers.  Refit over 1000-5000 K, uniform weight (a hard window, not
+# graded weights); the extrapolation above 5000 K only needs to stay
+# bounded.  SUPERSEDED_POLY keeps the replaced coefficients for the
+# comp_pf.pdf overlay (dashed) and the record.
+POLY_REFITS = {
+    'H2O': dict(atoms=['H', 'H', 'O'], exomol='H2O',
+                t_range=(1000.0, 5000.0),
+                comment='ExoMol fit 1000-5000 K; D0 = CCCBDB (2006Rus/Pin); '
+                        'was full-range fit (see comp_pf)'),
+}
+SUPERSEDED_POLY = {
+    'H2O': dict(d0=9.512,
+                coeffs=[-1.2136e+02, 2.9638e+03, 3.9815e+00, 1.3035e-05,
+                        6.5824e+00],
+                label='previous fit (1000-10000 K)'),
+}
+
+_poly_cache = {}
+
+
+def fit_polyatomic_exomol(label, d0):
+    """Refit a POLY_REFITS row against the local ExoMol .pf assembly."""
+    from atomic_saha import AtomicData
+    from exomol_loader import ExoMolData
+    from polyatomic_assembly import assemble_log10_Kp_polyatomic
+    spec = POLY_REFITS[label]
+    atomic = _poly_cache.setdefault('atomic', AtomicData())
+    exo = _poly_cache.setdefault(
+        'exomol', ExoMolData(str(BC16_DIR.parent)))
+    n_trans = len(spec['atoms']) - 1
+    T = exo.molecules[spec['exomol']]['T']
+    lo, hi = spec['t_range']
+    T = T[(T >= lo) & (T <= hi)]
+    log10_kp = assemble_log10_Kp_polyatomic(
+        spec['atoms'], d0, lambda t: exo.Q(spec['exomol'], t), atomic, T)
+    ln_k = (n_trans * np.log10(KB_PA_CM3_PER_K * T) - log10_kp) \
+        * np.log(10.0)
+    fixed = d0 / (K_BOLTZMANN_EV * T) - 1.5 * n_trans * np.log(T)
+    m = np.isfinite(ln_k)
+    basis = np.column_stack(
+        [np.ones_like(T), 1.0 / T, np.log(T), T, 1.0 / T**2])
+    coeffs, *_ = np.linalg.lstsq(basis[m], (ln_k - fixed)[m], rcond=None)
+    return coeffs
+
+
+def cmd_refit_poly(names, write):
+    rows = {r[1]: r for r in parse_molecules_rows()}
+    lines = MOLECULES_DAT.read_text().split('\n')
+    for name in names:
+        if name not in POLY_REFITS:
+            sys.exit(f'{name}: not in POLY_REFITS')
+        if name not in rows:
+            sys.exit(f'{name}: no row in molecules.dat')
+        i, label, code, d0, old_coeffs, _ = rows[name]
+        coeffs = fit_polyatomic_exomol(name, d0)
+        row = format_row(name, code, d0, coeffs, POLY_REFITS[name]['comment'])
+        print(row)
+        if write:
+            lines[i] = row
+    if write:
+        MOLECULES_DAT.write_text('\n'.join(lines))
+        print(f'updated {len(names)} row(s) in {MOLECULES_DAT}')
+    return 0
+
+
 def fit_diatomic_ion(e1, log10_kp, tgrid, saha_atom):
     """
     Molecular-cation fit in the Kurucz e- convention:
@@ -272,6 +346,27 @@ def cmd_validate():
             print(f'  {label:<6s} MISMATCH:')
             for a, b in zip(refit, coeffs):
                 print(f'     refit {a:12.4E}   filed {b:12.4E}')
+    # ExoMol-refit polyatomic rows (POLY_REFITS registry)
+    rows = {r[1]: r for r in parse_molecules_rows()}
+    for name in POLY_REFITS:
+        if name not in rows:
+            print(f'  {name:<6s} POLY REFIT ROW MISSING')
+            n_bad += 1
+            continue
+        _, _, _, d0, coeffs, _ = rows[name]
+        try:
+            refit = fit_polyatomic_exomol(name, d0)
+        except FileNotFoundError as e:
+            print(f'  {name:<6s} skipped (raw data missing: {e})')
+            n_skip += 1
+            continue
+        if all(f'{a:12.4E}' == f'{b:12.4E}' for a, b in zip(refit, coeffs)):
+            n_ok += 1
+        else:
+            n_bad += 1
+            print(f'  {name:<6s} POLY REFIT MISMATCH:')
+            for a, b in zip(refit, coeffs):
+                print(f'     refit {a:12.4E}   filed {b:12.4E}')
     print(f'validate: {n_ok} exact, {n_bad} mismatched, '
           f'{n_skip} skipped')
     return 1 if n_bad else 0
@@ -326,12 +421,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[1])
     ap.add_argument('--validate', action='store_true')
     ap.add_argument('--fit', nargs='+', metavar='SPECIES')
+    ap.add_argument('--refit-poly', nargs='+', metavar='SPECIES',
+                    help='regenerate a POLY_REFITS row (e.g. H2O)')
     ap.add_argument('--write', action='store_true')
     args = ap.parse_args()
     if args.validate:
         sys.exit(cmd_validate())
     if args.fit:
         sys.exit(cmd_fit(args.fit, args.write))
+    if args.refit_poly:
+        sys.exit(cmd_refit_poly(args.refit_poly, args.write))
     ap.print_help()
 
 

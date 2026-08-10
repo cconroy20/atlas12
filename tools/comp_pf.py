@@ -123,7 +123,8 @@ def fit_physical_diatomic(entry, bc16_mol, saha=None):
     return (D0, a0, a1, a2, a3, a4), T_fit, lnK_bc
 
 
-def fit_physical_polyatomic(entry, atoms, d0_info, atomic, exomol):
+def fit_physical_polyatomic(entry, atoms, d0_info, atomic, exomol,
+                            t_range=None):
     """
     Fit the physical form to ExoMol-assembled K_p for a polyatomic.
 
@@ -132,17 +133,24 @@ def fit_physical_polyatomic(entry, atoms, d0_info, atomic, exomol):
     coefficients can later be evaluated in the same way as the existing
     Kurucz polynomial.
 
+    t_range restricts the fit window (POLY_REFITS registry in
+    fit_molecule_keq.py); default is the historical T >= 1000 K over the
+    full ExoMol native grid.
+
     Returns:
         coeffs : tuple (D0, a0, a1, a2, a3, a4)
-        T_fit  : ExoMol's native T grid restricted to T >= 1000 K
+        T_fit  : ExoMol's native T grid restricted to the fit window
         lnK_em : reference ln K at those temperatures (Kurucz units)
     """
     ex_name = d0_info['exomol_name']
     em_meta = exomol.molecules[ex_name]
 
-    # Native ExoMol grid, restricted to T >= 1000 K (stellar-relevant)
+    # Native ExoMol grid, restricted to the fit window
     T_native = em_meta['T']
-    Tmask = T_native >= 1000.0
+    lo, hi = t_range if t_range else (1000.0, None)
+    Tmask = T_native >= lo
+    if hi is not None:
+        Tmask &= T_native <= hi
     T_fit = T_native[Tmask]
 
     # Assemble log10 K_p in BC16 pressure convention at these T points,
@@ -633,9 +641,13 @@ def compute_polyatomic(entry_orig, entry_upd, atoms, d0_info,
         lambda Tx: exomol.Q(ex_name, Tx), atomic, T)
 
     # Physical-form fit (refit a0..a4 against ExoMol-assembled K_p,
-    # with D0 fixed at entry_upd's E1)
+    # with D0 fixed at entry_upd's E1; fit window from the POLY_REFITS
+    # registry where one is pinned)
+    from fit_molecule_keq import POLY_REFITS, SUPERSEDED_POLY
+    t_range = POLY_REFITS[ex_name]['t_range'] if ex_name in POLY_REFITS \
+        else None
     phys_coeffs, _, _ = fit_physical_polyatomic(
-        entry_upd, atoms, d0_info, atomic, exomol)
+        entry_upd, atoms, d0_info, atomic, exomol, t_range=t_range)
     # Evaluate the fit on the dense plot grid (in Kurucz's cgs convention),
     # then convert to BC16 pressure for plotting and residuals.
     log10_K_phys_cgs = (evaluate_physical(phys_coeffs, entry_upd['n_trans'], T)
@@ -652,6 +664,18 @@ def compute_polyatomic(entry_orig, entry_upd, atoms, d0_info,
     pts_finite = np.isfinite(em_log10K_pts)
     em_T_pts = em_T_pts[pts_finite]
     em_log10K_pts = em_log10K_pts[pts_finite]
+
+    # Superseded fit overlay (previously filed coefficients, kept in
+    # fit_molecule_keq.SUPERSEDED_POLY when a row is refit)
+    log10_Kp_sup = delta_sup = sup_label = None
+    if ex_name in SUPERSEDED_POLY:
+        sup = SUPERSEDED_POLY[ex_name]
+        c_sup = (sup['d0'], *sup['coeffs'])
+        lg_sup = (evaluate_physical(c_sup, entry_upd['n_trans'], T)
+                  / np.log(10.0))
+        log10_Kp_sup = kurucz_to_bc16_pressure_convention(lg_sup, T, N)
+        delta_sup = log10_Kp_sup - log10_Kp_em
+        sup_label = sup['label']
 
     # Residuals (vs ExoMol, the polyatomic reference)
     delta_kur = log10_Kp_kur - log10_Kp_em
@@ -680,6 +704,9 @@ def compute_polyatomic(entry_orig, entry_upd, atoms, d0_info,
         'log10_K_exomol':         log10_Kp_em,
         'log10_K_physical':       log10_Kp_phys,
         'log10_K_bc16':           None,
+        'log10_K_superseded':     log10_Kp_sup,
+        'delta_superseded':       delta_sup,
+        'superseded_label':       sup_label,
         'phys_coeffs':            phys_coeffs,
         'em_T_pts':               em_T_pts,
         'em_log10K_pts':          em_log10K_pts,
@@ -734,6 +761,9 @@ def _plot_one(pdf, r):
     if r.get('log10_K_physical') is not None:
         ax_top.plot(T, r['log10_K_physical'], '-', color='C2', lw=1.8,
                     label='Physical form fit')
+    if r.get('log10_K_superseded') is not None:
+        ax_top.plot(T, r['log10_K_superseded'], '--', color='#009E73',
+                    lw=1.6, label=r['superseded_label'], zorder=4)
 
     # Reference data: scatter symbols at actual data points (no line)
     if not is_poly:
@@ -847,6 +877,9 @@ def _plot_one(pdf, r):
         if r.get('delta_physical') is not None:
             ax_bot.plot(T, r['delta_physical'], '-', color='C2', lw=1.6,
                         label='Physical form')
+        if r.get('delta_superseded') is not None:
+            ax_bot.plot(T, r['delta_superseded'], '--', color='#009E73',
+                        lw=1.4, label=r['superseded_label'])
     ax_bot.set_xscale('log')
     ax_bot.set_xlabel('Temperature [K]')
     if r.get('ref_label'):
