@@ -13724,6 +13724,22 @@ SUBROUTINE CONT_METAL_OPACITY_TOPBASE
     ACONT_METAL = ACONT_METAL + AFE1
   END IF
 
+  !--- Non-metal continua that lived in the LEGACY cool block ------------
+  ! H2-H2 / H2-He collision-induced absorption and the CH/OH
+  ! photodissociation continua are independent of the metal bf/ff source
+  ! choice but were consolidated into CONT_METAL_OPACITY_LEGACY, so the
+  ! TOPbase drop-in silently ran without them (found 2026-08-10 via the
+  ! PHOENIX 2700 K same-structure test: our H/K windows sat 11-13%
+  ! bright with a continuum-shaped, depth-percentile-flat signature).
+  IF (FREQ .LE. FREQ_RYDH) THEN
+    CALL H2COLLOP(AH2COLL)        ! fills module-scope AH2COLL(kw)
+    DO J = 1, NRHOX
+      ACONT_METAL(J) = ACONT_METAL(J) + AH2COLL(J)                       &
+        + (CHOP(J) * XNFP(J, 846) + OHOP(J) * XNFP(J, 848))              &
+          * STIM(J) / RHO(J)
+    END DO
+  END IF
+
   RETURN
 
 END SUBROUTINE CONT_METAL_OPACITY_TOPBASE
