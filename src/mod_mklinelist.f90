@@ -221,8 +221,13 @@ CONTAINS
         CYCLE
       END IF
       n_lte_mol_before = n_lte_mol
-      CALL read_molec_poly(polymol_files(imol), wlbeg, wlend, ratiolg, ixwlbeg, &
-                           lte_mol, n_lte_mol)
+      IF (ends_with_bin(polymol_files(imol))) THEN
+        CALL read_molec_poly_bin(polymol_files(imol), wlbeg, wlend, ratiolg, &
+                                 ixwlbeg, lte_mol, n_lte_mol)
+      ELSE
+        CALL read_molec_poly(polymol_files(imol), wlbeg, wlend, ratiolg, &
+                             ixwlbeg, lte_mol, n_lte_mol)
+      END IF
       IF (VERBOSE .EQ. 1) &
         WRITE(6,ROW_FMT) 'pol', n_lte_mol - n_lte_mol_before, 0, &
           TRIM(basename(polymol_files(imol)))
@@ -1372,6 +1377,176 @@ CONTAINS
   END SUBROUTINE read_molec_poly
 
 
+  pure FUNCTION ends_with_bin(name) RESULT(isbin)
+    CHARACTER(LEN=*), INTENT(IN) :: name
+    LOGICAL :: isbin
+    INTEGER :: lt
+    lt = LEN_TRIM(name)
+    isbin = (lt .GE. 4)
+    IF (isbin) isbin = (name(lt-3:lt) .EQ. '.bin')
+  END FUNCTION ends_with_bin
+
+
+  ! ============================================================================
+  !  READ_MOLEC_POLY_BIN — packed binary polyatomic super-line list.
+  !
+  !  Same 8-byte record layout as h2opokazatel.bin (int32 wavelength index
+  !  on the R=2e6 log grid; packed int16 pair E_low [cm^-1] / millidex
+  !  log gf), preceded by one header record (int32 -1 sentinel, int32
+  !  molecule code).  Built by tools/polymol_to_bin.py from the poly-ascii
+  !  lists; the formatted-ascii read of the ~54M-line CaOH pair dominated
+  !  cool-star SYNTHE startup, the direct-access read takes seconds.
+  !  Damping: classical radiative from wavelength plus the electronic-band
+  !  defaults of READ_MOLEC_POLY (gammas 3e-5, gammaw 1e-7) — per-line
+  !  loggr and the X-X branch are deliberately dropped (blended haze).
+  ! ============================================================================
+  SUBROUTINE read_molec_poly_bin(filename, wlbeg, wlend, ratiolg, ixwlbeg, &
+                                 lte_arr, n_lte)
+    CHARACTER(LEN=*),              INTENT(IN)    :: filename
+    REAL(8),                       INTENT(IN)    :: wlbeg, wlend, ratiolg
+    INTEGER,                       INTENT(IN)    :: ixwlbeg
+    TYPE(lte_line_t), ALLOCATABLE, INTENT(INOUT) :: lte_arr(:)
+    INTEGER,                       INTENT(INOUT) :: n_lte
+
+    INTEGER(4) :: irec(2)
+    INTEGER(2) :: ielo_i, igf_i
+    REAL(4), SAVE :: tablog(32768)
+    LOGICAL, SAVE :: tab_init = .FALSE.
+
+    TYPE(lte_line_t), ALLOCATABLE :: lte_old(:), lte_buf(:)
+    INTEGER, PARAMETER :: CHUNK = 500000
+    INTEGER, PARAMETER :: NBLOCK = 1048576          ! records per stream read
+    INTEGER(4), ALLOCATABLE :: buf(:)
+    INTEGER(8) :: pos
+    REAL(8) :: wlvac, wlvac1, freq, congf, frq4pi, ratiolog_r2e6
+    REAL(8) :: gamrf, gamsf, gamwf, elo
+    INTEGER :: ios, i, j, nrec, istart, icode, nelion, ixwl, nbuff
+    INTEGER :: limitblue, limitred, newlimit, lengthfile
+    INTEGER :: lte_cap, n_new, n_old, iwl4
+    LOGICAL :: past_red
+
+    IF (.NOT. tab_init) THEN
+      DO i = 1, 32768
+        tablog(i) = 10.0**((i - 16384) * 0.001)
+      END DO
+      tab_init = .TRUE.
+    END IF
+    ratiolog_r2e6 = LOG(1.0D0 + 1.0D0/2000000.0D0)
+
+    OPEN(UNIT=11, FILE=filename, STATUS='old', FORM='unformatted', &
+         ACCESS='stream', IOSTAT=ios)
+    IF (ios .NE. 0) THEN
+      WRITE(6,'(a,a)') 'ERROR: cannot open molbin file: ', TRIM(filename)
+      CALL EXIT(1)
+    END IF
+
+    READ(11, POS=1_8) irec
+    IF (irec(1) .NE. -1) THEN
+      WRITE(6,'(a,a)') 'ERROR: molbin header missing: ', TRIM(filename)
+      CALL EXIT(1)
+    END IF
+    icode  = irec(2)
+    nelion = poly_nelion(icode)
+    IF (nelion .EQ. 0) THEN
+      WRITE(6,'(a,i0)') ' WARNING: molbin: no nelion slot for code ', icode
+      CLOSE(11)
+      RETURN
+    END IF
+
+    BLOCK
+      INTEGER(8) :: fsize
+      INQUIRE(FILE=filename, SIZE=fsize)
+      lengthfile = INT(fsize / 8)
+    END BLOCK
+
+    READ(11, POS=8_8 * (2 - 1) + 1) irec
+    wlvac = EXP(irec(1) * ratiolog_r2e6)
+    IF (wlvac .GT. wlend + 1.0D0) THEN
+      CLOSE(11)
+      RETURN
+    END IF
+    READ(11, POS=8_8 * (lengthfile - 1) + 1) irec
+    wlvac1 = EXP(irec(1) * ratiolog_r2e6)
+    IF (wlbeg - 1.0D0 .GT. wlvac1) THEN
+      CLOSE(11)
+      RETURN
+    END IF
+
+    limitblue = 2
+    limitred  = lengthfile
+    DO WHILE (limitred - limitblue .GT. 1)
+      newlimit = (limitred + limitblue) / 2
+      READ(11, POS=8_8 * (newlimit - 1) + 1) irec
+      wlvac = EXP(irec(1) * ratiolog_r2e6)
+      IF (wlvac .LT. wlbeg - 1.0D0) THEN
+        limitblue = newlimit
+      ELSE
+        limitred  = newlimit
+      END IF
+    END DO
+    istart = newlimit
+
+    lte_cap = CHUNK
+    ALLOCATE(lte_buf(lte_cap))
+    ALLOCATE(buf(2 * NBLOCK))
+    n_new = 0
+    past_red = .FALSE.
+
+    i = istart
+    DO WHILE (i .LE. lengthfile .AND. .NOT. past_red)
+      nrec = MIN(NBLOCK, lengthfile - i + 1)
+      pos = 8_8 * INT(i - 1, 8) + 1_8
+      READ(11, POS=pos, IOSTAT=ios) buf(1:2*nrec)
+      IF (ios .NE. 0) EXIT
+      DO j = 1, nrec
+        iwl4 = buf(2*j - 1)
+        wlvac = EXP(iwl4 * ratiolog_r2e6)
+        IF (wlvac .GT. wlend + 1.0D0) THEN
+          past_red = .TRUE.
+          EXIT
+        END IF
+        IF (wlvac .LT. wlbeg - 1.0D0) CYCLE
+
+        ielo_i = INT(IBITS(buf(2*j),  0, 16), 2)
+        igf_i  = INT(IBITS(buf(2*j), 16, 16), 2)
+        elo = DBLE(ABS(ielo_i))
+
+        freq   = 2.99792458D17 / wlvac
+        ixwl   = INT(LOG(wlvac) / ratiolg + 0.5D0)
+        nbuff  = ixwl - ixwlbeg + 1
+        congf  = 0.026538D0 / 1.77245D0 * tablog(ABS(igf_i)) / freq
+        frq4pi = freq * 12.5664D0
+        gamrf  = (2.223D13 / wlvac**2) / frq4pi
+        gamsf  = 3.0D-5 / frq4pi
+        gamwf  = 1.0D-7 / frq4pi
+
+        IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
+        n_new = n_new + 1
+        lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), nelion, &
+          REAL(elo,4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4), &
+          REAL(icode,4))
+      END DO
+      i = i + nrec
+    END DO
+
+    DEALLOCATE(buf)
+    CLOSE(11)
+
+    n_old = n_lte
+    IF (n_old .GT. 0 .AND. ALLOCATED(lte_arr)) THEN
+      ALLOCATE(lte_old(n_old), SOURCE=lte_arr(1:n_old))
+    END IF
+    IF (ALLOCATED(lte_arr)) DEALLOCATE(lte_arr)
+    n_lte = n_old + n_new
+    ALLOCATE(lte_arr(n_lte))
+    IF (n_old .GT. 0) lte_arr(1:n_old) = lte_old(1:n_old)
+    IF (n_new .GT. 0) lte_arr(n_old+1:n_lte) = lte_buf(1:n_new)
+    IF (ALLOCATED(lte_old)) DEALLOCATE(lte_old)
+    DEALLOCATE(lte_buf)
+
+  END SUBROUTINE read_molec_poly_bin
+
+
   ! Map a polyatomic Kurucz species code to its XNFDOP opacity slot:
   ! nelion = 6 * (39 + IDMOL position) in the xnfpelsyn molecule table.
   ! Verified anchors: TiO 822 -> 366, H2O 10108 -> 534.
@@ -1400,21 +1575,21 @@ CONTAINS
     INTEGER,                      INTENT(INOUT) :: n_lte
 
     INTEGER(4) :: irec(2)
-    INTEGER(4) :: iwl
-    INTEGER(2) :: ielo_i
-    EQUIVALENCE (irec(1), iwl)
-    EQUIVALENCE (irec(2), ielo_i)
 
     REAL(4), SAVE :: tablog(32768)
     REAL(4), PARAMETER :: xiso(4)  = [ 0.9976,  0.0004,  0.0020, 0.00001]
 
     REAL(8) :: wlvac, wlvac1, freq, congf, ratiolog_r2e6, frq4pi
     REAL(8) :: gammar, gamrf, gamsf, gamwf
-    INTEGER :: ios, istart, i, iso, ixwl, nbuff
+    INTEGER :: ios, istart, i, j, nrec, iso, ixwl, nbuff, iwl4
     INTEGER :: limitblue, limitred, newlimit, lengthfile
     INTEGER(2) :: igflog_loc, ielo_loc
+    LOGICAL :: past_red
 
     INTEGER, PARAMETER :: CHUNK = 500000
+    INTEGER, PARAMETER :: NBLOCK = 1048576          ! records per stream read
+    INTEGER(4), ALLOCATABLE :: buf(:)
+    INTEGER(8) :: pos
     TYPE(lte_line_t), ALLOCATABLE :: lte_buf(:)
     INTEGER :: n_new, lte_cap
 
@@ -1425,14 +1600,14 @@ CONTAINS
     ratiolog_r2e6 = LOG(1.0D0 + 1.0D0/2000000.0D0)
 
     OPEN(UNIT=11, FILE=filename, STATUS='old', FORM='unformatted', &
-         ACCESS='direct', RECL=8, IOSTAT=ios)
+         ACCESS='stream', IOSTAT=ios)
     IF (ios .NE. 0) THEN
       WRITE(6,'(a,a)') 'ERROR: cannot open H2O file: ', TRIM(filename)
       CALL EXIT(1)
     END IF
 
-    READ(11, REC=1) irec
-    wlvac = EXP(iwl * ratiolog_r2e6)
+    READ(11, POS=1_8) irec
+    wlvac = EXP(irec(1) * ratiolog_r2e6)
     IF (wlvac .GT. wlend + 1.0D0) THEN
       CLOSE(11)
       IF (.NOT. ALLOCATED(lte_arr)) ALLOCATE(lte_arr(0))
@@ -1445,8 +1620,8 @@ CONTAINS
       lengthfile = INT(fsize / 8)
     END BLOCK
 
-    READ(11, REC=lengthfile) irec
-    wlvac1 = EXP(iwl * ratiolog_r2e6)
+    READ(11, POS=8_8 * (lengthfile - 1) + 1) irec
+    wlvac1 = EXP(irec(1) * ratiolog_r2e6)
     IF (wlbeg - 1.0D0 .GT. wlvac1) THEN
       CLOSE(11)
       IF (.NOT. ALLOCATED(lte_arr)) ALLOCATE(lte_arr(0))
@@ -1457,8 +1632,8 @@ CONTAINS
     limitred  = lengthfile
     DO WHILE (limitred - limitblue .GT. 1)
       newlimit = (limitred + limitblue) / 2
-      READ(11, REC=newlimit) irec
-      wlvac = EXP(iwl * ratiolog_r2e6)
+      READ(11, POS=8_8 * (newlimit - 1) + 1) irec
+      wlvac = EXP(irec(1) * ratiolog_r2e6)
       IF (wlvac .LT. wlbeg - 1.0D0) THEN
         limitblue = newlimit
       ELSE
@@ -1469,21 +1644,26 @@ CONTAINS
 
     lte_cap = CHUNK
     ALLOCATE(lte_buf(lte_cap))
+    ALLOCATE(buf(2 * NBLOCK))
     n_new  = 0
+    past_red = .FALSE.
 
-    DO i = istart, lengthfile
-      READ(11, REC=i, IOSTAT=ios) irec
-      IF (ios .LT. 0) EXIT
-      IF (ios .GT. 0) THEN
-        WRITE(6,'(a,i0)') ' ERROR: read_h2o: read error at record ', i
+    i = istart
+    outer: DO WHILE (i .LE. lengthfile .AND. .NOT. past_red)
+     nrec = MIN(NBLOCK, lengthfile - i + 1)
+     pos = 8_8 * INT(i - 1, 8) + 1_8
+     READ(11, POS=pos, IOSTAT=ios) buf(1:2*nrec)
+     IF (ios .NE. 0) EXIT outer
+     DO j = 1, nrec
+      iwl4 = buf(2*j - 1)
+      ielo_loc   = INT(IBITS(buf(2*j),  0, 16), 2)
+      igflog_loc = INT(IBITS(buf(2*j), 16, 16), 2)
+
+      wlvac = EXP(iwl4 * ratiolog_r2e6)
+      IF (wlvac .GT. wlend + 1.0D0) THEN
+        past_red = .TRUE.
         EXIT
       END IF
-
-      ielo_loc   = INT(IBITS(irec(2),  0, 16), 2)
-      igflog_loc = INT(IBITS(irec(2), 16, 16), 2)
-
-      wlvac = EXP(iwl * ratiolog_r2e6)
-      IF (wlvac .GT. wlend + 1.0D0) EXIT
 
       freq  = 2.99792458D17 / wlvac
       ixwl  = INT(LOG(wlvac) / ratiolg + 0.5D0)
@@ -1511,8 +1691,11 @@ CONTAINS
       lte_buf(n_new) = lte_line_t(nbuff, REAL(congf,4), 534, &
         REAL(ABS(ielo_loc),4), REAL(gamrf,4), REAL(gamsf,4), REAL(gamwf,4), &
         10108.0)
-    END DO
+     END DO
+     i = i + nrec
+    END DO outer
 
+    DEALLOCATE(buf)
     CLOSE(11)
 
     IF (ALLOCATED(lte_arr)) DEALLOCATE(lte_arr)
