@@ -12,35 +12,25 @@ import numpy as np
 from astropy.io import fits
 from scipy.ndimage import gaussian_filter1d
 
-REPO = "/Users/cconroy/kurucz/atlas12"
-STAR = sys.argv[1] if len(sys.argv) > 1 else "GJ887"
-SPEC = {"GJ887": f"{REPO}/workdir/mann/GJ887/GJ887.spec",
-        "GJ105A": f"{REPO}/workdir/mann/GJ105A_int/full300k/GJ105A.spec",
-        "PM_I10113+4927":
-        f"{REPO}/workdir/mann/PM_I10113+4927/PM_I10113+4927.spec"}[STAR]
-OUTDIR = {"GJ105A": f"{REPO}/workdir/mann/GJ105A_int"}.get(
-    STAR, f"{REPO}/workdir/mann/{STAR}")
-MANN_DIR = os.path.expanduser("~/sps/SPECTRA/Mann")
-RSUN, PC, C_ANG = 6.957e10, 3.0856776e18, 2.99792458e18
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mann_lib as ml
+
+REPO = ml.REPO
+_S = ml.resolve(sys.argv[1] if len(sys.argv) > 1 else "GJ887")
+STAR = _S.name
+# reference model: full-range R=300k synthesis from the standard run dir
+# (override with a path as argv[2])
+SPEC = (sys.argv[2] if len(sys.argv) > 2
+        else os.path.join(ml.rundir_for(_S), STAR + ".spec"))
+OUTDIR = ml.rundir_for(_S)
+MANN_DIR = ml.MANN_DIR
+C_ANG = ml.C_ANG
 RSYN = 300000.0
 
-if STAR == "GJ105A":
-    # Calibrators2013 FITS: rows = wavelength [um], flux, error;
-    # error == 0 flags BT-SETTL model fill -> mask (dilution irrelevant:
-    # every fit has a free scale)
-    arr = fits.open(f"{MANN_DIR}/Calibrators2013/GJ105A.fits")[0].data
-    wobs, fobs, eobs = arr[0] * 1e4, arr[1], arr[2]
-    ok = (eobs > 0) & (fobs > 0)
-    WOBS, FOBS = wobs[ok], fobs[ok]
-else:
-    d = fits.open(f"{MANN_DIR}/M_params.fits")[1].data[0]
-    names = np.array([n.strip() for n in d["NAME"]])
-    i = int(np.where(names == STAR)[0][0])
-    dilute = (d["RADIUS"][i] * RSUN / (d["DISTANCE"][i] * PC)) ** 2
-    wobs_um, fobs, _ = np.loadtxt(f"{MANN_DIR}/{STAR}.ascii", unpack=True)
-    wobs = wobs_um * 1e4
-    ok = fobs > 0
-    WOBS, FOBS = wobs[ok], fobs[ok] / dilute
+# dilution irrelevant in principle (every fit has a free scale) but kept
+# so overlays sit on the data
+_wobs, _fobs, _ = ml.read_spectrum(_S)
+WOBS, FOBS = _wobs, _fobs / _S.dilute
 
 w, hnu, _ = np.loadtxt(SPEC, unpack=True)
 fmod = 4 * np.pi * hnu * C_ANG / w ** 2
@@ -49,6 +39,14 @@ R_TRIALS = np.unique(np.round(np.geomspace(150, 6000, 44)))
 SM = {R: gaussian_filter1d(fmod, RSYN / (R * 2.3548), mode="nearest")
       for R in R_TRIALS}
 
+# velocity nuisance per chunk: per-star rest-frame residual (+-20 km/s,
+# Mann's cross-correlation accuracy) + SNIFS wavelength-solution wobble.
+# Without it, registration errors bias the fitted width BROAD (the
+# 2026-08-09 air-vs-vac episode: the original 11 A SNIFS FWHM).
+C_KMS = 2.99792458e5
+V_NUIS = np.arange(-100.0, 101.0, 4.0)
+
+
 def chunk_fit(edges):
     out = []
     for lo, hi in zip(edges[:-1], edges[1:]):
@@ -56,17 +54,20 @@ def chunk_fit(edges):
         if m.sum() < 40:
             continue
         wd, fd = WOBS[m], FOBS[m]
-        chi = []
-        for R in R_TRIALS:
-            fm = np.interp(wd, w, SM[R])
-            s = np.sum(fd * fm) / np.sum(fm * fm)
-            chi.append(float(np.sum((fd - s * fm) ** 2)))
-        chi = np.array(chi)
-        j = int(np.argmin(chi))
-        csc = chi / chi[j] * len(wd)
+        chi = np.empty((len(R_TRIALS), len(V_NUIS)))
+        for i, R in enumerate(R_TRIALS):
+            for k, v in enumerate(V_NUIS):
+                fm = np.interp(wd, w * (1.0 + v / C_KMS), SM[R])
+                s = np.sum(fd * fm) / np.sum(fm * fm)
+                chi[i, k] = float(np.sum((fd - s * fm) ** 2))
+        chiR = chi.min(axis=1)                    # profile out velocity
+        j = int(np.argmin(chiR))
+        kbest = int(np.argmin(chi[j]))
+        csc = chiR / chiR[j] * len(wd)
         okr = np.flatnonzero(csc < csc[j] + 2 * np.sqrt(2 * len(wd)))
         out.append([float(np.sqrt(lo * hi)), float(R_TRIALS[j]),
-                    float(R_TRIALS[okr[0]]), float(R_TRIALS[okr[-1]])])
+                    float(R_TRIALS[okr[0]]), float(R_TRIALS[okr[-1]]),
+                    float(V_NUIS[kbest])])
     return out
 
 rows = chunk_fit(np.geomspace(4200, 24000, 30))
@@ -79,11 +80,12 @@ for lab, (lo, hi) in LINES.items():
     wd, fd = WOBS[m], FOBS[m]
     best = (None, np.inf)
     for R in R_TRIALS:
-        fm = np.interp(wd, w, SM[R])
-        s = np.sum(fd * fm) / np.sum(fm * fm)
-        rms = float(np.sqrt(np.mean((fd - s * fm) ** 2)))
-        if rms < best[1]:
-            best = (float(R), rms)
+        for v in V_NUIS:
+            fm = np.interp(wd, w * (1.0 + v / C_KMS), SM[R])
+            s = np.sum(fd * fm) / np.sum(fm * fm)
+            rms = float(np.sqrt(np.mean((fd - s * fm) ** 2)))
+            if rms < best[1]:
+                best = (float(R), rms)
     lrows.append([float(np.sqrt(lo * hi)), best[0], lab])
 
 json.dump({"star": STAR, "chunks": rows, "lines": lrows},

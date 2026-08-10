@@ -14,29 +14,26 @@ import numpy as np
 from astropy.io import fits
 from scipy.ndimage import gaussian_filter1d
 
-REPO = "/Users/cconroy/kurucz/atlas12"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mann_lib as ml
+
+REPO = ml.REPO
 import os as _os
-STAR = _os.environ.get("TMIN_STAR", "GJ887")
-FIT = f"{REPO}/workdir/mann/{STAR}/tmin_fit"
-MANN_DIR = os.path.expanduser("~/sps/SPECTRA/Mann")
-RSUN, PC, C_ANG = 6.957e10, 3.0856776e18, 2.99792458e18
+_S = ml.resolve(_os.environ.get("TMIN_STAR", "GJ887"))
+STAR = _S.name
+FIT = f"{ml.rundir_for(_S)}/tmin_fit"
+C_ANG = ml.C_ANG
 
-d = fits.open(f"{MANN_DIR}/M_params.fits")[1].data[0]
-names = np.array([n.strip() for n in d["NAME"]])
-i = int(np.where(names == STAR)[0][0])
-dilute = (d["RADIUS"][i] * RSUN / (d["DISTANCE"][i] * PC)) ** 2
-wobs_um, fobs, _ = np.loadtxt(f"{MANN_DIR}/{STAR}.ascii", unpack=True)
-wobs = wobs_um * 1e4
-ok = (fobs > 0) & (wobs > 4450) & (wobs < 7850)
-WOBS, FOBS = wobs[ok], fobs[ok] / dilute
+_wobs, _fobs, _ = ml.read_spectrum(_S)
+ok = (_wobs > 4450) & (_wobs < 7850)
+WOBS, FOBS = _wobs[ok], _fobs[ok] / _S.dilute
 
-def smooth_to_R(f, mR, oR):
-    return gaussian_filter1d(f, mR / (oR * 2.3548), mode="nearest")
+smooth_to_R = ml.smooth_to_R
 
 def model_on_obs(spec_path):
     w, hnu, _ = np.loadtxt(spec_path, unpack=True)
     f = 4 * np.pi * hnu * C_ANG / w ** 2
-    fs = smooth_to_R(f, 300000., 1000.)
+    fs = ml.smooth_mann(w, f, 300000., split=_S.obs_split)
     return np.interp(WOBS, w, fs, left=np.nan, right=np.nan)
 
 scores = json.load(open(f"{FIT}/scores.json"))

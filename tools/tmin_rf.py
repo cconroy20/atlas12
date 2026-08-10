@@ -25,12 +25,16 @@ import numpy as np
 from astropy.io import fits
 from scipy.ndimage import gaussian_filter1d
 
-REPO = "/Users/cconroy/kurucz/atlas12"
-STAR = os.environ.get("TMIN_STAR", "GJ887")
-BASE = f"{REPO}/workdir/mann/{STAR}/{STAR}.atm"
-RF = f"{REPO}/workdir/mann/{STAR}/tmin_rf"
-MANN_DIR = os.path.expanduser("~/sps/SPECTRA/Mann")
-RSUN, PC, C_ANG = 6.957e10, 3.0856776e18, 2.99792458e18
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mann_lib as ml
+
+REPO = ml.REPO
+_S = ml.resolve(os.environ.get("TMIN_STAR", "GJ887"))
+STAR = _S.name
+BASE = f"{ml.rundir_for(_S)}/{STAR}.atm"
+RF = f"{ml.rundir_for(_S)}/tmin_rf"
+C_ANG = ml.C_ANG
 
 DT = float(os.environ.get("TMIN_RF_DT", "50"))
 # bin edges in log10 tau5000, deep -> shallow; bin i = (EDGES[i+1], EDGES[i]]
@@ -47,33 +51,21 @@ TAGFMT = "+.2f" if _CUSTOM else "+.1f"
 LIN_BIN = 5  # (-2.0, -1.5], expected strong TiO response; rerun at DT/2
 WINDOWS = {"opt": (540.0, 770.0), "ca": (838.0, 872.0), "nir": (1500.0, 1800.0)}
 
-TIO_BANDS = [(5500, 5700), (5900, 6100), (7053, 7270), (7450, 7650)]
-CAH = {"cah2": (6814., 6846.), "cah3": (6960., 6990.), "tio5": (7126., 7135.)}
-CAH_DEN = (7042., 7046.)
-CA_CORES = {"ca8542": (8538., 8551.), "ca8662": (8658., 8671.)}
-CA_SIDE = (8600., 8640.)
+TIO_BANDS = ml.TIO_BANDS
+CAH, CAH_DEN = ml.CAH, ml.CAH_DEN
+CA_CORES, CA_SIDE = ml.CA_CORES, ml.CA_SIDE
 
 # ---------------- observed spectrum (surface) ----------------
-d = fits.open(f"{MANN_DIR}/M_params.fits")[1].data[0]
-names = np.array([n.strip() for n in d["NAME"]])
-i = int(np.where(names == STAR)[0][0])
-dilute = (d["RADIUS"][i] * RSUN / (d["DISTANCE"][i] * PC)) ** 2
-wobs_um, fobs, _ = np.loadtxt(f"{MANN_DIR}/{STAR}.ascii", unpack=True)
-wobs = wobs_um * 1e4
-ok = fobs > 0
-WOBS, FOBS = wobs[ok], fobs[ok] / dilute
+_wobs, _fobs, _ = ml.read_spectrum(_S)
+WOBS, FOBS = _wobs, _fobs / _S.dilute
 
-
-def smooth_to_R(f, mR, oR):
-    return gaussian_filter1d(f, mR / (oR * 2.3548), mode="nearest")
+smooth_to_R = ml.smooth_to_R
 
 
 def model_on_obs(spec_path):
     w, hnu, _ = np.loadtxt(spec_path, unpack=True)
     f = 4 * np.pi * hnu * C_ANG / w ** 2
-    b = smooth_to_R(f, 300000., 1000.)
-    r = smooth_to_R(f, 300000., 2000.)
-    fs = np.where(w < 9500., b, r)
+    fs = ml.smooth_mann(w, f, 300000., split=_S.obs_split)
     m = (WOBS > w[0] + 30) & (WOBS < w[-1] - 30)
     return m, np.interp(WOBS[m], w, fs)
 

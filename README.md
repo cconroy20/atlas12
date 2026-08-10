@@ -319,6 +319,13 @@ not in the repository.)
 | `comp_pf.py` (+ `bc16_loader.py`, `exomol_loader.py`, `matcher.py`, `atomic_saha.py`, `polyatomic_d0.py`, `polyatomic_assembly.py`, `kurucz_molec.py`) | Regenerate the per-species fit atlas `comp_pf.pdf` — filed fits against BC16 / ExoMol / JANAF references |
 | `dustchem_loader.py`, `ggchem_loader.py`, `janaf_loader.py` | Parsers/evaluators for the GGchem DustChem, dispol, and raw NIST-JANAF data in their native conventions |
 | `build_molecules_physical_dat.py` | Faithful reproduction of the April 2026 refit (regenerates the pre-correction molecular-ion rows by design — historical record, not production) |
+| `mann_lib.py` | Shared library for the Mann external-validation family: star resolution by GJ name, both Mann spectral libraries (registration-corrected to vacuum/rest), measured LSF, band windows, curated K-dwarf params, the point-comparison star ladder, and interpolated PHOENIX NewEra LowRes access |
+| `validate_mann.py` | Run the full ATLAS12+SYNTHE chain for one Mann star and compare absolutely (no renormalization); writes metrics JSON + the standing three-panel figure |
+| `mann_pointcomp.py` | Batch driver for the ~10-star point-comparison ladder; writes `workdir/mann/summary.md` |
+| `mann_compare_plot.py` | The house three-panel comparison figure (data / ATLAS12+SYNTHE / PHOENIX NewEra), importable as `plot_star()` |
+| `mann_lsf_fit.py` | Per-star effective-resolution measurement of the Mann spectra (chunk fits with velocity nuisance) |
+| `uves_compare.py` | High-resolution line-profile comparison of a ladder star's R=300k synthesis against ESO UVES spectra |
+| `tmin_perturb.py`, `tmin_fit.py`, `tmin_rf.py` (+ plot drivers) | T(τ) perturbation / T-min fitting / response-function machinery on converged models |
 
 Discipline: after **any** edit to `molecules.dat` or `condensates.dat`,
 rerun the corresponding `--validate` and regenerate the fit atlas.

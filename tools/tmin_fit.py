@@ -21,16 +21,17 @@ import numpy as np
 from astropy.io import fits
 from scipy.ndimage import gaussian_filter1d
 
-sys.path.insert(0, "/Users/cconroy/kurucz/atlas12/tools")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tmin_perturb import perturb
+import mann_lib as ml
 
 import os as _os
-REPO = "/Users/cconroy/kurucz/atlas12"
-STAR = _os.environ.get("TMIN_STAR", "GJ887")
-BASE = f"{REPO}/workdir/mann/{STAR}/{STAR}.atm"
-FIT = f"{REPO}/workdir/mann/{STAR}/tmin_fit"
-MANN_DIR = os.path.expanduser("~/sps/SPECTRA/Mann")
-RSUN, PC, C_ANG = 6.957e10, 3.0856776e18, 2.99792458e18
+REPO = ml.REPO
+_S = ml.resolve(_os.environ.get("TMIN_STAR", "GJ887"))
+STAR = _S.name
+BASE = f"{ml.rundir_for(_S)}/{STAR}.atm"
+FIT = f"{ml.rundir_for(_S)}/tmin_fit"
+C_ANG = ml.C_ANG
 
 TM_GRID = [float(x) for x in _os.environ.get("TMIN_TM", "-1.3,-1.5,-1.7,-1.9,-2.1").split(",")]
 S_GRID = [float(x) for x in _os.environ.get("TMIN_S", "50,100,150,200,300").split(",")]
@@ -43,24 +44,15 @@ M_GRID = [0.3, 0.15, 0.0, -0.15, -0.3]
 SM_GRID = [100.0, 200.0, 300.0, 450.0, 600.0]
 
 # ---------------- observed spectrum (surface) ----------------
-d = fits.open(f"{MANN_DIR}/M_params.fits")[1].data[0]
-names = np.array([n.strip() for n in d["NAME"]])
-i = int(np.where(names == STAR)[0][0])
-dilute = (d["RADIUS"][i] * RSUN / (d["DISTANCE"][i] * PC)) ** 2
-wobs_um, fobs, _ = np.loadtxt(f"{MANN_DIR}/{STAR}.ascii", unpack=True)
-wobs = wobs_um * 1e4
-ok = fobs > 0
-WOBS, FOBS = wobs[ok], fobs[ok] / dilute
+_wobs, _fobs, _ = ml.read_spectrum(_S)
+WOBS, FOBS = _wobs, _fobs / _S.dilute
 
-def smooth_to_R(f, mR, oR):
-    return gaussian_filter1d(f, mR / (oR * 2.3548), mode="nearest")
+smooth_to_R = ml.smooth_to_R
 
 def model_on_obs(spec_path):
     w, hnu, _ = np.loadtxt(spec_path, unpack=True)
     f = 4 * np.pi * hnu * C_ANG / w ** 2
-    b = smooth_to_R(f, 300000., 1000.)
-    r = smooth_to_R(f, 300000., 2000.)
-    fs = np.where(w < 9500., b, r)
+    fs = ml.smooth_mann(w, f, 300000., split=_S.obs_split)
     m = (WOBS > w[0] + 30) & (WOBS < w[-1] - 30)
     return m, np.interp(WOBS[m], w, fs)
 
@@ -95,7 +87,7 @@ def index_obs(w, f, num, den=(7042., 7046.)):
     md = (w > den[0]) & (w < den[1])
     return float(np.mean(f[mn]) / np.mean(f[md]))
 
-TIO_BANDS = [(5500, 5700), (5900, 6100), (7053, 7270), (7450, 7650)]
+TIO_BANDS = ml.TIO_BANDS
 
 def score(tag):
     mo, fo_m = model_on_obs(f"{FIT}/{tag}_opt/{tag}.spec")
