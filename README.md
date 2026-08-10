@@ -264,7 +264,7 @@ The full contents of the data directory, organized by purpose:
 |------|---------|----------|
 | `crossch.dat`        | `CHOP`       | CH bound-free + bound-bound cross-section table |
 | `crossoh.dat`        | `OHOP`       | OH bound-free + bound-bound cross-section table |
-| `h2collop.dat`       | `H2COLLOP`   | H₂ collision-induced absorption (Borysow et al. 1997) |
+| `h2collop.dat`       | `H2COLLOP`   | Collision-induced absorption, H₂–H₂/H₂–He/H₂–H/H–He (Abel et al. 2011, 2012; Gustafsson & Frommhold 2001, 2003) |
 | `hotop.dat`          | `HOTOP`, `MBF_HIGH_ION` | Hot-star opacities (high-ionization species) |
 | `mbf/` (33 files)    | `MBF_TOPBASE` | TOPbase resonance-averaged photoionization grids, 30 species (Allende Prieto et al. 2003) |
 | `op_fe1.dat`, `op_fe2.dat` | `FELO_OPACITY` | Fe I / Fe II R-matrix bound-free cross sections (Bautista 1997; Nahar & Pradhan 1994) |
@@ -294,13 +294,12 @@ The full contents of the data directory, organized by purpose:
 | `lines.list`             | `run_mklinelist` | Plain-text manifest pointing at the line-list files below |
 | `gfallvac08oct17.dat` †  | `read_gfall`     | Kurucz atomic line list (vacuum wavelengths, Oct 2017) |
 | `gfpred29dec2014.bin` †  | `read_predict`, SELECTLINES | Kurucz predicted atomic lines (Dec 2014) |
-| `h2ofastfix.bin` †       | SELECTLINES      | H₂O line list (Partridge & Schwenke) |
-| `schwenke.bin` †         | SELECTLINES      | Schwenke diatomic/metal-hydride line list |
 | `hilines.bin` †          | SELECTLINES      | Hydrogen/helium line table |
 | `lowobsat12.bin` †       | SELECTLINES      | Low-excitation observed atomic lines |
 | `nltelinobsat12.bin` †   | ATLAS12 / XLINOP | NLTE line data |
 | `mol.tar.gz` †           | —                | Archive of molecular sub-lists referenced from `lines.list`; unpack in place |
 | `h2opokazatel.bin` ‡     | ATLAS12 / SYNTHE | H₂O pseudo-line list (51.3M records) built from ExoMol POKAZATEL; replaces `h2ofastfix.bin` (P&S 1997).  Rebuild with `tools/build_h2o_pokazatel.py --raw --write-raw` |
+| `mol/tiototo2024.bin` ‡  | ATLAS12 / SYNTHE | TiO line list (131.6M records, ⁴⁶Ti–⁵⁰Ti) from ExoMol Toto; replaces `schwenke.bin` (Schwenke 1997).  Both codes resolve it through `lines.list`, so they cannot diverge |
 
 † Not tracked in the repository; download from the Google Drive folder above.
 ‡ Not tracked; regenerated from ExoMol by the named tool.
@@ -366,7 +365,11 @@ is in [CHANGELOG.md](CHANGELOG.md).
 - Bell, K. L., & Berrington, K. A. 1987, J. Phys. B, 20, 801 (H⁻ free-free)
 - John, T. L. 1975, MNRAS, 172, 305 (H₂⁻ free-free; table as filed for MARCS)
 - Bergemann, M., Lodders, K., & Palme, H. 2025, Zenodo record 14988840 (solar abundance scale, `solar=berg25`)
-- Borysow, A., Jørgensen, U. G., & Zheng, C. 1997, A&A, 324, 185 (H₂ collision-induced absorption)
+- Abel, M., Frommhold, L., Li, X., & Hunt, K. L. C. 2011, J. Phys. Chem. A, 115, 6805 (H₂–H₂ collision-induced absorption)
+- Abel, M., Frommhold, L., Li, X., & Hunt, K. L. C. 2012, J. Phys. Chem. A, 116, 3068 (H₂–He collision-induced absorption)
+- Borysow, A., Jørgensen, U. G., & Fu, Y. 2001, JQSRT, 68, 235 (H₂–H₂ CIA above the Abel et al. temperature range)
+- Gustafsson, M., & Frommhold, L. 2001, ApJ, 546, 1168 (H–He collision-induced absorption)
+- Gustafsson, M., & Frommhold, L. 2003, A&A, 400, 1161 (H₂–H collision-induced absorption)
 - Humlíček, J. 1982, JQSRT, 27, 437 (Voigt function asymptotic)
 - Karzas, W. J., & Latter, R. 1961, ApJS, 6, 167 (hydrogenic bound-free Gaunt factors)
 - Koester, D. 1980, A&AS, 39, 401 (convective flux at the grid bottom)

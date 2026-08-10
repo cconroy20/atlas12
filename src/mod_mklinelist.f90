@@ -90,6 +90,7 @@ MODULE mod_mklinelist
 
   PUBLIC :: run_mklinelist
   PUBLIC :: read_diatomics_for_atlas
+  PUBLIC :: get_mol_bin_path
 
   ! --- Module-level ionisation potential table (replaces COMMON /potion/)
   REAL(8), SAVE :: potion(999)
@@ -1707,6 +1708,53 @@ CONTAINS
 
 
   ! ============================================================================
+  !  GET_MOL_BIN_PATH — return the packed-binary (.bin) molecular line list
+  !                     named in lines.list.
+  !
+  !  ATLAS12's SELECTLINES reads TiO on its own path (case 5) rather than
+  !  through read_diatomics_for_atlas, because TiO is not part of ATLAS's
+  !  diatomic stack and carries its own NELION and isotope handling.  It
+  !  still has to read the SAME list SYNTHE does, or structures and spectra
+  !  are computed with different TiO — which is exactly what happened when
+  !  SYNTHE moved to ExoMol Toto and ATLAS12 stayed on Schwenke (1998).
+  !  Routing that path through the manifest keeps lines.list the single
+  !  source of truth for both codes.
+  !
+  !  `found` is false if the manifest names no .bin molecule; the caller
+  !  decides whether that is fatal.
+  ! ============================================================================
+  SUBROUTINE get_mol_bin_path(lines_list_path, datadir, path, found)
+    CHARACTER(LEN=*),   INTENT(IN)  :: lines_list_path
+    CHARACTER(LEN=*),   INTENT(IN)  :: datadir
+    CHARACTER(LEN=512), INTENT(OUT) :: path
+    LOGICAL,            INTENT(OUT) :: found
+
+    CHARACTER(LEN=512) :: gfall_file, predict_file, h2o_file
+    CHARACTER(LEN=512) :: mol_files(256), polymol_files(16)
+    INTEGER            :: nmol, npolymol, k
+
+    path  = ''
+    found = .FALSE.
+
+    CALL parse_lines_list(lines_list_path, datadir, gfall_file, predict_file, &
+                          h2o_file, mol_files, nmol, polymol_files, npolymol)
+
+    DO k = 1, nmol
+      IF (ends_with_bin(mol_files(k))) THEN
+        IF (found) THEN
+          WRITE(6,'(a,a)') ' WARNING: lines.list names more than one .bin ' // &
+            'molecule; ATLAS12 is using ', TRIM(path)
+          RETURN
+        END IF
+        path  = mol_files(k)
+        found = .TRUE.
+      END IF
+    END DO
+
+  END SUBROUTINE get_mol_bin_path
+
+
+  ! ============================================================================
   !  READ_DIATOMICS_FOR_ATLAS — read all per-molecule ASCII line lists in
   !                              lines.list and emit a flat array of physical
   !                              line records suitable for ATLAS12 packing.
@@ -1714,7 +1762,7 @@ CONTAINS
   !  Replaces the diatomicspacksrt.bin path in ATLAS12 SELECTLINES (case 4).
   !  Iterates only over rows whose first column is "mol" and whose path does
   !  NOT end in ".bin" (the sole .bin entry today is the TiO list, which
-  !  ATLAS12 reads via its own schwenke.bin path in case 5).
+  !  ATLAS12 reads on its own path in case 5, via get_mol_bin_path).
   !
   !  For each in-window line, applies the SYNTHE-side isotope abundance
   !  correction (x1+x2+fudge) directly to gflog_dex.  Records with
@@ -1755,7 +1803,7 @@ CONTAINS
 
     DO k = 1, nmol
       ! Skip .bin entries — only TiO uses .bin format and that is handled
-      ! by ATLAS12's separate schwenke.bin path.
+      ! by ATLAS12's separate case-5 path (see get_mol_bin_path).
       plen = LEN_TRIM(mol_files(k))
       IF (plen .GE. 4) THEN
         IF (mol_files(k)(plen-3:plen) .EQ. '.bin') CYCLE

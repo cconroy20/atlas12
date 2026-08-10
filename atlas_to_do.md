@@ -7,21 +7,24 @@ Open items only; completed work is recorded in
 
 ## 1. H2 Collision-Induced Absorption
 
-**Status: open.**
+**Status: DONE** (see CHANGELOG, "Numerical and physical").  H2COLLOP now
+carries Abel et al. (2011/2012) H2-H2 and H2-He from HITRAN's recommended
+set, plus the H2-H and H-He pairs that were never in the Kurucz lineage,
+on a 25 cm^-1 / ~100 K grid, with the stimulated-emission double count
+removed.  Rebuild the table with tools/build_cia_table.py.
 
-**Current implementation (H2COLLOP):** Tabulated log(alpha) on a
-7-temperature x 81-wavenumber grid from Borysow, Jorgensen & Zheng (1997),
-interpolated bilinearly.
+Two residual limitations, neither blocking:
 
-**Modern alternative:** Abel et al. (2011, J. Phys. Chem. A 115, 6805;
-2012, J. Chem. Phys. 136, 044319) provide updated H2-H2 and H2-He CIA
-coefficients for 200-9900 K.  The HITRAN CIA database (Richard et al. 2012)
-compiles these on a fine grid.  Differences from Borysow et al. can reach
-10-30% in specific spectral windows.
-
-**Impact:** Critical for cool stars (Teff < 5000 K), brown dwarfs, and
-giant planets, where H2 CIA dominates the IR pseudo-continuum.  For
-solar-type stars the impact is small.
+- Abel's H2-H2 calculation stops at 3000 K and 10^4 cm^-1.  Beyond it the
+  table continues Borysow, Jorgensen & Fu (2001) rescaled by the measured
+  Abel/BJF01 trend, frozen at 5000 K.  No public calculation covers that
+  region; if one appears, drop the continuation.  Measured sensitivity at
+  2700 K: 0.11% on the K continuum between the two defensible choices,
+  0.71% for a deliberate factor of two.
+- H2-H is tabulated only over 1000-2500 K and clamps outside, which
+  underestimates it above 2500 K where n(H2)*n(H) actually peaks.  The
+  pair is worth 0.17% of the K continuum at 2700 K, so this is small, but
+  it would grow toward 3000-4000 K.
 
 ---
 

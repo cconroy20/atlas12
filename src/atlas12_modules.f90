@@ -979,7 +979,8 @@ MODULE mod_atlas_data
   USE mod_parameters
   USE mod_constants
   USE mod_partition_functions
-  USE mod_mklinelist, only: read_diatomics_for_atlas, diatomic_record_t
+  USE mod_mklinelist, only: read_diatomics_for_atlas, diatomic_record_t, &
+                            get_mol_bin_path
   IMPLICIT NONE
   SAVE
 
@@ -1292,6 +1293,13 @@ MODULE mod_atlas_data
 
   ! --- Flag set to use Barklem & Collet (2016) atomic partition functions ---
   LOGICAL :: USE_BC_PARTITION_FUNCTIONS = .TRUE.
+
+  ! --- Collision-induced absorption: which colliding pairs to include ---
+  ! Order is H2-H2, H2-He, H2-H, H-He, matching h2collop.dat.  The Kurucz
+  ! lineage carried only the first two; the H2-H and H-He pairs are new
+  ! here.  Developer options, set here (see H2COLLOP).
+  INTEGER, PARAMETER :: NCIAPAIR = 4
+  LOGICAL :: USE_CIA_PAIR(NCIAPAIR) = .TRUE.
 
   ! --- Flag set to use Hummer & Mihalas (1988) occupation probability
   !     weighting in the H I partition function ---
@@ -11096,6 +11104,7 @@ SUBROUTINE KAPP
   CALL H2PLOP
   CALL HMINOP
   CALL H2MINOP
+  CALL H2COLLOP(AH2COLL)
   CALL HRAYOP
   CALL HE1OP
   CALL HE2OP
@@ -11130,19 +11139,22 @@ SUBROUTINE KAPP
   ! the ATLAS12 driver, and the atlas12.for treatment is the correct
   ! reference.
   !
-  ! Note on the absorption sum: the metal, molecular, and CIA continuum
+  ! Note on the absorption sum: the metal and molecular continuum
   ! contributions are consolidated into ACONT_METAL(J) by the routine
   ! CONT_METAL_OPACITY_LEGACY.  This bundle replaces the sum that was
   ! previously assembled inline here (AC1 + AMG1 + AAL1 + ASI1 + AFE1
-  ! + ALUKE + AHOT + AH2COLL + CH/OH molecular), and exists so that a
+  ! + ALUKE + AHOT + CH/OH molecular), and exists so that a
   ! TOPbase-based metal continuum variant can be swapped in as a
   ! drop-in replacement (CONT_METAL_OPACITY_TOPBASE, phase 3 of the
   ! F90 modernization).  The individual per-species arrays (AC1, AMG1,
-  ! etc.) remain populated and available for diagnostics.
+  ! etc.) remain populated and available for diagnostics.  Collision-
+  ! induced absorption (AH2COLL) is deliberately NOT in that bundle:
+  ! it is not a metal opacity, and being carried inside it is exactly
+  ! how it went missing from every TOPbase model for years.
   DO J = 1, NRHOX
     ! Sources weighted by BNU in the source function
     A = AH2P(J) + AHE1(J) + AHE2(J) + AHEMIN(J) + AH2MIN(J) &
-      + ACONT_METAL(J)
+      + AH2COLL(J) + ACONT_METAL(J)
 
     ! Total continuum absorption
     ACONT(J) = A + AHYD(J) + AHMIN(J)
@@ -13684,7 +13696,9 @@ SUBROUTINE CONT_METAL_OPACITY_LEGACY
 
   !======================================================================
   ! (1) Cool block: below Lyman limit only.
-  !     Neutrals C I, Mg I, Al I, Si I, Fe I + H2-H2 CIA + CH/OH molec.
+  !     Neutrals C I, Mg I, Al I, Si I, Fe I + CH/OH molecular.
+  !     (CIA was called from here historically; it is a non-metal
+  !     absorber and is now driven from KAPP.)
   !======================================================================
   IF (FREQ .LE. FREQ_RYDH) THEN
     CALL C1OP
@@ -13692,11 +13706,9 @@ SUBROUTINE CONT_METAL_OPACITY_LEGACY
     CALL AL1OP
     CALL SI1OP
     CALL FE1OP
-    CALL H2COLLOP(AH2COLL)        ! fills module-scope AH2COLL(kw)
     DO J = 1, NRHOX
       ACONT_METAL(J) = ACONT_METAL(J)                                    &
         + AC1(J) + AMG1(J) + AAL1(J) + ASI1(J) + AFE1(J)                 &
-        + AH2COLL(J)                                                     &
         + (CHOP(J) * XNFP(J, 846) + OHOP(J) * XNFP(J, 848))              &
           * STIM(J) / RHO(J)
     END DO
@@ -13862,16 +13874,17 @@ SUBROUTINE CONT_METAL_OPACITY_TOPBASE
   END IF
 
   !--- Non-metal continua that lived in the LEGACY cool block ------------
-  ! H2-H2 / H2-He collision-induced absorption and the CH/OH
-  ! photodissociation continua are independent of the metal bf/ff source
-  ! choice but were consolidated into CONT_METAL_OPACITY_LEGACY, so the
-  ! TOPbase drop-in silently ran without them (found 2026-08-10 via the
-  ! PHOENIX 2700 K same-structure test: our H/K windows sat 11-13%
-  ! bright with a continuum-shaped, depth-percentile-flat signature).
+  ! The CH/OH photodissociation continua are independent of the metal
+  ! bf/ff source choice but were consolidated into
+  ! CONT_METAL_OPACITY_LEGACY, so the TOPbase drop-in silently ran
+  ! without them (found 2026-08-10 via the PHOENIX 2700 K
+  ! same-structure test: our H/K windows sat 11-13% bright with a
+  ! continuum-shaped, depth-percentile-flat signature).  CIA used to sit
+  ! here too and is now called from KAPP, where a non-metal absorber
+  ! belongs and where no future metal-continuum swap can drop it.
   IF (FREQ .LE. FREQ_RYDH) THEN
-    CALL H2COLLOP(AH2COLL)        ! fills module-scope AH2COLL(kw)
     DO J = 1, NRHOX
-      ACONT_METAL(J) = ACONT_METAL(J) + AH2COLL(J)                       &
+      ACONT_METAL(J) = ACONT_METAL(J)                                    &
         + (CHOP(J) * XNFP(J, 846) + OHOP(J) * XNFP(J, 848))              &
           * STIM(J) / RHO(J)
     END DO
@@ -16010,29 +16023,47 @@ END FUNCTION OHOP
 !=========================================================================
 ! SUBROUTINE H2COLLOP
 !
-! H2 collision-induced dipole opacity (H2-H2 and H2-He).
+! Collision-induced absorption (CIA) by colliding pairs involving H2 and H.
 !
-! Computes the collision-induced absorption (CIA) from molecular hydrogen
-! colliding with H2 and He, using tabulated absorption coefficients from
-! Borysow, Jorgensen & Zheng (1997, A&A 324, 185).
+! Four pairs are read from h2collop.dat and interpolated bilinearly in
+! (wavenumber, temperature) on log10 of the binary absorption coefficient:
 !
-! Two tables are read from h2collop.dat on first call and interpolated
-! bilinearly in (wavenumber, temperature):
-!   H2HE(7,81): log10 of H2-He CIA coefficient
-!   H2H2(7,81): log10 of H2-H2 CIA coefficient
-!   Temperature axis:  T = 1000, 2000, ..., 7000 K  (7 points)
-!   Wavenumber axis:   nu = 0, 250, ..., 20000 cm-1  (81 points)
+!   H2-H2   Abel, Frommhold, Li & Hunt 2011, J.Phys.Chem.A 115, 6805
+!   H2-He   Abel, Frommhold, Li & Hunt 2012, J.Phys.Chem.A 116, 3068
+!   H2-H    Gustafsson & Frommhold 2003, A&A 400, 1161
+!   H-He    Gustafsson & Frommhold 2001, ApJ 546, 1168
 !
-! The H2 equilibrium number density XNH2 is computed from EQUILH2(T)
-! and cached when the temperature structure (ITEMP) changes.
+! The opacity of each pair is
 !
-! Final opacity:
-!   AH2COLL(J) = (sigma_H2He*n_He + sigma_H2H2*n_H2) * n_H2 / rho * stim
+!   kappa_pair [cm^2/g] = 10**table(nu,T) * n_1 * n_2 / rho
 !
-! NOTE (bug fix): The original Kurucz code had swapped weights in the
-! temperature interpolation: f = f_low*DELT + f_high*(1-DELT) instead
-! of the standard f = f_low*(1-DELT) + f_high*DELT.  This gave more
-! weight to the farther grid point.  CORRECTED in this version.
+! and AH2COLL is their sum over the pairs enabled in USE_CIA_PAIR.
+!
+! STIMULATED EMISSION IS ALREADY CONTAINED IN THESE COEFFICIENTS and is
+! deliberately not applied here.  This differs from the Kurucz lineage,
+! which multiplied the CIA sum by STIM.  Two independent checks settle
+! the convention: Turbospectrum's detabs.f states it outright ("stim
+! deja inclu dans CIA", 16/01-1996, on Borysow's own advice) and divides
+! every CIA term by its global (1 - exp(-h nu / kT)) factor to cancel
+! it; and the tables' own low-frequency limit goes as nu^2, the
+! signature of a coefficient that already carries that factor -- without
+! it the limit would be nu^1.  Applying STIM here as well suppressed CIA
+! by ~4-20% through the H and K windows at 2000-4000 K and by more than
+! a factor of two in the rototranslational band.
+!
+! Number densities are cached whenever the temperature structure (ITEMP)
+! changes.  n(H2) is the module-scope XNH2, shared with H2MINOP so the
+! two absorbers cannot drift apart.
+!
+! Data outside a pair's tabulated domain: below the first wavenumber the
+! exact nu^2 low-frequency limit is used; above the last wavenumber the
+! coefficient is zero (all four tables reach 20000 cm-1, i.e. 0.5 um);
+! in temperature the tables clamp at both ends.  Clamping is safe at the
+! hot end because n(H2) has collapsed there, but note that the H2-H
+! table stops at 2500 K while n(H2)*n(H) peaks nearer 3000-4500 K, so
+! that pair is underestimated in the hottest layers where it appears
+! at all -- its own temperature dependence is a factor of a few across
+! the tabulated range.
 !=========================================================================
 
 SUBROUTINE H2COLLOP(AH2COLL)
@@ -16041,99 +16072,152 @@ SUBROUTINE H2COLLOP(AH2COLL)
 
   REAL(8), INTENT(OUT) :: AH2COLL(kw)
 
-  ! --- CIA tables: log10 of absorption coefficient ---
-  ! Read from h2collop.dat on first call
-  ! Borysow, Jorgensen & Zheng (1997, A&A 324, 185)
-  REAL(8), SAVE :: H2HE(7,81)
-  REAL(8), SAVE :: H2H2(7,81)
+  ! --- Tables, read from h2collop.dat on first call ---
+  ! CIATAB(nu, T, pair) holds log10 of the coefficient in cm^5 on a
+  ! shared uniform wavenumber grid; each pair carries its own
+  ! temperature list, of length NCIAT(pair).
+  REAL(8), ALLOCATABLE, SAVE :: CIATAB(:,:,:)
+  REAL(8), ALLOCATABLE, SAVE :: CIATEMP(:,:)
+  INTEGER, SAVE :: NCIAT(NCIAPAIR) = 0
+  INTEGER, SAVE :: NCIANU = 0
+  REAL(8), SAVE :: CIANU0 = 0.0D0, CIADNU = 0.0D0, CIANUMAX = 0.0D0
 
-  ! --- Persistent state ---
+  ! --- Per-depth state, refreshed when the T structure changes ---
+  ! Density product of the colliding pair, and the bracketing
+  ! temperature index and weight in that pair's table.
+  REAL(8), SAVE :: CIADEN(kw, NCIAPAIR)
+  INTEGER, SAVE :: CIAIT(kw, NCIAPAIR)
+  REAL(8), SAVE :: CIAWT(kw, NCIAPAIR)
+  REAL(8), SAVE :: XNHI(kw)
+
   INTEGER, SAVE :: ITEMP1 = 0
   LOGICAL, SAVE :: INITIALIZED = .FALSE.
 
   ! --- Local variables ---
-  REAL(8)  :: H2HENU(7), H2H2NU(7)
-  REAL(8)  :: DELNU, DELT, XH2H2, XH2HE
-  INTEGER :: J, IT, NU, I
+  ! CNU holds one pair's table at the current wavenumber, one entry per
+  ! tabulated temperature.  It is allocated once, not per call: KAPP
+  ! reaches this routine at every frequency.
+  REAL(8), ALLOCATABLE, SAVE :: CNU(:)
+  REAL(8) :: DELNU, WT, XLOG, DLOW, TCLAMP
+  INTEGER :: I, J, IP, IT, INU, NTMAX
   CHARACTER(256) :: LINE
-
-  ! --- External functions ---
+  CHARACTER(8) :: PAIRNAME
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING H2COLLOP'
 
   !---------------------------------------------------------------------
-  ! Read CIA tables from file on first call
+  ! Read the CIA tables on first call
   !---------------------------------------------------------------------
   IF (.NOT. INITIALIZED) THEN
     OPEN(UNIT=89, FILE=trim(DATADIR)//'h2collop.dat', STATUS='OLD', ACTION='READ')
-    ! Skip comment lines starting with #
+    ! Skip the comment header
     DO
       READ(89, '(A)') LINE
-      IF (LINE(1:1) .NE. '#') THEN
-        BACKSPACE(89)
-        EXIT
+      IF (LINE(1:1) .NE. '#') EXIT
+    END DO
+    READ(LINE, *) I, NTMAX
+    IF (I .NE. NCIAPAIR) THEN
+      WRITE(6,'(A,I0,A,I0)') ' H2COLLOP: h2collop.dat holds ', I, &
+        ' pairs, expected ', NCIAPAIR
+      STOP
+    END IF
+    READ(89, *) NCIANU, CIANU0, CIADNU
+    CIANUMAX = CIANU0 + CIADNU * dble(NCIANU - 1)
+
+    ALLOCATE(CIATAB(NCIANU, NTMAX, NCIAPAIR))
+    ALLOCATE(CIATEMP(NTMAX, NCIAPAIR))
+    ALLOCATE(CNU(NTMAX))
+    CIATAB = -99.0D0
+    CIATEMP = 0.0D0
+
+    DO IP = 1, NCIAPAIR
+      READ(89, '(A)') LINE
+      PAIRNAME = LINE(1:index(LINE,' ')-1)
+      READ(LINE(index(LINE,' ')+1:), *) NCIAT(IP)
+      IF (NCIAT(IP) .LT. 2 .OR. NCIAT(IP) .GT. NTMAX) THEN
+        WRITE(6,'(A,A,A,I0)') ' H2COLLOP: pair ', trim(PAIRNAME), &
+          ' has an unusable temperature count ', NCIAT(IP)
+        STOP
       END IF
-    END DO
-    ! Read H2HE table (81 lines of 7 values)
-    DO I = 1, 81
-      READ(89, *) H2HE(:, I)
-    END DO
-    ! Read H2H2 table (81 lines of 7 values)
-    DO I = 1, 81
-      READ(89, *) H2H2(:, I)
+      READ(89, *) CIATEMP(1:NCIAT(IP), IP)
+      DO IT = 1, NCIAT(IP)
+        READ(89, *) CIATAB(1:NCIANU, IT, IP)
+      END DO
+      IF (IDEBUG .EQ. 1) WRITE(6,'(A,A,I4,A)') ' H2COLLOP: ', &
+        trim(PAIRNAME), NCIAT(IP), ' temperatures'
     END DO
     CLOSE(89)
     INITIALIZED = .TRUE.
   END IF
 
   !---------------------------------------------------------------------
-  ! Recompute H2 equilibrium number densities when T structure changes
+  ! Refresh number densities and temperature indices when T changes
   !---------------------------------------------------------------------
   IF (ITEMP .NE. ITEMP1) THEN
     ITEMP1 = ITEMP
     DO J = 1, NRHOX
+      ! Neutral atomic hydrogen, and the H2 built from it.  Both are the
+      ! expressions H2MINOP uses, deliberately.
+      XNHI(J) = XNFP(J,1) * 2.0D0 * BHYD(J,1)
       XNH2(J) = 0.0D0
-      IF (T(J) .LE. 20000.0D0) THEN
-        XNH2(J) = (XNFP(J,1) * 2.0D0 * BHYD(J,1))**2 * EQUILH2(T(J))
-      END IF
+      IF (T(J) .LE. 20000.0D0) XNH2(J) = XNHI(J)**2 * EQUILH2(T(J))
+
+      CIADEN(J, 1) = XNH2(J) * XNH2(J)         ! H2-H2
+      CIADEN(J, 2) = XNH2(J) * XNF(J,3)        ! H2-He  (He I)
+      CIADEN(J, 3) = XNH2(J) * XNHI(J)         ! H2-H
+      CIADEN(J, 4) = XNHI(J) * XNF(J,3)        ! H-He
+
+      DO IP = 1, NCIAPAIR
+        TCLAMP = max(CIATEMP(1, IP), min(CIATEMP(NCIAT(IP), IP), T(J)))
+        IT = 1
+        DO I = 1, NCIAT(IP) - 1
+          IF (TCLAMP .GE. CIATEMP(I, IP)) IT = I
+        END DO
+        CIAIT(J, IP) = IT
+        CIAWT(J, IP) = (TCLAMP - CIATEMP(IT, IP)) &
+                     / (CIATEMP(IT+1, IP) - CIATEMP(IT, IP))
+      END DO
     END DO
   END IF
 
+  AH2COLL = 0.0D0
+
   !---------------------------------------------------------------------
-  ! Return zero for wavenumber > 20000 cm-1 (above table range)
+  ! Locate this wavenumber in the shared grid.  Below the first point the
+  ! nu^2 low-frequency limit is applied as an offset in the log; above
+  ! the last point the tables are zero.
   !---------------------------------------------------------------------
-  IF (WAVENO .GT. 20000.0D0) THEN
-    AH2COLL = 0.0D0
-    RETURN
+  IF (WAVENO .GT. CIANUMAX) RETURN
+
+  DLOW = 0.0D0
+  IF (WAVENO .LE. CIANU0) THEN
+    IF (WAVENO .LE. 0.0D0) RETURN
+    INU = 1
+    DELNU = 0.0D0
+    DLOW = 2.0D0 * log10(WAVENO / CIANU0)
+  ELSE
+    INU = int((WAVENO - CIANU0) / CIADNU) + 1
+    INU = min(INU, NCIANU - 1)
+    DELNU = (WAVENO - CIANU0 - CIADNU * dble(INU - 1)) / CIADNU
   END IF
 
   !---------------------------------------------------------------------
-  ! Interpolate tables in wavenumber
+  ! Interpolate in wavenumber once per pair, then in temperature at each
+  ! depth, and accumulate.
   !---------------------------------------------------------------------
-  NU = int(WAVENO / 250.0D0) + 1
-  NU = min(NU, 80)
-  DELNU = (WAVENO - 250.0D0 * dble(NU - 1)) / 250.0D0
-
-  DO IT = 1, 7
-    H2H2NU(IT) = H2H2(IT, NU) * (1.0D0 - DELNU) + H2H2(IT, NU+1) * DELNU
-    H2HENU(IT) = H2HE(IT, NU) * (1.0D0 - DELNU) + H2HE(IT, NU+1) * DELNU
-  END DO
-
-  !---------------------------------------------------------------------
-  ! Interpolate in temperature and assemble opacity at each depth
-  !---------------------------------------------------------------------
-  DO J = 1, NRHOX
-    IT = int(T(J) / 1000.0D0)
-    IT = max(1, min(6, IT))
-    DELT = (T(J) - 1000.0D0 * dble(IT)) / 1000.0D0
-    DELT = max(0.0D0, min(1.0D0, DELT))
-
-    ! Temperature interpolation (weights corrected from original)
-    XH2H2 = H2H2NU(IT) * (1.0D0 - DELT) + H2H2NU(IT+1) * DELT
-    XH2HE = H2HENU(IT) * (1.0D0 - DELT) + H2HENU(IT+1) * DELT
-
-    AH2COLL(J) = (10.0D0**XH2HE * XNF(J,3) + 10.0D0**XH2H2 * XNH2(J)) &
-               * XNH2(J) / RHO(J) * STIM(J)
+  DO IP = 1, NCIAPAIR
+    IF (.NOT. USE_CIA_PAIR(IP)) CYCLE
+    DO IT = 1, NCIAT(IP)
+      CNU(IT) = CIATAB(INU, IT, IP) * (1.0D0 - DELNU) &
+              + CIATAB(INU+1, IT, IP) * DELNU + DLOW
+    END DO
+    DO J = 1, NRHOX
+      IF (CIADEN(J, IP) .LE. 0.0D0) CYCLE
+      IT = CIAIT(J, IP)
+      WT = CIAWT(J, IP)
+      XLOG = CNU(IT) * (1.0D0 - WT) + CNU(IT+1) * WT
+      AH2COLL(J) = AH2COLL(J) + 10.0D0**XLOG * CIADEN(J, IP) / RHO(J)
+    END DO
   END DO
 
   RETURN
@@ -18824,11 +18908,24 @@ SUBROUTINE SELECTLINES
   REAL(8)  :: XNFDOPMAX(mion, NWAVE + 1)
   REAL(8)  :: CENRATIO, RATIOLG, GR, tablog8
   INTEGER(4) :: LINEREC(4)
-  INTEGER :: NU, J, K, LINE
+  INTEGER :: NU, I, J, K, LINE
   INTEGER :: N12, N122, N22, N32, N42, N52, N62, N18
   INTEGER :: MOLCODE, MOLCODEOLD, KGFLOG, ISO, IMOL
   INTEGER :: LINEDATA_CAP, IOS
   INTEGER :: IOS_OPEN, IOS_READ
+
+  ! --- TiO (case 5): MOL2 block reader ---
+  ! 'MOL2' little-endian, as written by the SYNTHE-side binary molecule
+  ! builder and checked by mod_mklinelist's read_molec_bin.
+  INTEGER(4), PARAMETER :: MOL2_MAGIC = INT(z'4D4F4C32')
+  INTEGER, PARAMETER :: TIO_BLOCK = 65536      ! records per read (2 MB)
+  CHARACTER(LEN=512) :: TIOFILE
+  LOGICAL :: TIOFOUND
+  INTEGER(4) :: TIOHDR(8)
+  INTEGER(4), ALLOCATABLE :: TIOBUF(:,:)
+  INTEGER :: NTIOREC, NTIOBLK
+  REAL(4)  :: WLR4
+  REAL(8)  :: WLVACTIO, ELOTIO, GAMMARTIO
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING SELECTLINES'
 
@@ -19131,42 +19228,102 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   ! (5) TiO (unit 41)
   !=====================================================================
+  ! The list is whichever packed-binary molecule lines.list names, so
+  ! ATLAS12 and SYNTHE cannot diverge: until 2026-08-10 this path was
+  ! hard-wired to Schwenke (1998) `schwenke.bin` while SYNTHE had already
+  ! moved to ExoMol Toto, i.e. M-dwarf STRUCTURES were being built on a
+  ! different TiO from the spectra computed on them — and for these stars
+  ! TiO is the dominant optical opacity.
+  !
+  ! Format is the 32-byte MOL2 record shared with mod_mklinelist's
+  ! read_molec_bin (header record: int32 magic 'MOL2', int32 count; then
+  ! per line: real32 vacuum wavelength [nm], real32 log gf, real32 E and
+  ! E' [cm^-1], int32 molecule code, int32 isotope, int32 100*log10(gamma_r),
+  ! int32 upper-label flag), ascending in wavelength.  Records are read in
+  ! blocks rather than one at a time: the list is 131.6M lines.
+  !
+  ! Conventions deliberately matched to SYNTHE rather than assumed: both
+  ! codes index wavelength on RATIOLG = log(1+1/2e6), both keep the
+  ! tabulated log gf BARE and apply their own isotope correction, and the
+  ! corrections themselves are the same numbers (molec_dispatch's x2 for
+  ! iso 46-50 = -1.101/-1.138/-0.131/-1.259/-1.272 dex, TIO_ISOCORR here
+  ! in millidex).
+  !
   ! Skip TiO entirely for hot stars — molecules are dissociated above
   ! a few thousand K, so reading and packing the whole TiO list is wasted
   ! work.  Threshold matches mod_mklinelist's TEFF_COOL_LIMIT.
   IF (TEFF .GT. 8000.0D0) THEN
     WRITE(6, '(A)') '           0 lines from tiolines (skip: Teff > 8000 K)'
   ELSE
-    OPEN(UNIT=41, FILE=trim(DATADIR)//'schwenke.bin', &
+    CALL get_mol_bin_path(trim(DATADIR)//'lines.list', DATADIR, TIOFILE, TIOFOUND)
+    IF (.NOT. TIOFOUND) THEN
+      WRITE(6, '(A)') ' SELECTLINES: lines.list names no binary TiO list'
+      CALL EXIT(1)
+    END IF
+    OPEN(UNIT=41, FILE=trim(TIOFILE), &
          STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
          ACCESS='STREAM', IOSTAT=IOS_OPEN)
-    IF (IOS_OPEN .EQ. 0) THEN
-      NU = 1
-      LINE = 0
-      tio_loop: DO LINE = 1, MAX_LINES
-        READ(41, IOSTAT=IOS_READ) LINEREC
-        IF (IOS_READ .NE. 0) EXIT tio_loop
-        CALL UNPACK_LINEDATA(LINEREC)
+    IF (IOS_OPEN .NE. 0) THEN
+      WRITE(6, '(A,A)') ' SELECTLINES: cannot open TiO list ', trim(TIOFILE)
+      CALL EXIT(1)
+    END IF
+
+    READ(41, IOSTAT=IOS_READ) TIOHDR
+    IF (IOS_READ .NE. 0 .OR. TIOHDR(1) .NE. MOL2_MAGIC) THEN
+      WRITE(6, '(A,A)') ' SELECTLINES: not a MOL2 binary line list: ', trim(TIOFILE)
+      CALL EXIT(1)
+    END IF
+    NTIOREC = TIOHDR(2)
+    ALLOCATE(TIOBUF(8, TIO_BLOCK))
+
+    NU = 1
+    LINE = 0
+    tio_loop: DO WHILE (LINE .LT. NTIOREC)
+      NTIOBLK = min(TIO_BLOCK, NTIOREC - LINE)
+      READ(41, IOSTAT=IOS_READ) TIOBUF(1:8, 1:NTIOBLK)
+      IF (IOS_READ .NE. 0) EXIT tio_loop
+
+      DO I = 1, NTIOBLK
+        LINE = LINE + 1
+
+        ! Only TiO (code 822) with a Ti isotope this table knows about.
+        IF (TIOBUF(5, I) .NE. 822) CYCLE
+        ISO = TIOBUF(6, I) - 45
+        IF (ISO .LT. 1 .OR. ISO .GT. 5) CYCLE
+
+        WLVACTIO = dble(TRANSFER(TIOBUF(1, I), WLR4))
+        IF (WLVACTIO .LE. 0.0D0) CYCLE
+        IWL = int(log(WLVACTIO) / RATIOLG + 0.5D0)
 
         DO WHILE (IWL .GE. IWAVETAB(NU))
           FREQ = CLIGHT_NMS / WAVETAB(NU)
           NU = NU + 1
         END DO
 
-        KGFLOG = IGFLOG
-        ISO = abs(IELION) - 8949
-
-        ! Isotope gf correction for 46Ti-50Ti
-        IF (ISO .GE. 1 .AND. ISO .LE. 5) THEN
-          IGFLOG = max(KGFLOG + TIO_ISOCORR(ISO), 1)
-        END IF
+        KGFLOG = nint(dble(TRANSFER(TIOBUF(2, I), WLR4)) * 1000.0D0) + 16384
+        IGFLOG = max(KGFLOG + TIO_ISOCORR(ISO), 1)
 
         NELION = 895
         IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
         CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
         IF (CENRATIO .LT. 1.0D0) CYCLE
-        tablog8 = TABLOG(IELO)
-        IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+
+        ! Lower state is the smaller of the two tabulated term energies
+        ELOTIO = min(abs(dble(TRANSFER(TIOBUF(3, I), WLR4))), &
+                     abs(dble(TRANSFER(TIOBUF(4, I), WLR4))))
+        IF (CENRATIO * exp(-ELOTIO * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+
+        IELION = 8949 + ISO
+        IELO = int(log10(max(ELOTIO, 1.0D-10)) * 1000.0D0 + 16384.5D0)
+
+        ! Radiative damping: tabulated where the list carries it, else the
+        ! classical value, exactly as read_molec_bin does.
+        IF (TIOBUF(7, I) .EQ. 0) THEN
+          GAMMARTIO = 2.223D13 / WLVACTIO**2
+        ELSE
+          GAMMARTIO = 10.0D0**(dble(TIOBUF(7, I)) * 0.01D0)
+        END IF
+        IGR = int(log10(GAMMARTIO) * 1000.0D0 + 16384.5D0)
 
         IGS = 1
         IGW = 9384
@@ -19177,17 +19334,14 @@ SUBROUTINE SELECTLINES
           CALL EXIT(1)
         END IF
         LINEDATA(:, NLINES_STORED) = LINEREC
-        IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+        IF (mod(LINE, 1000000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
           WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
         N42 = N42 + 1
-      END DO tio_loop
-      IF (LINE .GT. MAX_LINES) THEN
-        WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading TIOLINES'
-        CALL EXIT(1)
-      END IF
-      WRITE(6, '(I12,A)') N42, ' lines from tiolines'
-      CLOSE(UNIT=41)
-    END IF
+      END DO
+    END DO tio_loop
+    WRITE(6, '(I12,A,I12,A)') N42, ' lines from tiolines (of ', NTIOREC, ' read)'
+    DEALLOCATE(TIOBUF)
+    CLOSE(UNIT=41)
   END IF
 
   !=====================================================================
