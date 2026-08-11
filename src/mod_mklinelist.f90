@@ -162,11 +162,32 @@ CONTAINS
   !    gamma_w = gamma * (296/T)^n * (k T / 1e6) * 2 pi c / (w * (T/1e4)^0.3)
   !
   !  evaluated at MOLBROAD_TREF.  w = 0.85 is the H2 weight already inside
-  !  txnxn.  Only the H2 column is used: H2 supplies ~92% of txnxn in an
-  !  M-dwarf photosphere, and the He term is then carried with an implied
-  !  gamma_He/gamma_H2 = 0.42/0.85 = 0.494 against measured ratios of
-  !  0.53-0.56 for most species, so the approximation costs a few percent of
-  !  the ~8% He contribution.
+  !  txnxn.
+  !
+  !  PERTURBER PARTITION -- the known weakness of this treatment.  txnxn
+  !  hardwires the ratios 1 : 0.42 : 0.85 for H I : He I : H2, so setting
+  !  gamma_w from the ExoMol H2 column makes the H2 term exact and forces
+  !  the other two to inherit those atomic Unsoeld weights:
+  !
+  !    implied gamma_He/gamma_H2 = 0.42/0.85 = 0.494
+  !    implied gamma_H /gamma_H2 = 1.00/0.85 = 1.176
+  !
+  !  Measured ExoMol gamma_He/gamma_H2 is 0.53-0.56 for most species (so the
+  !  implied value is ~10% low), 0.66 for CO, and 0.227 for H2O -- where the
+  !  implied value is 2.2x TOO HIGH.  For H-atom broadening of molecules
+  !  ExoMol publishes nothing at all, so the 1.176 is unconstrained.
+  !
+  !  The weights matter more with depth than one might expect, because the
+  !  mix shifts as hydrogen dissociates.  Measured on the GJ644C 2700 K
+  !  structure, fractions of the weighted sum (H I / He I / H2):
+  !      1819 K   0.4% /  7.7% / 91.8%
+  !      2442 K   3.8% /  7.6% / 88.6%
+  !      3231 K  17.2% /  7.0% / 75.8%   <- H and K form near here
+  !      3955 K  30.2% /  6.4% / 63.4%
+  !  so the unconstrained H I term is 17-30% of the broadening in the deep
+  !  layers, not the negligible one it looks like higher up.  Doing better
+  !  needs separate per-species H2/He/H coefficients, which means splitting
+  !  txnxn in the opacity kernel -- more than a reader change.
   ! ============================================================================
   SUBROUTINE load_mol_broad(datadir)
     CHARACTER(LEN=*), INTENT(IN) :: datadir
