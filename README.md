@@ -331,9 +331,18 @@ not in the repository.)
 | `build_cia_table.py` | Build `data/h2collop.dat` from the HITRAN CIA sets (+ BJF01 for the H₂–H₂ continuation above Abel's range); `--validate` re-derives the published Abel/Borysow comparison, the ν² low-frequency slope, and seam continuity from the raw files.  Source URLs in the docstring |
 | `cia_ab.py` | Same-structure A/B of CIA variants at 2700 K against the PHOENIX NewEra spectrum: per-window flux and continuum ratios |
 | `tio_ttau_plot.py` | T(τ) comparison of two ATLAS12 runs (used for the TiO line-list swap); reads a partial `.iter` file to preview a run still converging |
+| `build_mol_broad.py` | Build `data/mol_broad.dat` from ExoMol `.broad` files — per-species molecular van der Waals widths, replacing the two hardcoded constants that carried no molecular data.  Handles the `a0`/`a1`/`m0` parameterisations and records, per species, whether the numbers are its own or a named chemical analogue.  Source URLs in the docstring |
+| `cont_audit.py` | Decompose the continuum-opacity budget from a `<model>.cont` dump (`DUMP_CONTINUUM` in `mod_atlas_data`): integrates τ_cont and reports which absorber carries the opacity at the τ = 1 layer, per window |
+| `mann_phoenix_ab.py` | Band-by-band comparison of one or more self-consistent models against both the Mann spectrum and PHOENIX NewEra (the counterpart to `cia_ab.py`, which is same-structure) |
+| `atm_compare.py` | Overlay the T(depth) structure of several `.atm` files.  Differences are taken on COLUMN MASS: the τ columns of different codes are not the same quantity, and comparing at equal τ manufactures hundreds of K |
+| `broadening_plot.py` | Spare data / PHOENIX / one-model figure for a Mann star, near-IR panel plus a full-range ratio panel |
 
 Discipline: after **any** edit to `molecules.dat` or `condensates.dat`,
 rerun the corresponding `--validate` and regenerate the fit atlas.
+
+`data/mol_broad.dat` (per-species molecular van der Waals widths) is
+small enough to live in the repository; the ExoMol `.broad` files it is
+built from are not, and `build_mol_broad.py --fetch` re-downloads them.
 
 ## Translation from Fortran 77
 
