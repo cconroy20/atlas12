@@ -1,13 +1,21 @@
 # Molecular van der Waals broadening, from ExoMol .broad files.
 # Built by tools/build_mol_broad.py; see its header for provenance.
 #
-# gamma is the Lorentz HWHM in cm^-1/bar at 296 K, n the exponent
-# in gamma(T) = gamma*(296/T)^n per bar of perturber.  nJ is the
-# number of records in the source file (1 = a single constant is
-# all ExoMol publishes; >1 = J- or m-resolved, median taken).
+# gamma is the Lorentz HWHM in cm^-1/ATM at 296 K, n the exponent
+# in gamma(T) = gamma*(296/T)^n per atm of perturber (ExoMol 2024
+# release, Sect. 4: P_ref = 1 atm, T_ref = 296 K).  nJ is the number
+# of records in the source file (1 = a single constant is all ExoMol
+# publishes; >1 = J- or m-resolved, median taken).
 #
-# 'src' names the species the numbers came from: its own name for a
-# measurement, or the analogue used when ExoMol has no file for it.
+# PROVENANCE: ExoMol has EMPIRICAL H2/He broadening for only seven
+# molecules (H2O, NH3, SO2, CH4, PH3, HCN, H2CO) -- of ours, only
+# H2O.  Every other species here carries a THEORETICAL value, and for
+# the 'exotic' pairs (TiO, CaH, VO, CaOH, ...) those are simple
+# semi-classical, rotationally-independent estimates from molecular
+# masses and kinetic diameters, with n = 0.5 assumed.
+#
+# 'src' names the species the numbers came from: its own name, or the
+# analogue used when ExoMol has no file for it at all.
 #
 # code species   gamma_H2    n_H2  gamma_He    n_He   nJ  src
    106 CH          0.1076   0.500    0.0600   0.500    1  NH  # fallback: first-row hydride

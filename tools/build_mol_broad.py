@@ -9,13 +9,21 @@ parameters of 27-44 at M-dwarf photospheric conditions where ~0.5 is physical.
 
 Source: ExoMol `.broad` files, https://www.exomol.com/db/<SP>/<ISO>/<ISO>__H2.broad
 (and __He).  Format is `code gamma n [J...]` with gamma the Lorentz HWHM in
-cm^-1/bar at 296 K and n the temperature exponent, gamma(T) = gamma * (296/T)^n
-per bar of perturber.  Three parameterisations appear: `a0` (keyed on J_low),
-`a1` (J_up, J_low) and `m0` (keyed on |m|).  Most species publish a SINGLE a0
-record -- one constant, n fixed at 0.500 -- so a per-species constant is the
-state of the art rather than a compromise.  H2O, CO and AlH are J/m-resolved;
-we take the median, because our H2O comes from super-line histograms that
-discarded J, and because CO and AlH vary by only ~12% across J.
+cm^-1/ATM at 296 K and n the temperature exponent, gamma(T) = gamma * (296/T)^n
+per atm of perturber (2024 release paper Sect. 4: P_ref = 1 atm, T_ref = 296 K).
+
+Provenance matters and is recorded per species: ExoMol has EMPIRICAL data for
+only seven molecules (H2O, NH3, SO2, CH4, PH3, HCN, H2CO).  Everything else --
+including TiO, CaH, VO and CaOH -- carries THEORETICAL values, and for the
+'exotic' pairs those are simple semi-classical, rotationally-independent
+estimates from molecular masses and kinetic diameters, with n = 0.5 assumed.
+That is why most of our species show a single record with n exactly 0.500 --
+it is an assumed default, not a fitted exponent.
+
+Three parameterisations appear: `a0` (keyed on J_low), `a1` (J_up, J_low) and
+`m0` (keyed on |m|).  H2O, CO and AlH are J/m-resolved; we take the median,
+because our H2O comes from super-line histograms that discarded J, and because
+CO and AlH vary by only ~12% across J.
 
 Usage:
     python3 tools/build_mol_broad.py --fetch     # download into a cache dir
@@ -125,13 +133,21 @@ def main():
             "# Molecular van der Waals broadening, from ExoMol .broad files.\n"
             "# Built by tools/build_mol_broad.py; see its header for provenance.\n"
             "#\n"
-            "# gamma is the Lorentz HWHM in cm^-1/bar at 296 K, n the exponent\n"
-            "# in gamma(T) = gamma*(296/T)^n per bar of perturber.  nJ is the\n"
-            "# number of records in the source file (1 = a single constant is\n"
-            "# all ExoMol publishes; >1 = J- or m-resolved, median taken).\n"
+            "# gamma is the Lorentz HWHM in cm^-1/ATM at 296 K, n the exponent\n"
+            "# in gamma(T) = gamma*(296/T)^n per atm of perturber (ExoMol 2024\n"
+            "# release, Sect. 4: P_ref = 1 atm, T_ref = 296 K).  nJ is the number\n"
+            "# of records in the source file (1 = a single constant is all ExoMol\n"
+            "# publishes; >1 = J- or m-resolved, median taken).\n"
             "#\n"
-            "# 'src' names the species the numbers came from: its own name for a\n"
-            "# measurement, or the analogue used when ExoMol has no file for it.\n"
+            "# PROVENANCE: ExoMol has EMPIRICAL H2/He broadening for only seven\n"
+            "# molecules (H2O, NH3, SO2, CH4, PH3, HCN, H2CO) -- of ours, only\n"
+            "# H2O.  Every other species here carries a THEORETICAL value, and for\n"
+            "# the 'exotic' pairs (TiO, CaH, VO, CaOH, ...) those are simple\n"
+            "# semi-classical, rotationally-independent estimates from molecular\n"
+            "# masses and kinetic diameters, with n = 0.5 assumed.\n"
+            "#\n"
+            "# 'src' names the species the numbers came from: its own name, or the\n"
+            "# analogue used when ExoMol has no file for it at all.\n"
             "#\n"
             "# code species   gamma_H2    n_H2  gamma_He    n_He   nJ  src\n")
         for code, sp, _ in SPECIES:

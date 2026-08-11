@@ -197,6 +197,10 @@ CONTAINS
     CHARACTER(LEN=16) :: sp
     REAL(8), PARAMETER :: KBOL_L = 1.380649D-16, CLIGHT_L = 2.99792458D10
     REAL(8), PARAMETER :: PI_L = 3.14159265358979D0
+    ! ExoMol tabulates gamma_0 in cm^-1 ATM^-1 with P_ref = 1 atm and
+    ! T_ref = 296 K (2024 release paper, Sect. 4) -- not per bar, which
+    ! this conversion originally assumed, costing 1.3%.
+    REAL(8), PARAMETER :: PREF_DYN = 1.01325D6
     REAL(8), PARAMETER :: WH2 = 0.85D0
 
     IF (MOLBROAD_LOADED) RETURN
@@ -218,7 +222,7 @@ CONTAINS
       IF (ios .NE. 0) CYCLE
       IF (code .LT. 0 .OR. code .GT. MOLBROAD_MAXCODE) CYCLE
       gw = g2 * (296.0D0 / MOLBROAD_TREF)**n2 &
-         * (KBOL_L * MOLBROAD_TREF / 1.0D6) * 2.0D0 * PI_L * CLIGHT_L &
+         * (KBOL_L * MOLBROAD_TREF / PREF_DYN) * 2.0D0 * PI_L * CLIGHT_L &
          / (WH2 * (MOLBROAD_TREF / 1.0D4)**0.3D0)
       MOLBROAD_GW(code) = gw
       nload = nload + 1
