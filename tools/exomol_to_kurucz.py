@@ -53,6 +53,7 @@ import sys
 import numpy as np
 
 GF_CONST = 1.4991938e-16     # m_e*c/(8*pi^2*e^2) in s/A^2  (gf = C*g_u*A*lam_A^2)
+WL_FMT_MAX = 99999.9999      # nm; largest wavelength the F10.4 field holds
 
 ELEMENTS = {
     'H': 1, 'He': 2, 'Li': 3, 'Be': 4, 'B': 5, 'C': 6, 'N': 7, 'O': 8,
@@ -227,8 +228,17 @@ def main():
     ok = nu > 1.0e-6
     up, lo, A, nu = up[ok], lo[ok], A[ok], nu[ok]
     wl_nm = 1.0e7 / nu
-    ok = (wl_nm >= args.wlmin) & (wl_nm <= args.wlmax)
+    # The Kurucz wavelength field is F10.4, so 100000 nm (100 um) does not
+    # fit: such a line shifts every later field and the Fortran reader
+    # rejects the whole record.  Drop them here rather than write records
+    # that only look valid.  They are pure-rotational far-IR transitions,
+    # far outside any photospheric flux this code models.
+    ok = (wl_nm >= args.wlmin) & (wl_nm <= min(args.wlmax, WL_FMT_MAX))
+    n_farir = int(((wl_nm > WL_FMT_MAX) & (wl_nm <= args.wlmax)).sum())
     up, lo, A, nu, wl_nm = up[ok], lo[ok], A[ok], nu[ok], wl_nm[ok]
+    if n_farir:
+        print(f'dropped {n_farir} lines beyond {WL_FMT_MAX:.0f} nm '
+              f'(F10.4 wavelength field limit)')
 
     gf = GF_CONST * (g[up] / args.gns) * A * (wl_nm * 10.0) ** 2
     gflog = np.log10(np.maximum(gf, 1.0e-99))

@@ -1,0 +1,32 @@
+# Molecular van der Waals broadening, from ExoMol .broad files.
+# Built by tools/build_mol_broad.py; see its header for provenance.
+#
+# gamma is the Lorentz HWHM in cm^-1/bar at 296 K, n the exponent
+# in gamma(T) = gamma*(296/T)^n per bar of perturber.  nJ is the
+# number of records in the source file (1 = a single constant is
+# all ExoMol publishes; >1 = J- or m-resolved, median taken).
+#
+# 'src' names the species the numbers came from: its own name for a
+# measurement, or the analogue used when ExoMol has no file for it.
+#
+# code species   gamma_H2    n_H2  gamma_He    n_He   nJ  src
+   106 CH          0.1076   0.500    0.0600   0.500    1  NH  # fallback: first-row hydride
+   107 NH          0.1076   0.500    0.0600   0.500    1  NH
+   108 OH          0.1076   0.500    0.0600   0.500    1  NH  # fallback: first-row hydride
+   111 NaH         0.1709   0.500    0.0960   0.500    1  NaH
+   112 MgH         0.1918   0.500    0.1081   0.500    1  MgH
+   113 AlH         0.1069   0.509    0.0632   0.501   40  AlH
+   114 SiH         0.1426   0.500    0.0790   0.500    1  SiH
+   120 CaH         0.2153   0.500    0.1205   0.500    1  CaH
+   124 CrH         0.1858   0.500    0.1029   0.500    1  CrH
+   126 FeH         0.1858   0.500    0.1029   0.500    1  CrH  # fallback: transition-metal hydride
+   101 H2          0.0688   0.650    0.0454   0.600   81  CO  # fallback: no analogue; H2 quadrupole lines are negligible here
+   606 C2          0.0688   0.650    0.0454   0.600   81  CO  # fallback: first-row C-bearing diatomic
+   607 CN          0.0688   0.650    0.0454   0.600   81  CO  # fallback: first-row C-bearing diatomic
+   608 CO          0.0688   0.650    0.0454   0.600   81  CO
+   812 MgO         0.1110   0.500    0.0602   0.500    1  MgO
+   814 SiO         0.1460   0.500    0.0802   0.500    1  SiO
+   822 TiO         0.0882   0.500    0.0468   0.500    1  TiO
+   823 VO          0.1957   0.500    0.1082   0.500    1  VO
+ 10108 H2O         0.0260   0.160    0.0059   0.090  151  H2O
+ 10820 CaOH        0.2432   0.500    0.1360   0.500    1  CaOH

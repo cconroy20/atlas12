@@ -4238,6 +4238,28 @@ CONTAINS
             ' ACONT/SIGMAC/sum=', ACONT(j), SIGMAC(j), ACONT(j)+SIGMAC(j)
         END IF
       END DO
+
+      ! ----------------------------------------------------------------
+      !  Optional per-source continuum decomposition (unit 36, <model>.cont,
+      !  gated by more_output).  KAPP leaves every source in its own array,
+      !  but they are overwritten at the next frequency, so the dump has to
+      !  happen inside this loop.  Written for continuum-opacity audits:
+      !  which absorber carries the opacity at a given wavelength and depth,
+      !  in cm^2/g, alongside the ACONT/SIGMAC totals KAPP assembles from
+      !  them.  Costs one formatted write per (frequency, depth) and nothing
+      !  at all when more_output is off.
+      ! ----------------------------------------------------------------
+      IF (DUMP_CONTINUUM) THEN
+        DO j = 1, nrhox_a
+          ! E13.5E3: a 3-digit exponent silently drops the 'E' in the
+          ! narrower edit descriptor, which no reader can parse back.
+          WRITE(36,'(I6,1X,F12.4,1X,I4,1P,18(1X,E13.5E3))') &
+            nu, WAVE, j, t_a(j), rho_a(j), &
+            ahyd_a(j), ah2p_a(j), ahmin_a(j), AH2MIN(j), AH2COLL(j), &
+            ahe1_a(j), ahe2_a(j), ahemin_a(j), ACONT_METAL(j), ACONT(j), &
+            sigh_a(j), sighe_a(j), SIGEL(j), sigh2_a(j), SIGX(j), SIGMAC(j)
+        END DO
+      END IF
     END DO
 
     ! Restore IFPRES=0 so that COMPUTE_ONE_POP (Section 6) does not
@@ -4245,13 +4267,31 @@ CONTAINS
     IFPRES = 0
 
     ! ------------------------------------------------------------------
-    !  CLI microturbulence override.  A positive turbv_cli replaces the
-    !  model atmosphere's per-layer VTURB at all depths; <= 0 keeps the
-    !  model value.  Done here, before the Doppler widths are built, so
-    !  the xf_vturb copy and the atomic/molecular Doppler widths below
-    !  all use it directly.  turbv_cli is km/s; VTURB is cm/s.
+    !  CLI microturbulence override.  ANY turbv_cli >= 0 replaces the
+    !  model atmosphere's per-layer VTURB at all depths -- including 0,
+    !  which forces a genuine zero.  Only the negative sentinel
+    !  (TURBV_UNSET, i.e. the option was not given) keeps the model
+    !  value.  The test used to be > 0, which made turbv=0 a silent
+    !  no-op that read as "microturbulence off" while the model's own
+    !  VTURB was still in force.  Done here, before the Doppler widths
+    !  are built, so the xf_vturb copy and the atomic/molecular Doppler
+    !  widths below all use it directly.  turbv_cli is km/s; VTURB is
+    !  cm/s.
+    !
+    !  The adopted value is echoed here rather than at argument-parsing
+    !  time, because until the model is read it lives per-layer in the
+    !  atmosphere and there is no single number to print.
     ! ------------------------------------------------------------------
-    IF (turbv_cli .GT. 0.0) vturb_a(1:nrhox_a) = DBLE(turbv_cli) * 1.0D5
+    IF (turbv_cli .GE. 0.0) vturb_a(1:nrhox_a) = DBLE(turbv_cli) * 1.0D5
+    IF (MAXVAL(vturb_a(1:nrhox_a)) - MINVAL(vturb_a(1:nrhox_a)) &
+        .LT. 1.0D0) THEN
+      WRITE(6,'(A,F8.4,A)') ' microturbulence  = ', &
+        vturb_a(1) * 1.0D-5, ' km/s (uniform)'
+    ELSE
+      WRITE(6,'(A,F8.4,A,F8.4,A)') ' microturbulence  = ', &
+        MINVAL(vturb_a(1:nrhox_a)) * 1.0D-5, ' to ', &
+        MAXVAL(vturb_a(1:nrhox_a)) * 1.0D-5, ' km/s (per layer)'
+    END IF
 
     ! ------------------------------------------------------------------
     !  SECTION 5.  STORE DEPTH STRUCTURE

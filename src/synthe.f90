@@ -17,11 +17,15 @@
 !    <model_file>       (required, positional) model atmosphere file
 !    wlbeg=<nm>         (required) start wavelength in nm
 !    wlend=<nm>         (required) end wavelength in nm
-!    resolu=<R>         (optional) resolving power, default 300000
-!    turbv=<kms>        (optional) microturbulence in km/s.  If > 0, this
-!                       value REPLACES the model atmosphere's microturbulence
-!                       at all depths.  If omitted or <= 0 (the default 0.0),
-!                       the per-layer value from the input model is used.
+!    resolu=<R>         (optional) resolving power, default 300000.
+!                       Values below 300000 are REFUSED: the grid must
+!                       resolve the ~0.7 km/s molecular thermal width.
+!    turbv=<kms>        (optional) microturbulence in km/s.  Any value >= 0
+!                       REPLACES the model atmosphere's microturbulence at all
+!                       depths -- INCLUDING turbv=0, which forces a genuine
+!                       zero.  If omitted, the per-layer value from the input
+!                       model is used.  (Before 2026-08-10 the test was > 0,
+!                       so turbv=0 silently did nothing.)
 !    more_output=<v>    (optional) if yes/true/1/on, also emit the
 !                       <model>.mol and <model>.linform files.  Default no.
 !
@@ -44,7 +48,7 @@ PROGRAM SYNTHE
   USE mod_parameters, only: LINE_CUTOFF
   USE mod_atlas_data, only: &
     JOSH, READIN, BLOCKJ, BLOCKH, set_bc_data_dir, &
-    DATADIR, IFSYNTHE, IFMOLOUT, &
+    DATADIR, IFSYNTHE, IFMOLOUT, DUMP_CONTINUUM, TURBV_UNSET, &
     ! Renamed to avoid collision with module-level names in synthe_module
     hkt_a => HKT, itemp_a => ITEMP, &
     nrhox_a => NRHOX, rhox_a => RHOX, &
@@ -128,6 +132,9 @@ PROGRAM SYNTHE
 
   ! --- CLI / filename scratch -------------------------------------------
   CHARACTER(LEN=512) :: model_file, spec_file, linform_file, mol_file, model_base
+  CHARACTER(LEN=512) :: cont_file
+  ! Minimum supported resolving power (see the check below).
+  REAL(8), PARAMETER :: RESOLU_MIN = 300000.0D0
   CHARACTER(LEN=64)  :: tmparg
   CHARACTER(256)     :: envval
   INTEGER            :: envlen, envstat, dotpos
@@ -156,9 +163,10 @@ PROGRAM SYNTHE
   !   Arg 1            : model atmosphere filename (positional, required)
   !   wlbeg=<nm>       : start wavelength (required)
   !   wlend=<nm>       : end wavelength   (required)
-  !   resolu=<R>       : resolving power  (optional, default 300000)
-  !   turbv=<kms>      : microturbulence; >0 replaces the model's value at
-  !                      all depths, <=0 (default) keeps the per-layer model
+  !   resolu=<R>       : resolving power (optional, default and MINIMUM
+  !                      300000 -- lower values are refused, see below)
+  !   turbv=<kms>      : microturbulence; any >=0 value replaces the model's
+  !                      at all depths (0 forces zero); omitted keeps the model
   !   more_output=<v>  : if yes/true/1, also emit <model>.mol (molecular
   !                      number densities) and <model>.linform (tau table).
   !                      Accepted true values: yes, true, 1, on.
@@ -174,7 +182,7 @@ PROGRAM SYNTHE
   CALL GET_COMMAND_ARGUMENT(1, model_file)
 
   resolu      = 300000.0D0
-  turbv       = 0.0
+  turbv       = TURBV_UNSET   ! negative sentinel: "not given on the CLI"
   wlbeg       = 0.0D0    ! sentinel
   wlend       = 0.0D0    ! sentinel
   more_output = .FALSE.
@@ -214,6 +222,27 @@ PROGRAM SYNTHE
     CALL EXIT(1)
   END IF
 
+  ! Hard floor on the synthesis resolution.  The computation grid must
+  ! resolve the thermal width of the molecular haze, which is ~0.7 km/s in
+  ! a cool photosphere.  A convergence ladder against R = 500,000 (ratios
+  ! after smoothing to the observed resolution) gives 0.898 at R = 50,000,
+  ! 0.986 at 100,000 and 0.9987 at 300,000: below the floor the smoothed
+  ! optical spectrum is systematically OVER-absorbed, by ~10% in the median
+  ! and up to 17% in the strong TiO bands, because a 6 km/s grid undersamples
+  ! lines it then integrates.  That is a silent bias, not noise, and it is
+  ! wrong in a direction that looks like real absorption -- it produced a
+  ! long-standing spurious offset before it was diagnosed.  Refuse rather
+  ! than let anyone reintroduce it.
+  IF (resolu .LT. RESOLU_MIN) THEN
+    WRITE(6,'(A,F10.1)') ' ERROR: resolu below the supported floor: ', resolu
+    WRITE(6,'(A,F10.1)') '        minimum is ', RESOLU_MIN
+    WRITE(6,'(A)') '        Coarser grids undersample the molecular haze and'
+    WRITE(6,'(A)') '        over-absorb the smoothed spectrum by ~10% (17% in'
+    WRITE(6,'(A)') '        TiO bands).  See CHANGELOG, synthesis-resolution'
+    WRITE(6,'(A)') '        convergence.  Raise resolu; do not lower the floor.'
+    CALL EXIT(1)
+  END IF
+
   ! Propagate more_output to the ATLAS-level flag read by NMOLEC
   IFMOLOUT = MERGE(1, 0, more_output)
 
@@ -222,7 +251,14 @@ PROGRAM SYNTHE
   WRITE(6,'(A,F10.3)') ' wlbeg (nm)       = ', wlbeg
   WRITE(6,'(A,F10.3)') ' wlend (nm)       = ', wlend
   WRITE(6,'(A,F10.1)') ' resolu           = ', resolu
-  WRITE(6,'(A,F8.4)')  ' turbv (km/s)     = ', turbv
+  ! Report the OVERRIDE, not a bare number that reads like the adopted
+  ! microturbulence.  The value actually used is echoed after the model is
+  ! read (it lives per-layer in the atmosphere until then).
+  IF (turbv .GE. 0.0) THEN
+    WRITE(6,'(A,F8.4)')  ' turbv override   = ', turbv
+  ELSE
+    WRITE(6,'(A)')       ' turbv override   = none (model VTURB)'
+  END IF
 
   ! Derive output filenames: strip leading path, strip last extension
   dotpos = INDEX(TRIM(model_file), '/', BACK=.TRUE.)
@@ -236,6 +272,7 @@ PROGRAM SYNTHE
   spec_file    = TRIM(model_base) // '.spec'
   mol_file     = TRIM(model_base) // '.mol'
   linform_file = TRIM(model_base) // '.linform'
+  cont_file    = TRIM(model_base) // '.cont'
   WRITE(6,'(A,A)') ' Spectrum output  = ', TRIM(spec_file)
 
   ! --- Wavelength grid ---------------------------------------------------
@@ -259,6 +296,15 @@ PROGRAM SYNTHE
   OPEN(UNIT=5,  FILE=TRIM(model_file), STATUS='OLD',     ACTION='READ')
   IF (more_output) &
     OPEN(UNIT=35, FILE=TRIM(mol_file), STATUS='REPLACE', ACTION='WRITE')
+  ! Per-source continuum opacity decomposition, filled inside
+  ! run_xnfpelsyn's KAPP loop.  All opacities cm^2/g.  Gated by the
+  ! DUMP_CONTINUUM developer flag in mod_atlas_data, not by more_output.
+  IF (DUMP_CONTINUUM) THEN
+    OPEN(UNIT=36, FILE=TRIM(cont_file), STATUS='REPLACE', ACTION='WRITE')
+    WRITE(36,'(A)') '# nu wave_nm j T rho ' // &
+      'aHyd aH2plus aHmin aH2min aH2coll aHe1 aHe2 aHemin aMetal ACONT ' // &
+      'sigH sigHe sigEl sigH2 sigX SIGMAC'
+  END IF
   CALL readin(20)
   ! Keep unit 5 open: MOLEC reads from INPUTDATA(=5) on first call below.
   CALL run_xnfpelsyn(turbv)
@@ -337,10 +383,10 @@ PROGRAM SYNTHE
 
   itemp_a = 1
 
-  ! NB: a positive CLI turbv REPLACES the model atmosphere's microturbulence
-  ! at all depths; this is applied inside run_xnfpelsyn (which substitutes
-  ! turbv into VTURB before building the Doppler widths).  turbv <= 0 leaves
-  ! the per-layer model value untouched.
+  ! NB: a CLI turbv >= 0 REPLACES the model atmosphere's microturbulence at
+  ! all depths; this is applied inside run_xnfpelsyn (which substitutes turbv
+  ! into VTURB before building the Doppler widths).  Omitting it (the negative
+  ! sentinel) leaves the per-layer model value untouched.
 
   DELTAW = resolu
   NULO   = 1

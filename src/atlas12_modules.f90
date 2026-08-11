@@ -1301,6 +1301,21 @@ MODULE mod_atlas_data
   INTEGER, PARAMETER :: NCIAPAIR = 4
   LOGICAL :: USE_CIA_PAIR(NCIAPAIR) = .TRUE.
 
+  ! --- Sentinel for "the turbv CLI option was not given" ---
+  ! Must be negative: any turbv >= 0 is a real request, and turbv = 0 in
+  ! particular means "force zero microturbulence", not "unset".
+  REAL(4), PARAMETER :: TURBV_UNSET = -1.0
+
+  ! --- Per-source continuum-opacity dump (developer diagnostic) ---
+  ! When .TRUE., SYNTHE writes <model>.cont: every continuum source's
+  ! opacity in cm^2/g at each continuum frequency and depth, straight out
+  ! of KAPP, for continuum-budget audits (tools/cont_audit.py).  Costs one
+  ! formatted write per (frequency, depth) and ~30 MB, so it is off by
+  ! default.  Deliberately NOT tied to the more_output CLI flag: that also
+  ! turns on dump_used_lines(), which at M-dwarf line counts writes tens of
+  ! GB of ASCII.
+  LOGICAL :: DUMP_CONTINUUM = .FALSE.
+
   ! --- Flag set to use Hummer & Mihalas (1988) occupation probability
   !     weighting in the H I partition function ---
   LOGICAL :: USE_HM_OCCUPATION_PROBABILITY = .TRUE.
@@ -12431,14 +12446,30 @@ END SUBROUTINE HMINOP
 ! the absorption coefficient per H2 molecule per unit electron pressure
 ! in cm^4/dyn, so
 !
-!   kappa_H2-ff [cm^2/g] = k(lambda,T) * P_e * n(H2) / rho * STIM
+!   kappa_H2-ff [cm^2/g] = k(lambda,T) * P_e * n(H2) / rho
 !
-! Stimulated emission is NOT contained in these coefficients: MARCS
-! applies its global (1 - exp(-hnu/kT)) factor to this component, in
-! contrast to the Bell & Berrington (1987) H- ff table which it
-! pre-divides by that factor (detabs.f: AB(19)/STIM but AB(22) plain).
-! Our per-source convention therefore applies STIM here and omits it in
-! HMINOP's free-free term -- the two are consistent, not contradictory.
+! STIMULATED EMISSION IS ALREADY IN THESE COEFFICIENTS -- corrected
+! 2026-08-10, having originally been applied a second time here.
+!
+! The decisive test is the low-frequency limit, the same one that caught
+! the CIA double count.  By Kirchhoff, the true (stimulated-emission-
+! corrected) free-free absorption coefficient is j_nu/B_nu; j_nu tends to
+! a constant as nu -> 0 while B_nu -> 2 nu^2 kT/c^2, so any correctly
+! normalised ff table must go as nu^-2, i.e. k ~ lambda^2.  Without the
+! correction it would go as lambda^3.  Measured on John's real tabulated
+! points (excluding Plez's own lambda^2 extension point, which would beg
+! the question): p = 2.00 at every one of the seven temperatures, in a
+! regime as deep as h*nu/kT = 0.05.  The Bell & Berrington (1987) H- ff
+! table gives the identical p = 2.00 -- and HMINOP has always treated
+! that one as already corrected.  Two tables with the same asymptote
+! cannot take opposite conventions, so the STIM factor that used to sit
+! here was a double count worth 1/(1 - exp(-hnu/kT)): 17% of H2- at
+! 2.2 um / 3400 K, 8% at 1.6 um.
+!
+! The earlier reading -- that MARCS leaves AB(22) undivided and therefore
+! that John's table lacks the factor -- inferred the convention from
+! another code's source rather than from the data.  Turbospectrum appears
+! to double count it for the same reason.
 !
 ! n(H2) is built from the same expression used by H2COLLOP so that CIA
 ! and this share one H2 density.  Interpolation is bilinear in
@@ -12535,9 +12566,10 @@ SUBROUTINE H2MINOP
     XT = max(0.0D0, min(1.0D0, XT))              ! clamp outside table
     LKV = KT(IT) * (1.0D0 - XT) + KT(IT+1) * XT
 
-    ! k * P_e * n(H2) / rho, with stimulated emission
+    ! k * P_e * n(H2) / rho.  No STIM factor: it is already in John's
+    ! coefficients (see the header -- the lambda^2 low-frequency slope).
     AH2MIN(J) = exp(LKV) * XNE(J) * KBOL * T(J) * XNH2M(J) &
-              / RHO(J) * STIM(J)
+              / RHO(J)
   END DO
 
   RETURN
@@ -13512,20 +13544,159 @@ END SUBROUTINE HE2OP
 
 !=======================================================================
 ! HEMIOP
+!
+! He- free-free absorption:  He + e- + photon -> He + e-.
+!
+! Data: John (1994, MNRAS 269, 871, plus the private communication cited
+! in the MARCS tabulation), taken from Turbospectrum's jonabs_vac_v19.2
+! entry "He- John (MNRAS,269,871,1994+private comm.) MA941021 (25)" --
+! 17 vacuum wavelengths x 12 temperatures, k in cm^4/dyn.  This is the
+! source Gustafsson et al. (2008) Table 1 lists for He- f-f.
+!
+! Replaces an uncited polynomial fit in 1/nu and T inherited from the
+! F77 (A*T + B + C/T with nine hardcoded coefficients and no reference
+! anywhere in the Kurucz sources).  That fit turned out to be a fair
+! approximation: John is 5-6% lower through the H and K windows at
+! M-dwarf temperatures, growing to ~27% lower in the cool blue corner
+! (5000 A, 2500 K) where He- carries ~0.15% of the continuum and the
+! difference is irrelevant.  The swap is therefore provenance, not a
+! flux fix -- He- is 4-5% of the 2700 K H/K continuum, so it moves the
+! emergent flux by ~0.3%.
+!
+!   kappa_He-ff [cm^2/g] = k(lambda,T) * P_e * n(He I) / rho
+!
+! STIMULATED EMISSION IS ALREADY IN THESE COEFFICIENTS, so no STIM
+! factor is applied -- the same convention as the old polynomial (whose
+! 1/nu^2 leading terms give the nu^-2 low-frequency limit) and as
+! HMINOP's Bell & Berrington free-free term.  Verified on the data by
+! the low-frequency slope test that caught the CIA and H2- double
+! counts: k ~ lambda^p with p = 2.000 at every tabulated temperature
+! over 91152-151919 A.  Turbospectrum's detabs.f agrees explicitly --
+! "He- (stimulated emission included in table)", then AB(25)/STIM to
+! cancel its own global factor.
+!
+! Interpolation is bilinear in (log lambda, log T) on log k, clamped in
+! T outside 1400-25200 K.  Below the 5064 A blue end the table is
+! extrapolated as a power law from the local slope (MARCS sets MINEX=1
+! here for the same reason); He- is negligible blueward of the optical,
+! where H- and the metal continua dominate by three orders of magnitude.
 !=======================================================================
 
 SUBROUTINE HEMIOP
 
   IMPLICIT NONE
-  REAL(8)  :: A, B, C
-  INTEGER :: J
+
+  INTEGER, PARAMETER :: NWHEM = 17, NTHEM = 12
+
+  ! Tabulated wavelengths [nm, vacuum] and temperatures [K].
+  REAL(8), PARAMETER :: WHEM(NWHEM) = (/ &
+        506.4410D0,     569.6580D0,     651.0800D0,     759.6090D0,     911.5500D0, &
+       1139.4120D0,    1519.2150D0,    1822.9980D0,    2278.8220D0,    3038.4290D0, &
+       3646.0940D0,    4557.6430D0,    6076.7560D0,    9115.1840D0,   11394.0050D0, &
+      15191.9410D0,  210057.2500D0 /)
+
+  REAL(8), PARAMETER :: THEM(NTHEM) = (/ &
+      1400.0000D0,   1800.0000D0,   2520.0000D0,   2800.0000D0,   3150.0000D0, &
+      3600.0000D0,   4200.0000D0,   5040.0000D0,   6300.0000D0,   8400.0000D0, &
+     12600.0000D0,  25200.0000D0 /)
+
+  ! k(lambda, T) in cm^4/dyn; columns wavelengths, rows temperatures.
+  REAL(8), PARAMETER :: KHEM(NWHEM, NTHEM) = reshape( (/ &
+    1.2100D-27, 1.4500D-27, 1.7800D-27, 2.2700D-27, 3.0500D-27, &
+    4.4400D-27, 7.3700D-27, 1.0300D-26, 1.5740D-26, 2.7650D-26, &
+    3.9790D-26, 6.2340D-26, 1.1147D-25, 2.5268D-25, 3.9598D-25, &
+    7.0580D-25, 1.3494D-22, 1.0000D-27, 1.2000D-27, 1.4800D-27, &
+    1.9000D-27, 2.5800D-27, 3.8000D-27, 6.4300D-27, 9.1000D-27, &
+    1.4050D-26, 2.4900D-26, 3.5920D-26, 5.6320D-26, 1.0059D-25, &
+    2.2747D-25, 3.5606D-25, 6.3395D-25, 1.2120D-22, 7.8000D-28, &
+    9.4000D-28, 1.1700D-27, 1.5200D-27, 2.1000D-27, 3.1600D-27, &
+    5.4700D-27, 7.8200D-27, 1.2180D-26, 2.1670D-26, 3.1260D-26, &
+    4.8970D-26, 8.7280D-26, 1.9685D-25, 3.0782D-25, 5.4757D-25, &
+    1.0469D-22, 7.2000D-28, 8.7000D-28, 1.0900D-27, 1.4300D-27, &
+    1.9800D-27, 3.0000D-27, 5.2200D-27, 7.4700D-27, 1.1650D-26, &
+    2.0730D-26, 2.9900D-26, 4.6810D-26, 8.3380D-26, 1.8795D-25, &
+    2.9384D-25, 5.2262D-25, 9.9916D-23, 6.6000D-28, 8.1000D-28, &
+    1.0200D-27, 1.3300D-27, 1.8600D-27, 2.8300D-27, 4.9500D-27, &
+    7.1000D-27, 1.1080D-26, 1.9710D-26, 2.8420D-26, 4.4480D-26, &
+    7.9180D-26, 1.7838D-25, 2.7882D-25, 4.9583D-25, 9.4794D-23, &
+    6.1000D-28, 7.4000D-28, 9.4000D-28, 1.2400D-27, 1.7300D-27, &
+    2.6600D-27, 4.6600D-27, 6.7000D-27, 1.0450D-26, 1.8600D-26, &
+    2.6810D-26, 4.1930D-26, 7.4600D-26, 1.6798D-25, 2.6252D-25, &
+    4.6678D-25, 8.9240D-23, 5.5000D-28, 6.7000D-28, 8.6000D-28, &
+    1.1400D-27, 1.6000D-27, 2.4700D-27, 4.3500D-27, 6.2500D-27, &
+    9.7700D-27, 1.7370D-26, 2.5020D-26, 3.9100D-26, 6.9550D-26, &
+    1.5653D-25, 2.4461D-25, 4.3488D-25, 8.3142D-23, 4.9000D-28, &
+    6.1000D-28, 7.7000D-28, 1.0300D-27, 1.4700D-27, 2.2700D-27, &
+    4.0000D-27, 5.7600D-27, 8.9900D-27, 1.5970D-26, 2.2990D-26, &
+    3.5930D-26, 6.3870D-26, 1.4372D-25, 2.2456D-25, 3.9921D-25, &
+    7.6322D-23, 4.3000D-28, 5.3000D-28, 6.9000D-28, 9.2000D-28, &
+    1.3100D-27, 2.0400D-27, 3.6000D-27, 5.1800D-27, 8.0800D-27, &
+    1.4350D-26, 2.0650D-26, 3.2260D-26, 5.7330D-26, 1.2897D-25, &
+    2.0151D-25, 3.5822D-25, 6.8486D-23, 3.6000D-28, 4.5000D-28, &
+    5.9000D-28, 7.9000D-28, 1.1300D-27, 1.7600D-27, 3.1100D-27, &
+    4.4700D-27, 6.9800D-27, 1.2390D-26, 1.7830D-26, 2.7840D-26, &
+    4.9470D-26, 1.1128D-25, 1.7386D-25, 3.0907D-25, 5.9089D-23, &
+    2.9000D-28, 3.6000D-28, 4.6000D-28, 6.3000D-28, 9.0000D-28, &
+    1.4000D-27, 2.4700D-27, 3.5500D-27, 5.5500D-27, 9.8500D-27, &
+    1.4170D-26, 2.2130D-26, 3.9330D-26, 8.8460D-26, 1.3821D-25, &
+    2.4569D-25, 4.6972D-23, 1.7000D-28, 2.2000D-28, 2.8000D-28, &
+    3.8000D-28, 5.5000D-28, 8.6000D-28, 1.5200D-27, 2.1900D-27, &
+    3.4200D-27, 6.0800D-27, 8.7500D-27, 1.3660D-26, 2.4280D-26, &
+    5.4630D-26, 8.5360D-26, 1.5174D-25, 2.9010D-23 /), &
+    (/ NWHEM, NTHEM /) )
+
+  REAL(8), SAVE :: LOGW(NWHEM), LOGT(NTHEM), LOGK(NWHEM, NTHEM)
+  LOGICAL, SAVE :: INITIALIZED = .FALSE.
+
+  REAL(8) :: KT(NTHEM)
+  REAL(8) :: WL, XW, XT, LKV
+  INTEGER :: I, J, IW, IT
 
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING HEMIOP'
-  ! He⁻ free-free opacity: polynomial fit in 1/freq and T
-  A = 3.397D-46 + (-5.216D-31 + 7.039D-15 / FREQ) / FREQ
-  B = -4.116D-42 + (1.067D-26 + 8.135D-11 / FREQ) / FREQ
-  C = 5.081D-37 + (-8.724D-23 - 5.659D-8 / FREQ) / FREQ
-  AHEMIN = (A * T + B + C / T) * XNE * XNFP(:, 3) / RHO
+
+  IF (.NOT. INITIALIZED) THEN
+    DO I = 1, NWHEM
+      LOGW(I) = log(WHEM(I))
+    END DO
+    DO J = 1, NTHEM
+      LOGT(J) = log(THEM(J))
+      DO I = 1, NWHEM
+        LOGK(I, J) = log(KHEM(I, J))
+      END DO
+    END DO
+    INITIALIZED = .TRUE.
+  END IF
+
+  ! --- interpolate log k in log lambda, once per frequency ---
+  ! Beyond the red end the table is flat in the same sense as the H2-
+  ! one (its last point is a long-wavelength extension); off the blue
+  ! end XW simply goes negative, which extends the first interval's
+  ! power law -- the intended MINEX=1 behaviour.
+  WL = WAVE
+  IF (WL .GT. WHEM(NWHEM)) WL = WHEM(NWHEM)
+  IW = 1
+  DO I = 1, NWHEM - 1
+    IF (WL .GE. WHEM(I)) IW = I
+  END DO
+  XW = (log(WL) - LOGW(IW)) / (LOGW(IW+1) - LOGW(IW))
+  DO J = 1, NTHEM
+    KT(J) = LOGK(IW, J) * (1.0D0 - XW) + LOGK(IW+1, J) * XW
+  END DO
+
+  ! --- per depth: interpolate in log T, assemble opacity ---
+  DO J = 1, NRHOX
+    IT = 1
+    DO I = 1, NTHEM - 1
+      IF (T(J) .GE. THEM(I)) IT = I
+    END DO
+    XT = (log(max(T(J), 1.0D0)) - LOGT(IT)) / (LOGT(IT+1) - LOGT(IT))
+    XT = max(0.0D0, min(1.0D0, XT))          ! clamp outside the table
+    LKV = KT(IT) * (1.0D0 - XT) + KT(IT+1) * XT
+
+    ! k * P_e * n(He I) / rho.  No STIM: already in John's coefficients.
+    AHEMIN(J) = exp(LKV) * XNE(J) * KBOL * T(J) * XNFP(J, 3) / RHO(J)
+  END DO
+
   RETURN
 
 END SUBROUTINE HEMIOP

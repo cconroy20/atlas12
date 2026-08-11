@@ -30,13 +30,38 @@ Two residual limitations, neither blocking:
 
 ## 1b. Reconverge the cool-star structures
 
-**Status: open, and now overdue.**  Every cool-star ATLAS12 structure on
-disk predates the opacity fixes and none has CIA feedback: the dropped-
-absorber fix (106d8b7), H2- free-free (dff6224), and now the CIA
-modernization + TiO unification.  The M-dwarf ladder (GJ644C, GJ905,
-GJ699 especially) must be reconverged before any further Mann-validation
-analysis; band-level conclusions drawn on the old structures are not
-safe.  Cost is the limiting factor, not correctness.
+**Status: GJ644C done 2026-08-10; GJ905 and GJ699 open — and ALL of them
+now need redoing again for a different reason: the molecular van der Waals
+widths were corrected the same day (see CHANGELOG), which changes molecular
+blanketing enough that every cool-star structure on disk is built with the
+wrong line widths.  The GJ644C numbers below are syntheses on the old
+structure and are not self-consistent.**  Every cool-star
+ATLAS12 structure on disk predates the opacity fixes and none has CIA
+feedback: the dropped-absorber fix (106d8b7), H2- free-free (dff6224),
+and the CIA modernization + TiO unification.  Band-level conclusions
+drawn on the old structures are not safe.  Cost is the limiting factor,
+not correctness -- and it is now much lower than feared: with the
+block-stream binary readers the 2700 K full 350-2500 nm synthesis takes
+15 min, not the 2.5 h the pre-`be077cb` run needed, so a whole ladder
+star is well under an hour.
+
+The GJ644C (2700 K) rerun sets expectations for the rest.  The near-IR
+excess vs the Mann spectrum collapsed -- H 1.328 -> 1.212, K 1.209 ->
+1.078 -- while the optical did not move at all (TiO/CaH windows shift by
+<0.02, and the model/data ratio curves lie on top of each other below
+1 um).  The structural response is modest and confined to the optically
+thin layers: at fixed column mass the new model is 30-55 K warmer for
+log m < -1 and within 5-20 K through the photosphere.  So the opacity
+changes are near-additive on the emergent spectrum, and reconverging the
+remaining stars is bookkeeping rather than a physics unknown.
+
+Two caveats found doing it: the reconverged model landed at 1.96% RMS /
+11.7% max (old 1.61% / 6.91%) -- the usual cool-dwarf floor -- and it
+carries a one-layer +87 K step in T(m) at J=25 (log m = -1.14, T ~ 1750 K)
+that the old structure does not have.  It sits well outside the tau ~ 1
+layers where the H/K continuum forms and the optical is unchanged, so it
+does not affect the result above, but it should be understood before this
+structure is used for fine T(m) work.
 
 ---
 

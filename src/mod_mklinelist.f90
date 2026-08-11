@@ -105,7 +105,109 @@ MODULE mod_mklinelist
   ! Species skipped when Teff > this, even if listed in lines.list.
   REAL(8), PARAMETER :: TEFF_COOL_LIMIT = 8000.0D0
 
+  ! --- Molecular van der Waals scaling (developer A/B knobs) -----------
+  ! Every molecular line takes its vdW width from a hardcoded constant
+  ! chosen by whether the upper-state label starts with 'X' (1e-8) or not
+  ! (1e-7); H2O takes a flat 1e-7.  No molecular broadening data enters
+  ! anywhere.  In the convention these feed
+  !     Lorentz HWHM = gamma_rad + gamma_stark*n_e + gamma_w*txnxn,
+  !     txnxn = (n_HI + 0.42 n_HeI + 0.85 n_H2) (T/1e4)^0.3
+  ! lab H2O-H2 broadening (~0.05 cm^-1/atm at 296 K) implies gamma_w ~
+  ! 1.1e-9, i.e. the shipped 1e-7 is ~90x too large: on a 2700 K M-dwarf
+  ! structure it gives Voigt a ~ 44 at 2.2 um where ~0.5 is physical, so
+  ! every molecular line is smeared ~100x beyond its true width.
+  !
+  ! These two scale factors exist to measure the consequence before
+  ! committing to a real per-species H2/He broadening treatment.  Leave
+  ! both at 1.0 in production until that measurement is made.
+  REAL(8) :: H2O_GAMMAW_SCALE = 1.0D0    ! read_h2o
+  REAL(8) :: MOL_GAMMAW_SCALE = 1.0D0    ! diatomic + polyatomic readers
+
+  ! --- Per-species molecular van der Waals widths (data/mol_broad.dat) ---
+  ! Indexed directly by Kurucz molecule code for O(1) lookup: this is
+  ! consulted once per line and the readers handle ~2.5e8 of them.
+  ! MOLBROAD_GW(code) < 0 means "no entry", and the caller keeps the old
+  ! 'X'-label constants.  Filled by load_mol_broad.
+  INTEGER, PARAMETER :: MOLBROAD_MAXCODE = 11000
+  REAL(8) :: MOLBROAD_GW(0:MOLBROAD_MAXCODE) = -1.0D0
+  LOGICAL :: MOLBROAD_LOADED = .FALSE.
+
+  ! Reference temperature at which the ExoMol data are converted into the
+  ! code's gamma_w convention.  The conversion cannot be exact, because the
+  ! opacity kernel hardwires a single T^0.3 van der Waals scaling
+  ! (txnxn = (n_HI + 0.42 n_HeI + 0.85 n_H2)(T/1e4)^0.3) while the real
+  ! temperature dependence is gamma ~ T^(1-n) at fixed density, with n
+  ! per species.  The residual is (T/TREF)^(1-n-0.3): for the n = 0.5 of
+  ! most species that is (T/TREF)^0.2, i.e. -4%/+6% over 2500-4000 K.
+  ! 3000 K is chosen because that is where molecular opacity matters.
+  REAL(8), PARAMETER :: MOLBROAD_TREF = 3000.0D0
+
 CONTAINS
+
+  ! ============================================================================
+  !  LOAD_MOL_BROAD — per-species molecular van der Waals widths
+  !
+  !  Reads data/mol_broad.dat (built by tools/build_mol_broad.py from ExoMol
+  !  .broad files) and converts each species' gamma into the gamma_w this code
+  !  wants.  Replaces the two hardcoded constants -- 1e-8 when the upper-state
+  !  label starts with 'X', else 1e-7 -- that carried no molecular data at all.
+  !  The 1e-7 branch, which catches every electronic band and all of H2O, was
+  !  10-40x too large: Voigt damping parameters of 27-44 at M-dwarf conditions
+  !  where ~0.5 is physical, which suppressed line peaks so far that weak lines
+  !  fell below LINE_CUTOFF and were dropped outright.
+  !
+  !  Conversion, from gamma [cm^-1/bar HWHM at 296 K] to gamma_w [rad s^-1 per
+  !  unit effective perturber density at 1e4 K]:
+  !
+  !    gamma_w = gamma * (296/T)^n * (k T / 1e6) * 2 pi c / (w * (T/1e4)^0.3)
+  !
+  !  evaluated at MOLBROAD_TREF.  w = 0.85 is the H2 weight already inside
+  !  txnxn.  Only the H2 column is used: H2 supplies ~92% of txnxn in an
+  !  M-dwarf photosphere, and the He term is then carried with an implied
+  !  gamma_He/gamma_H2 = 0.42/0.85 = 0.494 against measured ratios of
+  !  0.53-0.56 for most species, so the approximation costs a few percent of
+  !  the ~8% He contribution.
+  ! ============================================================================
+  SUBROUTINE load_mol_broad(datadir)
+    CHARACTER(LEN=*), INTENT(IN) :: datadir
+    CHARACTER(LEN=256) :: line, path
+    INTEGER :: u, ios, code, nj, nload
+    REAL(8) :: g2, n2, ge, ne, gw
+    CHARACTER(LEN=16) :: sp
+    REAL(8), PARAMETER :: KBOL_L = 1.380649D-16, CLIGHT_L = 2.99792458D10
+    REAL(8), PARAMETER :: PI_L = 3.14159265358979D0
+    REAL(8), PARAMETER :: WH2 = 0.85D0
+
+    IF (MOLBROAD_LOADED) RETURN
+    MOLBROAD_LOADED = .TRUE.
+    nload = 0
+    path = TRIM(datadir) // 'mol_broad.dat'
+    OPEN(NEWUNIT=u, FILE=TRIM(path), STATUS='OLD', ACTION='READ', IOSTAT=ios)
+    IF (ios .NE. 0) THEN
+      WRITE(6,'(a,a)') ' NOTE: no mol_broad.dat, molecular vdW widths fall ' // &
+        'back to the legacy constants: ', TRIM(path)
+      RETURN
+    END IF
+    DO
+      READ(u, '(A)', IOSTAT=ios) line
+      IF (ios .NE. 0) EXIT
+      IF (LEN_TRIM(line) .EQ. 0) CYCLE
+      IF (line(1:1) .EQ. '#') CYCLE
+      READ(line, *, IOSTAT=ios) code, sp, g2, n2, ge, ne, nj
+      IF (ios .NE. 0) CYCLE
+      IF (code .LT. 0 .OR. code .GT. MOLBROAD_MAXCODE) CYCLE
+      gw = g2 * (296.0D0 / MOLBROAD_TREF)**n2 &
+         * (KBOL_L * MOLBROAD_TREF / 1.0D6) * 2.0D0 * PI_L * CLIGHT_L &
+         / (WH2 * (MOLBROAD_TREF / 1.0D4)**0.3D0)
+      MOLBROAD_GW(code) = gw
+      nload = nload + 1
+    END DO
+    CLOSE(u)
+    WRITE(6,'(a,i0,a,f6.0,a)') ' MOLBROAD: ', nload, &
+      ' molecular vdW widths loaded (ExoMol, referenced to ', &
+      MOLBROAD_TREF, ' K)'
+  END SUBROUTINE load_mol_broad
+
 
   ! ============================================================================
   !  RUN_MKLINELIST — top-level entry point called from SYNTHE
@@ -149,6 +251,9 @@ CONTAINS
     CALL ionpots()
 
     ! --- Log-wavelength grid: wbegin is first grid point >= wlbeg ---------
+    ! Per-species molecular vdW widths (no-op if the file is absent).
+    CALL load_mol_broad(datadir)
+
     ratio   = 1.0D0 + 1.0D0 / resolu
     ratiolg = LOG(ratio)
     ixwlbeg = INT(LOG(wlbeg) / ratiolg)
@@ -1069,10 +1174,15 @@ CONTAINS
         gammas = 3.0D-5
         gammaw = 1.0D-7
       END IF
+      ! Per-species ExoMol width when we have one; the labels above are the
+      ! fallback for species absent from mol_broad.dat.
+      IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
+        IF (MOLBROAD_GW(icode) .GT. 0.0D0) gammaw = MOLBROAD_GW(icode)
+      END IF
 
       gamrf = gammar / frq4pi
       gamsf = gammas / frq4pi
-      gamwf = gammaw / frq4pi
+      gamwf = gammaw * MOL_GAMMAW_SCALE / frq4pi
 
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
@@ -1210,10 +1320,15 @@ CONTAINS
         gammas = 3.0D-5
         gammaw = 1.0D-7
       END IF
+      ! Per-species ExoMol width when we have one; the 'X' constants above
+      ! are the fallback for species absent from mol_broad.dat.
+      IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
+        IF (MOLBROAD_GW(icode) .GT. 0.0D0) gammaw = MOLBROAD_GW(icode)
+      END IF
 
       gamrf = gammar / frq4pi
       gamsf = gammas / frq4pi
-      gamwf = gammaw / frq4pi
+      gamwf = gammaw * MOL_GAMMAW_SCALE / frq4pi
 
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
@@ -1344,10 +1459,15 @@ CONTAINS
         gammas = 3.0D-5
         gammaw = 1.0D-7
       END IF
+      ! Per-species ExoMol width when we have one; the 'X' constants above
+      ! are the fallback for species absent from mol_broad.dat.
+      IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
+        IF (MOLBROAD_GW(icode) .GT. 0.0D0) gammaw = MOLBROAD_GW(icode)
+      END IF
 
       gamrf = gammar / frq4pi
       gamsf = gammas / frq4pi
-      gamwf = gammaw / frq4pi
+      gamwf = gammaw * MOL_GAMMAW_SCALE / frq4pi
 
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
@@ -1519,7 +1639,11 @@ CONTAINS
         frq4pi = freq * 12.5664D0
         gamrf  = (2.223D13 / wlvac**2) / frq4pi
         gamsf  = 3.0D-5 / frq4pi
-        gamwf  = 1.0D-7 / frq4pi
+        gamwf  = 1.0D-7
+        IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
+          IF (MOLBROAD_GW(icode) .GT. 0.0D0) gamwf = MOLBROAD_GW(icode)
+        END IF
+        gamwf  = gamwf * MOL_GAMMAW_SCALE / frq4pi
 
         IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
         n_new = n_new + 1
@@ -1685,7 +1809,9 @@ CONTAINS
       gammar = 2.223D13 / wlvac**2 * 0.001D0
       gamrf  = gammar / frq4pi
       gamsf  = tablog(1)    / frq4pi
-      gamwf  = tablog(9384) / frq4pi
+      gamwf  = tablog(9384)
+      IF (MOLBROAD_GW(10108) .GT. 0.0D0) gamwf = REAL(MOLBROAD_GW(10108),4)
+      gamwf  = gamwf * REAL(H2O_GAMMAW_SCALE,4) / frq4pi
 
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
       n_new = n_new + 1
@@ -1927,6 +2053,10 @@ CONTAINS
       ELSE
         gammaw = 1.0D-7
       END IF
+      IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
+        IF (MOLBROAD_GW(icode) .GT. 0.0D0) gammaw = MOLBROAD_GW(icode)
+      END IF
+      gammaw = gammaw * MOL_GAMMAW_SCALE
 
       IF (n .EQ. cap) CALL grow_diatomic(buf, cap)
       n = n + 1
