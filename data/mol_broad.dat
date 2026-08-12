@@ -1,40 +1,49 @@
-# Molecular van der Waals broadening, from ExoMol .broad files.
+# Molecular van der Waals broadening, with J-dependence.
 # Built by tools/build_mol_broad.py; see its header for provenance.
 #
-# gamma is the Lorentz HWHM in cm^-1/ATM at 296 K, n the exponent
-# in gamma(T) = gamma*(296/T)^n per atm of perturber (ExoMol 2024
-# release, Sect. 4: P_ref = 1 atm, T_ref = 296 K).  nJ is the number
-# of records in the source file (1 = a single constant is all ExoMol
-# publishes; >1 = J- or m-resolved, median taken).
+# gamma_L(J) = max(g0 - dgdJ*J_lower, 0.10*g0), in cm^-1/ATM HWHM at
+# 296 K, with gamma(T) = gamma*(296/T)^n per atm of perturber
+# (ExoMol 2024 release Sect. 4: P_ref = 1 atm, T_ref = 296 K).
+# J_lower is the LOWER-state total angular momentum.
+#
+# The J-dependence and the g0 that goes with it are Gharib-Nezhad
+# et al. (2021, ApJS 254, 34) Table 1 where that paper covers the
+# species; dgdJ = 0 means no J-dependence is known and the ExoMol
+# rotationally-independent estimate is used unchanged.
+#
+# B is the rotational constant, used ONLY to population-weight
+# gamma(J) for line lists that carry no per-line J (TiO, H2O, CaOH).
 #
 # PROVENANCE: ExoMol has EMPIRICAL H2/He broadening for only seven
 # molecules (H2O, NH3, SO2, CH4, PH3, HCN, H2CO) -- of ours, only
-# H2O.  Every other species here carries a THEORETICAL value, and for
-# the 'exotic' pairs (TiO, CaH, VO, CaOH, ...) those are simple
-# semi-classical, rotationally-independent estimates from molecular
-# masses and kinetic diameters, with n = 0.5 assumed.
+# H2O.  Everything else is theoretical: ExoMol's are semi-classical
+# estimates from molecular masses and kinetic diameters with n = 0.5
+# assumed, and Gharib-Nezhad et al. note there is not a single
+# laboratory measurement for any of the metal oxides/hydrides here.
+# Their J-slopes are likewise assumed, by analogy with HCl for
+# large-dipole species.  Treat all of it as good to a factor of a
+# few, not to percent.
 #
-# 'src' names the species the numbers came from: its own name, or the
-# analogue used when ExoMol has no file for it at all.
+# 'src' names where the numbers came from.
 #
-# code species   gamma_H2    n_H2  gamma_He    n_He   nJ  src
-   106 CH          0.1076   0.500    0.0600   0.500    1  NH  # fallback: first-row hydride
-   107 NH          0.1076   0.500    0.0600   0.500    1  NH
-   108 OH          0.1076   0.500    0.0600   0.500    1  NH  # fallback: first-row hydride
-   111 NaH         0.1709   0.500    0.0960   0.500    1  NaH
-   112 MgH         0.1918   0.500    0.1081   0.500    1  MgH
-   113 AlH         0.1069   0.509    0.0632   0.501   40  AlH
-   114 SiH         0.1426   0.500    0.0790   0.500    1  SiH
-   120 CaH         0.2153   0.500    0.1205   0.500    1  CaH
-   124 CrH         0.1858   0.500    0.1029   0.500    1  CrH
-   126 FeH         0.1858   0.500    0.1029   0.500    1  CrH  # fallback: transition-metal hydride
-   101 H2          0.0688   0.650    0.0454   0.600   81  CO  # fallback: no analogue; H2 quadrupole lines are negligible here
-   606 C2          0.0688   0.650    0.0454   0.600   81  CO  # fallback: first-row C-bearing diatomic
-   607 CN          0.0688   0.650    0.0454   0.600   81  CO  # fallback: first-row C-bearing diatomic
-   608 CO          0.0688   0.650    0.0454   0.600   81  CO
-   812 MgO         0.1110   0.500    0.0602   0.500    1  MgO
-   814 SiO         0.1460   0.500    0.0802   0.500    1  SiO
-   822 TiO         0.0882   0.500    0.0468   0.500    1  TiO
-   823 VO          0.1957   0.500    0.1082   0.500    1  VO
- 10108 H2O         0.0260   0.160    0.0059   0.090  151  H2O
- 10820 CaOH        0.2432   0.500    0.1360   0.500    1  CaOH
+# code species   g0_H2    n_H2   g0_He    n_He  dgdJ_H2  dgdJ_He       B   nJ  src
+   106 CH         0.1076   0.500   0.0600   0.500  0.00000  0.00000  14.190    1  NH  # first-row hydride
+   107 NH         0.1076   0.500   0.0600   0.500  0.00000  0.00000  16.340    1  NH
+   108 OH         0.1076   0.500   0.0600   0.500  0.00000  0.00000  18.550    1  NH  # first-row hydride
+   111 NaH        0.1709   0.500   0.0960   0.500  0.00000  0.00000   4.900    1  NaH
+   112 MgH        0.1918   0.500   0.1081   0.500  0.00000  0.00000   5.820    1  MgH
+   113 AlH        0.1469   0.509   0.0819   0.501  0.00207  0.00095   6.390   40  AlH
+   114 SiH        0.1426   0.500   0.0790   0.500  0.00000  0.00000   7.500    1  SiH
+   120 CaH        0.2153   0.500   0.1205   0.500  0.00000  0.00000   4.230    1  CaH
+   124 CrH        0.0750   0.500   0.0450   0.500  0.00100  0.00060   6.220    1  CrH  # g0+dgdJ from GN+21 Tab.1
+   126 FeH        0.0750   0.500   0.0450   0.500  0.00100  0.00060   6.550    1  FeH  # g0+dgdJ from GN+21 Tab.1
+   101 H2         0.0713   0.650   0.0469   0.600  0.00007  0.00004  60.850   81  CO  # no analogue; H2 quadrupole lines are negligible here
+   606 C2         0.0713   0.650   0.0469   0.600  0.00007  0.00004   1.820   81  CO  # first-row C-bearing diatomic
+   607 CN         0.0713   0.650   0.0469   0.600  0.00007  0.00004   1.900   81  CO  # first-row C-bearing diatomic
+   608 CO         0.0713   0.650   0.0469   0.600  0.00007  0.00004   1.930   81  CO
+   812 MgO        0.1110   0.500   0.0602   0.500  0.00000  0.00000   0.574    1  MgO
+   814 SiO        0.1460   0.500   0.0802   0.500  0.00000  0.00000   0.727    1  SiO
+   822 TiO        0.1000   0.500   0.0600   0.500  0.00200  0.00120   0.535    1  TiO  # g0+dgdJ from GN+21 Tab.1
+   823 VO         0.1000   0.500   0.0600   0.500  0.00200  0.00120   0.546    1  VO  # g0+dgdJ from GN+21 Tab.1
+ 10108 H2O        0.0876   0.160   0.0241   0.090  0.00393  0.00104  14.500  151  H2O
+ 10820 CaOH       0.2432   0.500   0.1360   0.500  0.00000  0.00000   0.334    1  CaOH

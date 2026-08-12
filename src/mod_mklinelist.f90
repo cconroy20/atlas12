@@ -84,6 +84,16 @@ MODULE mod_mklinelist
   INTEGER,                        PUBLIC :: nlines_lte  = 0
   INTEGER,                        PUBLIC :: nlines_nlte = 0
 
+  ! Index into lte_lines of the Ca I 4s2 1S - 4s4p 1P resonance line, or 0
+  ! if it is not in the synthesis window.  Recorded by read_gfall; the
+  ! gfall block is copied to the FRONT of lte_lines by run_mklinelist, so
+  ! the index carries over unchanged.  SYNTHE consults it to apply the
+  ! non-Voigt profile of mod_parameters' CA4227_MODE.
+  INTEGER, PUBLIC :: ICA4227 = 0
+
+  ! Vacuum wavelength [nm] of that line, as it appears in gfall.
+  REAL(8), PARAMETER :: CA4227_WLVAC = 422.7918D0
+
   ! Set VERBOSE = 1 before calling run_mklinelist to get progress output on
   ! stdout.  Errors and warnings are always printed regardless of setting.
   INTEGER, PUBLIC :: VERBOSE = 0
@@ -129,8 +139,15 @@ MODULE mod_mklinelist
   ! MOLBROAD_GW(code) < 0 means "no entry", and the caller keeps the old
   ! 'X'-label constants.  Filled by load_mol_broad.
   INTEGER, PARAMETER :: MOLBROAD_MAXCODE = 11000
-  REAL(8) :: MOLBROAD_GW(0:MOLBROAD_MAXCODE) = -1.0D0
+  REAL(8) :: MOLBROAD_GW(0:MOLBROAD_MAXCODE)   = -1.0D0  ! gamma_w at J = 0
+  REAL(8) :: MOLBROAD_DG(0:MOLBROAD_MAXCODE)   =  0.0D0  ! -d gamma_w / dJ
+  REAL(8) :: MOLBROAD_GWEF(0:MOLBROAD_MAXCODE) = -1.0D0  ! population-weighted
   LOGICAL :: MOLBROAD_LOADED = .FALSE.
+
+  ! gamma_L(J) is floored at this fraction of its J = 0 value, following
+  ! Gharib-Nezhad et al. (2021) Eq. 5, which exists to stop a linear decline
+  ! going negative at high J.
+  REAL(8), PARAMETER :: MOLBROAD_JFLOOR = 0.1D0
 
   ! Reference temperature at which the ExoMol data are converted into the
   ! code's gamma_w convention.  The conversion cannot be exact, because the
@@ -192,8 +209,9 @@ CONTAINS
   SUBROUTINE load_mol_broad(datadir)
     CHARACTER(LEN=*), INTENT(IN) :: datadir
     CHARACTER(LEN=256) :: line, path
-    INTEGER :: u, ios, code, nj, nload
-    REAL(8) :: g2, n2, ge, ne, gw
+    INTEGER :: u, ios, code, nj, nload, jj
+    REAL(8) :: g2, n2, ge, ne, gw, d2, de, brot, conv
+    REAL(8) :: wsum, gsum, wj, gj, xj8
     CHARACTER(LEN=16) :: sp
     REAL(8), PARAMETER :: KBOL_L = 1.380649D-16, CLIGHT_L = 2.99792458D10
     REAL(8), PARAMETER :: PI_L = 3.14159265358979D0
@@ -218,19 +236,46 @@ CONTAINS
       IF (ios .NE. 0) EXIT
       IF (LEN_TRIM(line) .EQ. 0) CYCLE
       IF (line(1:1) .EQ. '#') CYCLE
-      READ(line, *, IOSTAT=ios) code, sp, g2, n2, ge, ne, nj
+      READ(line, *, IOSTAT=ios) code, sp, g2, n2, ge, ne, d2, de, brot, nj
       IF (ios .NE. 0) CYCLE
       IF (code .LT. 0 .OR. code .GT. MOLBROAD_MAXCODE) CYCLE
-      gw = g2 * (296.0D0 / MOLBROAD_TREF)**n2 &
-         * (KBOL_L * MOLBROAD_TREF / PREF_DYN) * 2.0D0 * PI_L * CLIGHT_L &
-         / (WH2 * (MOLBROAD_TREF / 1.0D4)**0.3D0)
-      MOLBROAD_GW(code) = gw
+
+      ! cm^-1 atm^-1 at 296 K  ->  gamma_w (per unit effective perturber
+      ! density at 1e4 K).  The same factor scales the J = 0 value and the
+      ! slope, the J-dependence being linear.
+      conv = (296.0D0 / MOLBROAD_TREF)**n2 &
+           * (KBOL_L * MOLBROAD_TREF / PREF_DYN) * 2.0D0 * PI_L * CLIGHT_L &
+           / (WH2 * (MOLBROAD_TREF / 1.0D4)**0.3D0)
+      MOLBROAD_GW(code) = g2 * conv
+      MOLBROAD_DG(code) = d2 * conv
+
+      ! Population-weighted <gamma_w(J)> for the line lists that carry no
+      ! per-line J -- TiO, H2O and CaOH, all binary/super-line formats.  A
+      ! single J = 0 value is badly wrong for these: TiO has B = 0.54 cm^-1,
+      ! so at 3000 K its lines are populated at J ~ 44, far down the decline.
+      gw = MOLBROAD_GW(code)
+      IF (brot .GT. 0.0D0 .AND. MOLBROAD_DG(code) .GT. 0.0D0) THEN
+        wsum = 0.0D0
+        gsum = 0.0D0
+        DO jj = 0, 300
+          xj8 = DBLE(jj)
+          wj = (2.0D0 * xj8 + 1.0D0) &
+             * EXP(-brot * xj8 * (xj8 + 1.0D0) * 1.4388D0 / MOLBROAD_TREF)
+          gj = MAX(gw - MOLBROAD_DG(code) * xj8, MOLBROAD_JFLOOR * gw)
+          wsum = wsum + wj
+          gsum = gsum + wj * gj
+        END DO
+        IF (wsum .GT. 0.0D0) MOLBROAD_GWEF(code) = gsum / wsum
+      ELSE
+        MOLBROAD_GWEF(code) = gw
+      END IF
       nload = nload + 1
     END DO
     CLOSE(u)
     WRITE(6,'(a,i0,a,f6.0,a)') ' MOLBROAD: ', nload, &
-      ' molecular vdW widths loaded (ExoMol, referenced to ', &
-      MOLBROAD_TREF, ' K)'
+      ' molecular vdW widths loaded (ExoMol + Gharib-Nezhad+21 J-dependence,' // &
+      ' referenced to ', MOLBROAD_TREF, ' K)'
+
   END SUBROUTINE load_mol_broad
 
 
@@ -320,6 +365,13 @@ CONTAINS
                       lte_gfall, n_lte_gfall, nlte_gfall, n_nlte_gfall)
       IF (VERBOSE .EQ. 1) &
         WRITE(6,ROW_FMT) 'gf', n_lte_gfall, n_nlte_gfall, TRIM(basename(gfall_file))
+      IF (VERBOSE .EQ. 1) THEN
+        IF (ICA4227 .GT. 0) THEN
+          WRITE(6,'(a,i0)') '  Ca I 4227 resonance line: lte index ', ICA4227
+        ELSE
+          WRITE(6,'(a)')    '  Ca I 4227 resonance line: not in window'
+        END IF
+      END IF
     END IF
 
     IF (predict_file .NE. '') THEN
@@ -571,8 +623,9 @@ CONTAINS
     nlte_cap = CHUNK
     ALLOCATE(lte_buf(lte_cap))
     ALLOCATE(nlte_buf(nlte_cap))
-    n_lte  = 0
-    n_nlte = 0
+    n_lte   = 0
+    n_nlte  = 0
+    ICA4227 = 0
 
     OPEN(UNIT=11, FILE=filename, STATUS='old', ACTION='read', &
          FORM='formatted', IOSTAT=ios)
@@ -799,6 +852,11 @@ CONTAINS
         lte_buf(n_lte) = lte_line_t(nbuff, REAL(cgf,4), nelion_i, &
           REAL(elo_d,4), REAL(gammar_d,4), REAL(gammas_d,4), REAL(gammaw_d,4), &
           REAL(code,4))
+        ! Ca I resonance line: Ca I (code 20.00), ground state, at 422.7918 nm.
+        ! All three tests together are unambiguous -- the neighbouring Ca I
+        ! lines within a milli-nm are excited-state transitions.
+        IF (icode_r .EQ. 2000 .AND. elo_d .LT. 1.0D0 .AND. &
+            ABS(wlvac - CA4227_WLVAC) .LT. 2.0D-3) ICA4227 = n_lte
       END IF
 
     END DO
@@ -1199,10 +1257,15 @@ CONTAINS
         gammas = 3.0D-5
         gammaw = 1.0D-7
       END IF
-      ! Per-species ExoMol width when we have one; the labels above are the
-      ! fallback for species absent from mol_broad.dat.
+      ! The MOL2 record (wl, gf, E, E', icode, iso, loggr, labelp_x) carries
+      ! no J, so the population-weighted <gamma_L(J)> is used instead of a
+      ! per-line value.  For TiO that matters: B = 0.54 cm^-1 puts the
+      ! populated J near 44 at 3000 K, where gamma_L has fallen ~8x below its
+      ! J = 0 value.  labelp_x is now dead weight -- its only consumer was the
+      ! broadening switch below -- so a regenerated list could carry J_lower
+      ! there without changing the record size.
       IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
-        IF (MOLBROAD_GW(icode) .GT. 0.0D0) gammaw = MOLBROAD_GW(icode)
+        IF (MOLBROAD_GWEF(icode) .GT. 0.0D0) gammaw = MOLBROAD_GWEF(icode)
       END IF
 
       gamrf = gammar / frq4pi
@@ -1240,6 +1303,7 @@ CONTAINS
   SUBROUTINE read_molec_ascii(filename, wlbeg, wlend, ratiolg, ixwlbeg, &
                                lte_arr, n_lte)
     CHARACTER(LEN=*),             INTENT(IN)    :: filename
+    REAL(8) :: xjlow
     REAL(8),                      INTENT(IN)    :: wlbeg, wlend, ratiolg
     INTEGER,                      INTENT(IN)    :: ixwlbeg
     TYPE(lte_line_t), ALLOCATABLE, INTENT(INOUT) :: lte_arr(:)
@@ -1345,10 +1409,19 @@ CONTAINS
         gammas = 3.0D-5
         gammaw = 1.0D-7
       END IF
-      ! Per-species ExoMol width when we have one; the 'X' constants above
-      ! are the fallback for species absent from mol_broad.dat.
+      ! Per-species width with its J-dependence.  These readers parse the
+      ! lower-state J (xj), so gamma_L(J) is evaluated per line; the 'X'
+      ! constants above remain the fallback for species absent from
+      ! mol_broad.dat.
       IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
-        IF (MOLBROAD_GW(icode) .GT. 0.0D0) gammaw = MOLBROAD_GW(icode)
+        IF (MOLBROAD_GW(icode) .GT. 0.0D0) THEN
+          ! J of the LOWER level: these files are not guaranteed to list the
+          ! lower state first (elo is taken as MIN(|e|,|ep|) just below), so
+          ! pick the J that goes with the lower energy.
+          xjlow = MERGE(xj, xjp, ABS(e) .LE. ABS(ep))
+          gammaw = MAX(MOLBROAD_GW(icode) - MOLBROAD_DG(icode) * DBLE(xjlow), &
+                       MOLBROAD_JFLOOR * MOLBROAD_GW(icode))
+        END IF
       END IF
 
       gamrf = gammar / frq4pi
@@ -1404,6 +1477,7 @@ CONTAINS
   SUBROUTINE read_molec_poly(filename, wlbeg, wlend, ratiolg, ixwlbeg, &
                              lte_arr, n_lte)
     CHARACTER(LEN=*),              INTENT(IN)    :: filename
+    REAL(8) :: xjlow
     REAL(8),                       INTENT(IN)    :: wlbeg, wlend, ratiolg
     INTEGER,                       INTENT(IN)    :: ixwlbeg
     TYPE(lte_line_t), ALLOCATABLE, INTENT(INOUT) :: lte_arr(:)
@@ -1484,10 +1558,19 @@ CONTAINS
         gammas = 3.0D-5
         gammaw = 1.0D-7
       END IF
-      ! Per-species ExoMol width when we have one; the 'X' constants above
-      ! are the fallback for species absent from mol_broad.dat.
+      ! Per-species width with its J-dependence.  These readers parse the
+      ! lower-state J (xj), so gamma_L(J) is evaluated per line; the 'X'
+      ! constants above remain the fallback for species absent from
+      ! mol_broad.dat.
       IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
-        IF (MOLBROAD_GW(icode) .GT. 0.0D0) gammaw = MOLBROAD_GW(icode)
+        IF (MOLBROAD_GW(icode) .GT. 0.0D0) THEN
+          ! J of the LOWER level: these files are not guaranteed to list the
+          ! lower state first (elo is taken as MIN(|e|,|ep|) just below), so
+          ! pick the J that goes with the lower energy.
+          xjlow = MERGE(xj, xjp, ABS(e) .LE. ABS(ep))
+          gammaw = MAX(MOLBROAD_GW(icode) - MOLBROAD_DG(icode) * DBLE(xjlow), &
+                       MOLBROAD_JFLOOR * MOLBROAD_GW(icode))
+        END IF
       END IF
 
       gamrf = gammar / frq4pi
@@ -1666,7 +1749,7 @@ CONTAINS
         gamsf  = 3.0D-5 / frq4pi
         gamwf  = 1.0D-7
         IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
-          IF (MOLBROAD_GW(icode) .GT. 0.0D0) gamwf = MOLBROAD_GW(icode)
+          IF (MOLBROAD_GWEF(icode) .GT. 0.0D0) gamwf = MOLBROAD_GWEF(icode)
         END IF
         gamwf  = gamwf * MOL_GAMMAW_SCALE / frq4pi
 
@@ -1835,7 +1918,7 @@ CONTAINS
       gamrf  = gammar / frq4pi
       gamsf  = tablog(1)    / frq4pi
       gamwf  = tablog(9384)
-      IF (MOLBROAD_GW(10108) .GT. 0.0D0) gamwf = REAL(MOLBROAD_GW(10108),4)
+      IF (MOLBROAD_GWEF(10108) .GT. 0.0D0) gamwf = REAL(MOLBROAD_GWEF(10108),4)
       gamwf  = gamwf * REAL(H2O_GAMMAW_SCALE,4) / frq4pi
 
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
@@ -1996,6 +2079,7 @@ CONTAINS
   SUBROUTINE read_one_diatomic_ascii(filename, wlbeg_nm, wlend_nm, &
                                       buf, cap, n)
     CHARACTER(LEN=*),                                 INTENT(IN)    :: filename
+    REAL(8) :: xjlow
     REAL(8),                                          INTENT(IN)    :: wlbeg_nm, wlend_nm
     TYPE(diatomic_record_t), ALLOCATABLE,             INTENT(INOUT) :: buf(:)
     INTEGER,                                          INTENT(INOUT) :: cap
@@ -2079,7 +2163,14 @@ CONTAINS
         gammaw = 1.0D-7
       END IF
       IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
-        IF (MOLBROAD_GW(icode) .GT. 0.0D0) gammaw = MOLBROAD_GW(icode)
+        IF (MOLBROAD_GW(icode) .GT. 0.0D0) THEN
+          ! J of the LOWER level: these files are not guaranteed to list the
+          ! lower state first (elo is taken as MIN(|e|,|ep|) just below), so
+          ! pick the J that goes with the lower energy.
+          xjlow = MERGE(xj, xjp, ABS(e) .LE. ABS(ep))
+          gammaw = MAX(MOLBROAD_GW(icode) - MOLBROAD_DG(icode) * DBLE(xjlow), &
+                       MOLBROAD_JFLOOR * MOLBROAD_GW(icode))
+        END IF
       END IF
       gammaw = gammaw * MOL_GAMMAW_SCALE
 
