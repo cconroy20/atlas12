@@ -174,6 +174,67 @@ MODULE mod_parameters
   ! ATLAS selected it; if ATLAS rejected it, SYNTHE would have dropped it.
   REAL(8), PARAMETER :: LINE_CUTOFF = 1.0D-3
 
+  ! --- Ca I 4227 resonance-line profile (developer A/B knob) -------------
+  ! The 4000-4500 A "blue depression" of M dwarfs (Jones et al. 2023,
+  ! MNRAS 523, 1297) is not reproduced by a Voigt profile on the Ca I
+  ! 4s2 1S - 4s4p 1P resonance line at 422.7918 nm: the observed trough
+  ! needs absorption hundreds of Angstrom from line centre, where an
+  ! impact-approximation Lorentzian has fallen off as (dlam)^-2 and
+  ! contributes nothing.  The physically correct fix is a unified
+  ! Ca-H2/Ca-He profile in the Allard framework; none has been published
+  ! (Ca-He exists for white dwarfs, Blouin et al. 2019).  Jones et al.
+  ! instead fit an empirical replacement for the Voigt function,
+  !     H(x) = exp(-PP*x^2) + PS*a/x^PX,   x = dlam/dlam_Doppler,
+  ! against (PP,PS,PX) = (1,1,2) for the conventional far-wing
+  ! approximation.  SYNTHE evaluates MAX(Voigt, H).
+  !
+  ! DO NOT USE THEIR PP = 1e-4.  It replaces the Doppler core with a term
+  ! that is still ~1 at x = 100 and only dies near x = 1000, i.e. a
+  ! SATURATED CORE 10-30 A wide against a true Doppler core of ~0.1 A.
+  ! MAX() does not protect against this: at 1.5 A from centre the PP term
+  ! is 0.78 where the Voigt is 1.1e-5, so it wins everywhere in the near
+  ! wing.  Measured on the Sun (2026-08-11): Ca I 4227 core/continuum at
+  ! 11 A resolution goes 0.954 (Voigt, atlas says 0.967) -> 0.086.  It is
+  ! invisible in an M dwarf only because the line is black over several A
+  ! there anyway, and it buys NOTHING: GJ644C band ratios are identical to
+  ! two decimals with PP = 1 and PP = 1e-4.  Keep PP = 1, which leaves the
+  ! true Doppler core and makes PS*a/x^PX the only modification -- which
+  ! is all the far-wing pedestal was ever meant to be.
+  !
+  ! PS FITTED TO GJ644C (M7, 2700 K), NOT ADOPTED FROM THE PAPER: their
+  ! PS = 1e-3 drives 3900-4700 A to 3-7 per cent of observed in our code
+  ! (their value is ~125x too strong here, probably because our baseline
+  ! Lorentzian Ca I already carries most of the trough: suppressing the
+  ! line brightens 4000-4500 A by 1.74x).  PS = 8e-6 with PX = 0.5 gives
+  ! model/observed over 4000-4300 / 4300-4600 / 4600-5000 A of
+  !   GJ644C   2700 K   4.47 -> 1.78   3.46 -> 1.42   1.87 -> 0.95
+  !   GJ887    3689 K   1.44 -> 1.39   1.34 -> 1.28   1.20 -> 1.16
+  !   61 Cyg A 4355 K   0.963-> 0.959  0.973-> 0.967  1.058-> 1.054
+  !   Sun      5777 K   1.033-> 1.033  1.009-> 1.009  1.035-> 1.035
+  ! i.e. it acts almost only at the coolest Teff and does no damage where
+  ! the chain is already validated.  Note it does NOT explain GJ887's
+  ! blue excess -- that is a separate problem.
+  !
+  ! CA4227_MODE:   0 = standard Voigt (production)
+  !                1 = modified profile above
+  !               -1 = line suppressed entirely (attribution test)
+  ! CA4227_DLMAX:  hard truncation on |dlam| [A].  REQUIRED, not optional:
+  !                the x^-PX wing crosses LINE_CUTOFF only near
+  !                x ~ (kappa0*PS*a/kappa_min)^(1/PX), which for a
+  !                resonance line at PX=0.5 runs past MAXPROF (1.4e4 A at
+  !                R=3e5) and would blanket the entire optical.  Jones et
+  !                al. do not state theirs; their figures span 3800-5000 A.
+  INTEGER, PARAMETER :: CA4227_MODE  = 0
+  REAL(8), PARAMETER :: CA4227_PP    = 1.000000D+00
+  REAL(8), PARAMETER :: CA4227_PS    = 8.000000D-06
+  REAL(8), PARAMETER :: CA4227_PX    = 5.000000D-01
+  REAL(8), PARAMETER :: CA4227_DLMAX = 7.500000D+02
+  ! Line wavelength in Angstrom, used only to turn CA4227_DLMAX into a
+  ! number of grid steps.  mod_mklinelist carries the same wavelength in
+  ! nm (CA4227_WLVAC) to identify the line; it compiles before this module
+  ! and so cannot share the constant.
+  REAL(8), PARAMETER :: CA4227_WLA   = 4227.918D0
+
   ! Debug flag: set to 1 to print subroutine entry tracing to unit 6
   INTEGER, PARAMETER :: IDEBUG = 0
 

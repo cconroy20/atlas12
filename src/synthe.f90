@@ -44,8 +44,11 @@
 PROGRAM SYNTHE
   
   USE synthe_module
-  USE mod_mklinelist, only: run_mklinelist, lte_lines, nlte_lines, nlines_lte, nlines_nlte
-  USE mod_parameters, only: LINE_CUTOFF
+  USE mod_mklinelist, only: run_mklinelist, lte_lines, nlte_lines, nlines_lte, &
+                            nlines_nlte, ICA4227
+  USE mod_parameters, only: LINE_CUTOFF, &
+                            CA4227_MODE, CA4227_PP, CA4227_PS, CA4227_PX, &
+                            CA4227_DLMAX, CA4227_WLA
   USE mod_atlas_data, only: &
     JOSH, READIN, BLOCKJ, BLOCKH, set_bc_data_dir, &
     DATADIR, IFSYNTHE, IFMOLOUT, DUMP_CONTINUUM, TURBV_UNSET, &
@@ -127,6 +130,10 @@ PROGRAM SYNTHE
   REAL(4)   :: adamp_s, congf_s, dvoigt, x_wing
   REAL(4)   :: gamrf, gamsf, gamwf
   REAL(4)   :: elo_s, dopple_nel
+  LOGICAL   :: is_ca4227
+  INTEGER   :: ca4227_nmax
+  REAL(4)   :: xv_s, prof_s
+  REAL(8)   :: hmod_s
   REAL(8)   :: wave8, freq8, resid
   REAL(4)   :: asynth(kw)
 
@@ -251,6 +258,13 @@ PROGRAM SYNTHE
   WRITE(6,'(A,F10.3)') ' wlbeg (nm)       = ', wlbeg
   WRITE(6,'(A,F10.3)') ' wlend (nm)       = ', wlend
   WRITE(6,'(A,F10.1)') ' resolu           = ', resolu
+  IF (CA4227_MODE .LT. 0) THEN
+    WRITE(6,'(A)')     ' Ca I 4227        = SUPPRESSED (CA4227_MODE < 0)'
+  ELSE IF (CA4227_MODE .GT. 0) THEN
+    WRITE(6,'(A,3(1X,1PE9.2),A,0PF7.1)') &
+      ' Ca I 4227        = modified profile, (pp,ps,px) =', &
+      CA4227_PP, CA4227_PS, CA4227_PX, ', |dlam| <', CA4227_DLMAX
+  END IF
   ! Report the OVERRIDE, not a bare number that reads like the adopted
   ! microturbulence.  The value actually used is echoed after the model is
   ! read (it lives per-layer in the atmosphere until then).
@@ -320,6 +334,17 @@ PROGRAM SYNTHE
 
   WRITE(6,'(A,I9,A,I9,A,I9)') ' Lines:  LTE =', nlines_lte, &
        '   NLTE =', nlines_nlte, '   total =', nlines_lte + nlines_nlte
+
+  ! A non-default Ca I 4227 mode that silently found no line to act on
+  ! would look exactly like a null result.  Fail loudly instead.
+  IF (CA4227_MODE .NE. 0) THEN
+    IF (ICA4227 .EQ. 0) THEN
+      WRITE(6,'(A)') ' ERROR: CA4227_MODE is set but the Ca I 4227 line is' // &
+                     ' not in the synthesis window.'
+      CALL EXIT(1)
+    END IF
+    WRITE(6,'(A,I9)') ' Ca I 4227 resonance line at LTE index', ICA4227
+  END IF
 
   ! Optional: dump the assembled "used lines" to an ASCII file for external
   ! linelist validation (e.g., cross-checking the Korg master linelist).
@@ -496,6 +521,11 @@ PROGRAM SYNTHE
           gamsf     = lte_lines(iline)%gamsf
           gamwf     = lte_lines(iline)%gamwf
 
+          ! Ca I 4227: developer switch for the resonance-line profile.
+          ! ICA4227 is 0 unless that exact line is in the window.
+          is_ca4227 = (CA4227_MODE .NE. 0) .AND. (iline .EQ. ICA4227)
+          IF (is_ca4227 .AND. CA4227_MODE .LT. 0) CYCLE
+
           kappa0_s = congf_s * REAL(xnfdop(congf_nel))
           kapmin_s = continuum(MIN(MAX(nbuff_s,1),length)) * REAL(LINE_CUTOFF, 4)
           IF (kappa0_s .LT. kapmin_s) CYCLE
@@ -511,23 +541,46 @@ PROGRAM SYNTHE
              buffer(nbuff_s) = buffer(nbuff_s) + kapcen_s
           END IF centre_on_grid
 
-          ! Voigt profile out to 10 Doppler widths; stop when below cutoff.
           dvoigt = 1.0 / dopple_nel / REAL(resolu)
-          DO nstep = 1, n10dop
-             profile(nstep) = kappa0_s * voigt_profile(REAL(nstep)*dvoigt, adamp_s)
-             IF (profile(nstep) .LT. kapmin_s) EXIT
-          END DO
 
-          ! Far wing: extend as x_wing / nstep^2 (Lorentzian asymptote).
-          IF (nstep .GT. n10dop) THEN
-             x_wing  = profile(n10dop) * REAL(n10dop)**2
-             maxstep = INT(SQRT(x_wing/kapmin_s)) + 1
-             maxstep = MIN(maxstep, maxprof)
-             n1 = n10dop + 1
-             DO nstep = n1, maxstep
-                profile(nstep) = x_wing / REAL(nstep)**2
+          IF (is_ca4227) THEN
+             ! Non-Voigt resonance profile: MAX(Voigt, Jones+23 form), run
+             ! out to a declared detuning rather than to the wing cutoff
+             ! (see CA4227_* in mod_parameters for why the cutoff cannot be
+             ! trusted to terminate an x^-PX wing).  Both terms of the
+             ! modified form decrease monotonically, so an early EXIT below
+             ! kapmin_s is safe.
+             ca4227_nmax = MIN(maxprof, &
+                               INT(CA4227_DLMAX * resolu / CA4227_WLA))
+             DO nstep = 1, ca4227_nmax
+                xv_s   = REAL(nstep) * dvoigt
+                hmod_s = EXP(-CA4227_PP * DBLE(xv_s)**2) + &
+                         CA4227_PS * DBLE(adamp_s) / DBLE(xv_s)**CA4227_PX
+                prof_s = kappa0_s * &
+                         MAX(voigt_profile(xv_s, adamp_s), REAL(hmod_s,4))
+                profile(nstep) = prof_s
+                IF (prof_s .LT. kapmin_s) EXIT
              END DO
-             nstep = maxstep
+             nstep = MIN(nstep, ca4227_nmax)
+
+          ELSE
+             ! Voigt profile out to 10 Doppler widths; stop when below cutoff.
+             DO nstep = 1, n10dop
+                profile(nstep) = kappa0_s * voigt_profile(REAL(nstep)*dvoigt, adamp_s)
+                IF (profile(nstep) .LT. kapmin_s) EXIT
+             END DO
+
+             ! Far wing: extend as x_wing / nstep^2 (Lorentzian asymptote).
+             IF (nstep .GT. n10dop) THEN
+                x_wing  = profile(n10dop) * REAL(n10dop)**2
+                maxstep = INT(SQRT(x_wing/kapmin_s)) + 1
+                maxstep = MIN(maxstep, maxprof)
+                n1 = n10dop + 1
+                DO nstep = n1, maxstep
+                   profile(nstep) = x_wing / REAL(nstep)**2
+                END DO
+                nstep = maxstep
+             END IF
           END IF
 
           IF (nbuff_s+nstep .LT. 1 .OR. nbuff_s-nstep .GT. length) CYCLE

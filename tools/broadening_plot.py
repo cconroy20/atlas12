@@ -93,7 +93,9 @@ def main():
     ax2.set_xlim(0.4, 2.45)
     ax2.set_xticks([0.4, 0.6, 0.8, 1.0, 1.5, 2.0])
     ax2.set_xticklabels(["0.4", "0.6", "0.8", "1.0", "1.5", "2.0"])
-    ax2.set_ylim(0.4, 1.7)
+    # Blue end runs to ~1.95 at 2700 K (the shared blue excess); do not
+    # clip it off, it is the largest residual in the figure.
+    ax2.set_ylim(0.4, 2.1)
     ax2.set_ylabel("model / data")
     ax2.set_xlabel(r"wavelength  [$\mu$m]")
     for ax in (ax1, ax2):

@@ -142,6 +142,41 @@ MODULE mod_mklinelist
   REAL(8) :: MOLBROAD_GW(0:MOLBROAD_MAXCODE)   = -1.0D0  ! gamma_w at J = 0
   REAL(8) :: MOLBROAD_DG(0:MOLBROAD_MAXCODE)   =  0.0D0  ! -d gamma_w / dJ
   REAL(8) :: MOLBROAD_GWEF(0:MOLBROAD_MAXCODE) = -1.0D0  ! population-weighted
+  REAL(8) :: MOLBROAD_B(0:MOLBROAD_MAXCODE)    =  0.0D0  ! rotational constant
+
+  ! --- Estimate J from the lower-state energy for lists that carry no J ---
+  ! TiO, H2O and CaOH are binary/super-line formats without J, so they would
+  ! otherwise all take one population-weighted <gamma(J)>.  But E_low IS
+  ! stored, and for a rigid rotor E_rot = B J(J+1), so J ~ sqrt(E_low/B).
+  ! The obvious objection is that a level at energy E might be (v=0, high J)
+  ! or (high v, low J) -- but the (2J+1) degeneracy weight makes the
+  ! rotational ladder dominate the level count, so the (2J+1)-weighted mean J
+  ! tracks the pure-rotor value to <1% up to ~1000 cm^-1 for TiO (18.8 vs
+  ! 19.3 at 200 cm^-1; 42.7 vs 43.2 at 1000).  It over-estimates J above
+  ! ~2000 cm^-1 (53 vs 61), where gamma is pinned at its floor anyway -- the
+  ! approximation fails exactly where it stops mattering.
+  !
+  ! This restores the line-to-line variation a single value cannot carry:
+  ! gamma_w spans 4.1e-9 to 4.1e-10 across the TiO list against a uniform
+  ! 9.7e-10.  It is still an approximation, and a cruder one for H2O, which
+  ! is an asymmetric top whose pseudo-line E_low is itself a fitted effective
+  ! energy from the super-line inversion rather than a real level.
+  ! MEASURED AND REJECTED 2026-08-11.  A/B on GJ644C at fixed structure
+  ! (workdir/mann/GJ644C_jelo vs _exo): ten of twelve band indices moved by
+  ! <= 0.6%, and of the two that moved ~2% one improved (H2O 1.9 um
+  ! 0.952 -> 0.972) while the other degraded the band we are most sensitive
+  ! to (TiO gamma 1.005 -> 1.029).  Every aggregate metric came out slightly
+  ! worse: integral 1.013 -> 1.017, optical median 1.096 -> 1.100.
+  !
+  ! The reason is that gamma spans a factor of 10 across the TiO list but the
+  ! bands are dense and overlapping, so the variation averages out -- which is
+  ! exactly what the population-weighted mean already captures.  Per-line
+  ! gamma(J) is more correct in principle, but reached through this proxy it
+  ! introduces about as much error as it removes, especially for H2O, whose
+  ! pseudo-line E_low is a fitted effective energy and which is an asymmetric
+  ! top anyway.  Left OFF; revisit only with real per-line J (which for TiO
+  ! means regenerating the list with J_lower in the dead labelp_x field).
+  LOGICAL :: MOLBROAD_JFROM_ELO = .FALSE.
   LOGICAL :: MOLBROAD_LOADED = .FALSE.
 
   ! gamma_L(J) is floored at this fraction of its J = 0 value, following
@@ -206,6 +241,27 @@ CONTAINS
   !  needs separate per-species H2/He/H coefficients, which means splitting
   !  txnxn in the opacity kernel -- more than a reader change.
   ! ============================================================================
+  ! gamma_w for a line whose lower-state energy is elo [cm^-1], for a species
+  ! whose line list carries no J.  Falls back to the population-weighted value
+  ! when the estimate is unavailable or the flag is off.
+  REAL(8) FUNCTION molbroad_gw_elo(code, elo)
+    INTEGER, INTENT(IN) :: code
+    REAL(8), INTENT(IN) :: elo
+    REAL(8) :: xjeff
+    molbroad_gw_elo = MOLBROAD_GWEF(code)
+    IF (.NOT. MOLBROAD_JFROM_ELO) RETURN
+    IF (MOLBROAD_B(code) .LE. 0.0D0) RETURN
+    IF (MOLBROAD_DG(code) .LE. 0.0D0) RETURN
+    IF (elo .LE. 0.0D0) THEN
+      xjeff = 0.0D0
+    ELSE
+      xjeff = SQRT(elo / MOLBROAD_B(code))
+    END IF
+    molbroad_gw_elo = MAX(MOLBROAD_GW(code) - MOLBROAD_DG(code) * xjeff, &
+                          MOLBROAD_JFLOOR * MOLBROAD_GW(code))
+  END FUNCTION molbroad_gw_elo
+
+
   SUBROUTINE load_mol_broad(datadir)
     CHARACTER(LEN=*), INTENT(IN) :: datadir
     CHARACTER(LEN=256) :: line, path
@@ -248,6 +304,7 @@ CONTAINS
            / (WH2 * (MOLBROAD_TREF / 1.0D4)**0.3D0)
       MOLBROAD_GW(code) = g2 * conv
       MOLBROAD_DG(code) = d2 * conv
+      MOLBROAD_B(code)  = brot
 
       ! Population-weighted <gamma_w(J)> for the line lists that carry no
       ! per-line J -- TiO, H2O and CaOH, all binary/super-line formats.  A
@@ -1265,7 +1322,8 @@ CONTAINS
       ! broadening switch below -- so a regenerated list could carry J_lower
       ! there without changing the record size.
       IF (icode .GE. 0 .AND. icode .LE. MOLBROAD_MAXCODE) THEN
-        IF (MOLBROAD_GWEF(icode) .GT. 0.0D0) gammaw = MOLBROAD_GWEF(icode)
+        IF (MOLBROAD_GWEF(icode) .GT. 0.0D0) &
+          gammaw = molbroad_gw_elo(icode, elo)
       END IF
 
       gamrf = gammar / frq4pi
@@ -1918,7 +1976,8 @@ CONTAINS
       gamrf  = gammar / frq4pi
       gamsf  = tablog(1)    / frq4pi
       gamwf  = tablog(9384)
-      IF (MOLBROAD_GWEF(10108) .GT. 0.0D0) gamwf = REAL(MOLBROAD_GWEF(10108),4)
+      IF (MOLBROAD_GWEF(10108) .GT. 0.0D0) &
+        gamwf = REAL(molbroad_gw_elo(10108, DBLE(ABS(ielo_loc))),4)
       gamwf  = gamwf * REAL(H2O_GAMMAW_SCALE,4) / frq4pi
 
       IF (n_new .EQ. lte_cap) CALL grow_lte(lte_buf, lte_cap)
