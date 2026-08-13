@@ -1,6 +1,7 @@
 gfall	gfallvac08oct17.dat
 predict	gfpred29dec2014.bin
 mol 	mol/alhax.dat
+mol 	mol/alo_atp.dat
 mol 	mol/alhxx.dat
 mol 	mol/c2ax.dat
 mol 	mol/c2ba.dat

@@ -300,6 +300,7 @@ The full contents of the data directory, organized by purpose:
 | `mol.tar.gz` †           | —                | Archive of molecular sub-lists referenced from `lines.list`; unpack in place |
 | `h2opokazatel.bin` ‡     | ATLAS12 / SYNTHE | H₂O pseudo-line list (51.3M records) built from ExoMol POKAZATEL; replaces `h2ofastfix.bin` (P&S 1997).  Rebuild with `tools/build_h2o_pokazatel.py --raw --write-raw` |
 | `mol/tiototo2024.bin` ‡  | ATLAS12 / SYNTHE | TiO line list (131.6M records, ⁴⁶Ti–⁵⁰Ti) from ExoMol Toto; replaces `schwenke.bin` (Schwenke 1997).  Both codes resolve it through `lines.list`, so they cannot diverge |
+| `mol/alo_atp.dat` ‡      | ATLAS12 / SYNTHE | AlO line list (4.93M records) from ExoMol ATP.  The B–X bands at 4842 and 4648 Å reach 60% of the local extinction at the τ(4500 Å) = 1 layer of a 2900 K dwarf; on by default.  Rebuild with `tools/exomol_to_kurucz.py --gns 6 --icode 813 --iso 16` |
 
 † Not tracked in the repository; download from the Google Drive folder above.
 ‡ Not tracked; regenerated from ExoMol by the named tool.

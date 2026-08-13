@@ -56,6 +56,7 @@ SPECIES = [
     (606,   "C2",   "12C2"),
     (607,   "CN",   "12C-14N"),
     (608,   "CO",   "12C-16O"),
+    (813,   "AlO",  "27Al-16O"),
     (812,   "MgO",  "24Mg-16O"),
     (814,   "SiO",  "28Si-16O"),
     (822,   "TiO",  "48Ti-16O"),
@@ -92,6 +93,7 @@ BROT = {
     "AlH": 6.39, "SiH": 7.50, "CaH": 4.23, "CrH": 6.22, "FeH": 6.55,
     "H2": 60.85, "C2": 1.82, "CN": 1.90, "CO": 1.93, "MgO": 0.574,
     "SiO": 0.727, "TiO": 0.5355, "VO": 0.5463, "H2O": 14.5, "CaOH": 0.334,
+    "AlO": 0.6414,
 }
 
 # Species with no ExoMol .broad file, mapped to their nearest measured
