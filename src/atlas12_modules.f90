@@ -235,6 +235,81 @@ MODULE mod_parameters
   ! and so cannot share the constant.
   REAL(8), PARAMETER :: CA4227_WLA   = 4227.918D0
 
+  ! --- NLTE departure coefficients for selected lines (developer knob) ---
+  ! SYNTHE is an LTE code: every line gets kappa = n_lower(LTE) * ... and
+  ! every line shares the single depth-dependent source function SLINE,
+  ! which without this machinery is just B_nu.  A handful of transitions
+  ! -- the alkali resonance lines above all -- are badly served by that.
+  ! Olander et al. (2021, A&A 649, A103) measure NLTE corrections of -0.06
+  ! to -0.37 dex on the K I resonance lines in M dwarfs, driven by photon
+  ! losses that overpopulate the lower level and deepen the line; Na I D
+  ! is the same kind of transition and Kurucz's own line format reserves
+  ! NBLO/NBUP columns and a CODEX whitelist (which includes Na I) for
+  ! exactly this correction.  His RNLTE preprocessor, which folded the
+  ! departure coefficients into GF, was never part of this port.
+  !
+  ! Given departure coefficients b_l, b_u for the two levels of a line,
+  !     kappa = kappa_LTE * b_l * [1 - (b_u/b_l) e^-x] / [1 - e^-x]
+  !     S_l   = (2h nu^3/c^2) / [(b_l/b_u) e^x - 1]           x = h nu/kT
+  ! and the emissivity reduces to the identity  kappa*S = b_u * kappa_LTE
+  ! * B_nu * (1 - e^-x), i.e. the line emissivity is simply b_u times its
+  ! LTE value.  SYNTHE accumulates one summed line opacity per (lambda,
+  ! depth), so what actually has to be tracked alongside it is the
+  ! opacity-weighted DEVIATION of the emissivity from LTE; see mod_nlte.
+  !
+  ! NLTE_MODE: 0 = pure LTE (production).  No extra arrays are allocated
+  !                and no NLTE code runs.
+  !            1 = null/identity test.  The full NLTE path is exercised
+  !                with b_l = NLTE_TEST_BLO and b_u = NLTE_TEST_BUP at
+  !                every depth.  Three settings matter:
+  !                  BLO = BUP = 1 : must reproduce mode 0 BIT FOR BIT.
+  !                    The factors above collapse to exactly 1.0 and 0.0
+  !                    -- not to within rounding -- because 1 - beta e^-x
+  !                    and 1 - e^-x become the same expression and y/y is
+  !                    exactly 1 in IEEE arithmetic.
+  !                  BLO = BUP = c : pure opacity rescaling of the tagged
+  !                    lines by exactly c with S_l still = B_nu, i.e.
+  !                    identical to shifting their log gf by log10(c) --
+  !                    a test of the kappa path against an answer known
+  !                    in advance.
+  !                  BUP < BLO     : S_l < B_nu, the photon-loss case.
+  !                    Opacity barely moves (the correction is O(e^-x),
+  !                    under a per cent at Na D in a solar photosphere)
+  !                    but the saturated core darkens toward b_u/b_l.
+  !                    This is the only setting that puts a nonzero number
+  !                    into the deviation accumulator.
+  !            2 = departure coefficients read from a <model>.dep sidecar,
+  !                built from a published grid by tools/nlte_make_dep.py and
+  !                interpolated onto this model's layers.  See read_dep_file
+  !                in mod_nlte for the format and the interpolation.  Good
+  !                for one-off and hand-crafted work.
+  !            3 = departure coefficients interpolated straight from the
+  !                locally extracted grid (tools/nlte_extract_grid.py +
+  !                nlte_build_index.py), in Teff, log g, [Fe/H], v_turb and
+  !                Na abundance, with no per-model preparation step.  This
+  !                is the production path for grid runs.  Point $NLTE_GRID
+  !                at the store prefix, or edit NLTE_GRID_DEFAULT.
+  !
+  ! NLTE_TEST_SHAPE selects what mode 1 puts into b (ignored otherwise):
+  !            0 = CONSTANT: b_l = NLTE_TEST_BLO, b_u = NLTE_TEST_BUP at
+  !                every depth and for every transition.  This is the
+  !                null test described above.
+  !            1 = STRUCTURED: b ramps with depth and differs between
+  !                transitions, per the table in mod_nlte.  Shape 0
+  !                writes the SAME number into every element of b, so it
+  !                cannot detect a wrong (transition, depth) index, a
+  !                reversed depth axis, or coefficients attributed to the
+  !                wrong line -- all of which are live risks the moment
+  !                mode 2 starts interpolating a real grid, and all of
+  !                which would then be indistinguishable from bad grid
+  !                data.  Shape 1 exists to separate those two failures
+  !                before the reader is written.  It is a harness, not
+  !                physics: the profile is analytic and made up.
+  INTEGER, PARAMETER :: NLTE_MODE       = 0
+  INTEGER, PARAMETER :: NLTE_TEST_SHAPE = 0
+  REAL(8), PARAMETER :: NLTE_TEST_BLO   = 1.0D0
+  REAL(8), PARAMETER :: NLTE_TEST_BUP   = 1.0D0
+
   ! Debug flag: set to 1 to print subroutine entry tracing to unit 6
   INTEGER, PARAMETER :: IDEBUG = 0
 
@@ -952,6 +1027,7 @@ FUNCTION interp_logu_cached(T, U_ARR, LOGU_ARR, LOGU2_ARR) RESULT(U)
 
   INTEGER :: LO, HI, MID
   REAL(8)  :: LT, LT_LO, LT_HI, F, LU_LO, LU_HI, HSTEP
+  LOGICAL :: UP_OK, DN_OK
 
   ! Persistent hint: remember the bracket from the last call.
   INTEGER :: LAST_LO = 10
@@ -979,14 +1055,30 @@ FUNCTION interp_logu_cached(T, U_ARR, LOGU_ARR, LOGU2_ARR) RESULT(U)
   ! --- Try the hint first: does T lie in the last bracket? ---
   LO = LAST_LO
   IF (LO .LT. 1 .OR. LO .GE. NT_BC) LO = 10
+
+  ! The "moved up" and "moved down" tests index T_GRID(LO+2) and
+  ! T_GRID(LO-1), which are out of bounds at the two ends of the grid.
+  ! They used to be written as one .AND. chain with the range test first
+  ! -- which is only safe if .AND. short-circuits, and Fortran does not
+  ! guarantee that: the standard leaves operand evaluation order to the
+  ! compiler.  At -O3 gfortran happened to short-circuit, so the reads
+  ! never occurred; at -O0 with -fcheck=bounds it evaluates both operands
+  ! and aborts on T_GRID(NT_BC+1), which made any bounds-checked build of
+  ! the code unrunnable.  Evaluating the guards into logicals first is
+  ! equivalent and does not depend on evaluation order.
+  UP_OK = .FALSE.
+  IF (LO+1 .LT. NT_BC) UP_OK = (T .GE. T_GRID(LO+1) .AND. T .LT. T_GRID(LO+2))
+  DN_OK = .FALSE.
+  IF (LO .GT. 1)       DN_OK = (T .GE. T_GRID(LO-1) .AND. T .LT. T_GRID(LO))
+
   IF (T .GE. T_GRID(LO) .AND. T .LT. T_GRID(LO+1)) THEN
     HI = LO + 1
-  ELSE IF (LO+1 .LT. NT_BC .AND. T .GE. T_GRID(LO+1) .AND. T .LT. T_GRID(LO+2)) THEN
+  ELSE IF (UP_OK) THEN
     ! Common case: T moved up by one grid cell (next depth point)
     LO = LO + 1
     HI = LO + 1
     LAST_LO = LO
-  ELSE IF (LO .GT. 1 .AND. T .GE. T_GRID(LO-1) .AND. T .LT. T_GRID(LO)) THEN
+  ELSE IF (DN_OK) THEN
     ! T moved down by one grid cell
     LO = LO - 1
     HI = LO + 1

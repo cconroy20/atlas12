@@ -79,6 +79,7 @@ files required.
 | `atlas12c.f90`        | ATLAS12 main program (iteration driver) |
 | `synthe_module.f90`   | SYNTHE shared data and procedures (hydrogen/He profiles, line opacity, `run_xnfpelsyn`) |
 | `mod_mklinelist.f90`  | In-memory line-list preprocessor (replaces standalone mklinelist + `synbeg`/`rgfall`/`rpredict`/`rmolecasc`/`rh2ofast` pipeline) |
+| `mod_nlte.f90`        | Departure coefficients for selected lines (SYNTHE only; scaffolding, default off) |
 | `synthe.f90`          | SYNTHE main program (spectral synthesis driver) |
 
 ## Building
@@ -151,7 +152,10 @@ correction floor, 1200 K), `IROSSTAB` (Rosseland-table interpolation:
 1=bilinear, 2=Shepard, 3=moving least squares), and `IQUAD` (`INTEG`
 quadrature: 0=legacy blended-parabola, 1=Steffen monotone cubic).
 `USE_KP_HYDROGEN` (Kurucz–Peterson hydrogen Stark profiles instead of
-Stehlé–Hutcheon) lives in `synthe_module.f90`.
+Stehlé–Hutcheon) lives in `synthe_module.f90`, and `CA4227_MODE`
+(Ca I 4227 resonance profile) and `NLTE_MODE` (departure coefficients
+for selected lines, see "Departure coefficients" below) live in
+`mod_parameters`.
 
 Abundance override file format: one element per line with two
 whitespace-separated columns, `Z  log10(number_fraction)`.  Lines
@@ -189,6 +193,108 @@ read.  Line lists are built in memory by `run_mklinelist`, which reads
 `lines.list` from `$ATLAS12/data/` and dispatches internally to the
 appropriate readers (gfall, predict, mol, h2o).
 
+### Departure coefficients (scaffolding, default off)
+
+SYNTHE is an LTE code: every line gets Boltzmann/Saha populations and
+the transfer step is handed one line source function, `SLINE = B_nu`.
+`mod_nlte` provides the machinery to override both for named
+transitions, given departure coefficients `b_l`, `b_u`:
+
+```
+kappa = kappa_LTE * b_l * [1 - (b_u/b_l) e^-x] / [1 - e^-x]
+S_l   = (2h nu^3/c^2) / [ (b_l/b_u) e^x - 1 ]        x = h nu / kT
+```
+
+Because these multiply to `kappa*S = b_u * kappa_LTE * B_nu * (1-e^-x)`,
+the retrofit needs only one extra accumulator carrying the
+opacity-weighted *deviation* of the emissivity from LTE; the tens of
+millions of LTE lines never touch it, and `SLINE` becomes the correct
+opacity-weighted mean where an NLTE line blends with LTE neighbours.
+
+Eligible transitions are declared in `mod_mklinelist`
+(`NLTE_TR_CODE`/`ELO`/`EUP`) and matched on species plus both level
+energies, so every hyperfine component of a multiplet is tagged at once;
+currently the Na I D doublet (10 components in `gfall`).  `read_gfall`
+records the tags unconditionally, exactly as it records `ICA4227`.
+
+`NLTE_MODE` in `mod_parameters` selects: `0` pure LTE (production —
+nothing is allocated and no NLTE code runs); `1` test harness; `2`
+departure coefficients from a `<model>.dep` sidecar; `3` interpolated
+straight from a locally extracted grid, with no per-model step.
+
+Mode 1 has two shapes, set by `NLTE_TEST_SHAPE`.  Shape `0` installs the
+constants `NLTE_TEST_BLO`/`NLTE_TEST_BUP` at every depth and for every
+transition; at `b = 1` this reproduces mode 0 bit for bit while running
+the whole NLTE path, which is the null test.  Shape `1` ramps `b` with
+depth (linear in log column mass, the same variable an external grid must
+be interpolated on) and gives the two transitions different values.
+Shape 0 writes the *same number everywhere*, so it cannot detect a wrong
+(transition, depth) index, a reversed depth axis, or coefficients
+attributed to the wrong line — failures that would otherwise first appear
+in mode 2, indistinguishable from bad grid data.
+
+**Mode 2** reads `<model>.dep` — looked for next to the *model file*, not
+in the working directory, because `b` belongs to a particular atmospheric
+structure.  The format is free-form text: `NTRANS`, `NDEPTH`, an optional
+`DEPTHVAR LOGRHOX`, then one row per depth holding `log10(rhox)` followed
+by `b_lo b_up` for each transition, ordered surface-first.  SYNTHE
+interpolates it linearly in `log10 b` against `log10` column mass, and
+**holds** the endpoint value outside the table rather than extrapolating;
+clamped layers are counted, warned about, and flagged in the dump.
+
+`tools/nlte_make_dep.py` builds the sidecar from a published grid
+(Amarsi et al. 2020 / Gerber et al. 2023 Turbospectrum packaging).  The
+grids are tabulated against τ₅₀₀₀, which SYNTHE does not carry, so the
+tool converts to column mass through the MARCS model the grid was solved
+on — hence `--marcs`.  Level indices must be given (`--levels`) or found
+by term energy from a model atom (`--atom`); the tool refuses to guess.
+`--selftest` round-trips the whole path against fabricated files.
+
+`tools/nlte_extract_grid.py` pulls the low-lying levels out of a published
+grid in one streaming pass, so the multi-GB download is paid once rather
+than per model.  The Na I grid has been extracted to
+`~/kurucz/nlte_grids/na/` (1.0 GB: tau_5000 and `b` for the 10 lowest Na I
+levels at all 436 255 nodes, losslessly — see the README there).
+
+The converter has
+been run for real against the Na I 1D grid: see `workdir/nad_nlte_real.png`
+and the ledger entry, and `workdir/nad_nlte/grid_extract/` for a 652 kB
+extract that reproduces the conversion without re-downloading 12 GB.
+
+**Mode 3** is the production path for grid runs.  It reads **one
+self-contained file** from `data/nlte/` — axes, parameter→record index and
+records together, so an index can never be paired with the wrong data — and
+interpolates `b` in **Teff, log g, [Fe/H], v_turb and Na abundance**: five
+axes, up to 32 corners, reading only the corner records (~79 kB) rather than
+the whole file.  `$NLTE_GRID` overrides the path.
+
+That file is *derived*.  `tools/nlte_extract_grid.py` makes the master store
+in one streaming pass over the published grid, `tools/nlte_build_index.py`
+adds the parameter lookup, and `tools/nlte_build_runtime.py` merges them and
+drops the 27% of records the index can never reach.  The master lives outside
+the repository; rebuilding the runtime file from it takes seconds, so only
+widening past the ten extracted levels needs the 15.9 GB download again.
+See `data/nlte/README.txt`.
+
+Two things it handles that a plain weighted sum would not.  Each corner
+carries its **own** τ₅₀₀₀ grid, so corners are first placed on *this*
+model's τ₅₀₀₀ (computed by `run_xnfpelsyn`) and only then combined.  And
+corners can be **missing** — the grid is 41% filled because it is
+HR-diagram shaped — so absent weight is dropped and the rest renormalised,
+with the surviving weight fraction reported rather than silently absorbed.
+
+Note `[α/Fe]` is not an axis: the MARCS `_st_` models tie it to `[Fe/H]` by
+the standard relation, so an α-enhanced model receives `b` computed at the
+standard α for its metallicity.  MARCS is also plane-parallel only at
+log g ≥ 3; below that the index falls back to spherical models at
+1 M⊙, and mixed-geometry interpolation is flagged.
+
+Whenever NLTE is active, SYNTHE writes `<base>.nlte`: one row per
+(transition, depth) with the depth scale, the installed `b`, and the
+factors `nlte_factors` actually returned, at full double precision.
+`tools/nlte_check_dump.py` differences that against the profile it should
+have come from.
+
 The electron density (with its consistent `XNATOM` and `RHO`) is
 recomputed self-consistently from the model structure rather than taken
 from the `.atm` file (compile-time toggle `RECOMPUTE_XNE` in
@@ -219,6 +325,7 @@ Output files:
 | `<base>.spec`     | always                  | ASCII spectrum: wavelength (Å, F11.4), flux (E15.6), continuum flux (E15.6) |
 | `<base>.linform`  | only if `more_output=yes` | Per-wavelength diagnostic: wavelength, emergent H, surface H, monochromatic optical depth at each atmospheric layer |
 | `<base>.mol`      | only if `more_output=yes` | Molecular number-density diagnostics vs. depth for all species tracked by the equation of state |
+| `<base>.nlte`       | only if `NLTE_MODE` /= 0   | Per-(transition, depth) departure coefficients and the opacity/source-function factors derived from them; see "Departure coefficients" above |
 | `<base>.lines`      | only if `more_output=yes` | Line list for all lines used in synthesis. Columns are: LTE/NLTE, vacuum wavelengths (Å), species code, nelion (internal species identifier), ELO, cgf (strength indicator), gamma_rad, gamma_stark, gamma_vdW |
 
 Wavelengths are handled internally in nanometers on a logarithmic grid

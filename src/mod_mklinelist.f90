@@ -94,6 +94,54 @@ MODULE mod_mklinelist
   ! Vacuum wavelength [nm] of that line, as it appears in gfall.
   REAL(8), PARAMETER :: CA4227_WLVAC = 422.7918D0
 
+  ! --- Transitions eligible for NLTE departure coefficients -------------
+  ! Kurucz's gfall format carries NBLO/NBUP columns for exactly this, and
+  ! read_gfall routes any record with NBLO+NBUP /= 0 into nlte_lines().
+  ! No public gfall has them populated (Na I D carries 0 0), and filling
+  ! them would mean editing the distributed line list, so the transitions
+  ! are named here instead and matched on (species, E_low, E_up).
+  !
+  ! Matching on the level ENERGIES, not on wavelength, is deliberate: the
+  ! alkali resonance lines are split in gfall into several hyperfine
+  ! components at slightly different wavelengths (Na I D2 has six, D1 has
+  ! four, via the iso1=23 / x1 relative-log-gf mechanism) which all share
+  ! one pair of fine-structure levels and therefore one pair of departure
+  ! coefficients.  Energy matching tags the whole multiplet at once.
+  !
+  ! Entries are the Na I D doublet, 3s 2S1/2 - 3p 2P3/2 (D2, 5891.58 A
+  ! vac) and 3s 2S1/2 - 3p 2P1/2 (D1, 5897.56 A vac).  Codes are Kurucz
+  ! species codes x 100, so 1100 = Na I -- which is CODEX entry 15, i.e.
+  ! already on Kurucz's own NLTE whitelist.
+  INTEGER, PARAMETER, PUBLIC :: NLTE_NTRANS = 2
+  INTEGER, PARAMETER :: NLTE_TR_CODE(NLTE_NTRANS) = [ 1100,       1100      ]
+  REAL(8), PARAMETER :: NLTE_TR_ELO (NLTE_NTRANS) = [    0.000D0,    0.000D0]
+  REAL(8), PARAMETER :: NLTE_TR_EUP (NLTE_NTRANS) = [16973.366D0, 16956.170D0]
+  ! Tolerance on both level energies [cm^-1].  Loose enough to absorb the
+  ! level-energy revisions between gfall releases, tight enough that no
+  ! other Na I transition can collide (the next 3p-related level is
+  ! thousands of cm^-1 away, and the D1/D2 upper levels are 17 apart).
+  REAL(8), PARAMETER :: NLTE_TR_ETOL = 5.0D0
+
+  ! Level indices of each transition IN THE GRID'S MODEL ATOM, needed by
+  ! NLTE_MODE = 3 which reads b per level straight from the extracted store.
+  ! For Na (atom.na_qmh, 290 levels): 1 = 3s 2S at 0 cm^-1, 2 = 3p 2P1/2 at
+  ! 16956.170, 3 = 3p 2P3/2 at 16973.366.  So D2 = 1->3 and D1 = 1->2.
+  ! These are a property of the GRID, not of our line list, and must be
+  ! rechecked against the model atom if the grid is ever reissued.
+  INTEGER, PARAMETER, PUBLIC :: NLTE_TR_LEVLO(NLTE_NTRANS) = [1, 1]
+  INTEGER, PARAMETER, PUBLIC :: NLTE_TR_LEVUP(NLTE_NTRANS) = [3, 2]
+
+  ! Indices into lte_lines() of the tagged components, ASCENDING, with the
+  ! transition each belongs to.  Recorded unconditionally by read_gfall --
+  ! exactly like ICA4227 -- so that nothing in the line reader depends on
+  ! the NLTE_MODE setting; SYNTHE decides whether to use them.  As with
+  ! ICA4227 the indices survive assembly because run_mklinelist copies the
+  ! gfall block to the FRONT of lte_lines.
+  INTEGER, PARAMETER, PUBLIC :: MAX_NLTE_TAGGED = 64
+  INTEGER, PUBLIC :: NLTE_TAG_IDX(MAX_NLTE_TAGGED)   = 0
+  INTEGER, PUBLIC :: NLTE_TAG_TRANS(MAX_NLTE_TAGGED) = 0
+  INTEGER, PUBLIC :: N_NLTE_TAGGED = 0
+
   ! Set VERBOSE = 1 before calling run_mklinelist to get progress output on
   ! stdout.  Errors and warnings are always printed regardless of setting.
   INTEGER, PUBLIC :: VERBOSE = 0
@@ -404,6 +452,9 @@ CONTAINS
     n_lte_mol     = 0
     n_lte_h2o     = 0
     n_nlte_gfall  = 0
+    ! NLTE tags index into lte_lines, so they are only valid for the list
+    ! built by THIS call; clear them before read_gfall repopulates.
+    N_NLTE_TAGGED = 0
     ALLOCATE(lte_gfall(0))
     ALLOCATE(lte_predict(0))
     ALLOCATE(lte_mol(0))
@@ -666,7 +717,7 @@ CONTAINS
     INTEGER  :: ios, nelem, icharge, linesize, lim, ncon, nelionx, itype, ic
     INTEGER  :: ixwl, nbuff, ishift, ishiftp, icode_r
     REAL(8)  :: delfactor, eshift, eshiftp, frelin, cgf, frq4pi
-    REAL(8)  :: effnsq, zeff, rsqup, rsqlo, eup
+    REAL(8)  :: effnsq, zeff, rsqup, rsqlo, eup, eup_d
     REAL(8)  :: gammar_d, gammas_d, gammaw_d, elo_d
     INTEGER  :: nelion_i
 
@@ -758,6 +809,7 @@ CONTAINS
       ! --- oscillator strength and energy ---
       gf    = 10.0**(gflog + dgflog + x1 + x2)
       elo_d = DBLE(MIN(ABS(e), ABS(ep)))
+      eup_d = DBLE(MAX(ABS(e), ABS(ep)))
 
       ! --- damping constants ---
       gammar_d = 10.0D0**(gr + dgammar)
@@ -914,6 +966,27 @@ CONTAINS
         ! lines within a milli-nm are excited-state transitions.
         IF (icode_r .EQ. 2000 .AND. elo_d .LT. 1.0D0 .AND. &
             ABS(wlvac - CA4227_WLVAC) .LT. 2.0D-3) ICA4227 = n_lte
+
+        ! NLTE-eligible transition?  Matched on species + both level
+        ! energies so that every hyperfine component of a multiplet is
+        ! tagged with the same transition index.  n_lte ascends, so
+        ! NLTE_TAG_IDX comes out sorted, which is what lets SYNTHE walk
+        ! it with a single cursor instead of searching per line.
+        DO ic = 1, NLTE_NTRANS
+          IF (icode_r .EQ. NLTE_TR_CODE(ic) .AND. &
+              ABS(elo_d - NLTE_TR_ELO(ic)) .LT. NLTE_TR_ETOL .AND. &
+              ABS(eup_d - NLTE_TR_EUP(ic)) .LT. NLTE_TR_ETOL) THEN
+            IF (N_NLTE_TAGGED .GE. MAX_NLTE_TAGGED) THEN
+              WRITE(6,'(a,i0,a)') ' WARNING: more than ', MAX_NLTE_TAGGED, &
+                ' NLTE-tagged line components; the rest stay LTE'
+            ELSE
+              N_NLTE_TAGGED = N_NLTE_TAGGED + 1
+              NLTE_TAG_IDX  (N_NLTE_TAGGED) = n_lte
+              NLTE_TAG_TRANS(N_NLTE_TAGGED) = ic
+            END IF
+            EXIT
+          END IF
+        END DO
       END IF
 
     END DO

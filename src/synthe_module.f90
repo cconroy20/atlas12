@@ -36,7 +36,7 @@ MODULE synthe_module
 !
 ! ============================================================================
 
-  USE mod_atlas_data, only: COMPUTE_ONE_POP, KAPP, DATADIR, &
+  USE mod_atlas_data, only: COMPUTE_ONE_POP, KAPP, INTEG, DATADIR, &
                             ATMASS, &
                             STEHLE_DATA, STEHLE_TABLES_LOADED, &
                             INIT_STARK_TABLES, &
@@ -418,6 +418,16 @@ MODULE synthe_module
   !   bsi1_gs(j)  = same for Si I ground state
   !   bsi2_gs(j)  = same for Si II ground state
   ! Filled by compute_bfudge_pops() in run_xnfpelsyn.
+  ! Continuum optical depth at 5000 A on the model's own layers, filled by
+  ! run_xnfpelsyn.  ATLAS12 .atm files carry RHOX and ABROSS, so column mass
+  ! is exact and tau_Rosseland is derivable, but tau_5000 -- the standard
+  ! reference scale, and the coordinate the published NLTE grids are
+  ! tabulated against -- was not available anywhere.  It is a single extra
+  ! KAPP call at 500 nm plus one INTEG, and it is what lets departure
+  ! coefficients be mapped onto our layers without going through the MARCS
+  ! model the grid was solved on.
+  REAL(8), SAVE :: tau5000_sv(kw) = 0.0D0
+
   REAL(8), SAVE :: bhyd_gs(kw)
   REAL(8), SAVE :: bc1_gs(kw), bc2_gs(kw)
   REAL(8), SAVE :: bsi1_gs(kw), bsi2_gs(kw)
@@ -3751,6 +3761,7 @@ CONTAINS
     INTEGER  :: i, j, nu, in_e, last1, nelem, ion
     INTEGER  :: is_iter, il_iter, ion_iter, n_kept, n_dropped
     REAL(8)  :: edge, sav, freq15_x
+    REAL(8)  :: kap5000_w(kw)
     REAL(8)  :: eq
     REAL(8)  :: wl_new, frq_new, kT_REF_RY, w_lev, w_ground, min_dwl
     REAL(8)  :: a_sort(me)       ! sortable wavelength absolute values
@@ -4261,6 +4272,31 @@ CONTAINS
         END DO
       END IF
     END DO
+
+    ! ------------------------------------------------------------------
+    !  Continuum tau_5000 on the model's own layers.
+    !
+    !  Done here, inside the IFPRES=1 region, because KAPP needs the
+    !  Boltzmann populations refreshed at its frequency exactly as the
+    !  continuum loop above does; 500 nm is generally OUTSIDE the synthesis
+    !  window, so it cannot be lifted from the continuum tables.
+    ! ------------------------------------------------------------------
+    FREQ     = CLIGHT_NMS / 500.0D0
+    freq15_x = FREQ / 1.0D15
+    FREQLG   = LOG(FREQ)
+    WAVE     = 500.0D0
+    WAVENO   = 1.0D7 / WAVE
+    DO j = 1, nrhox_a
+      EHVKT(j) = EXP(-FREQ * hkt_a(j))
+      STIM(j)  = 1.0D0 - EHVKT(j)
+      BNU(j)   = BNU_PREFAC * freq15_x**3 * EHVKT(j) / STIM(j)
+    END DO
+    CALL KAPP()
+    DO j = 1, nrhox_a
+      kap5000_w(j) = ACONT(j) + SIGMAC(j)
+    END DO
+    CALL INTEG(rhox_a, kap5000_w, tau5000_sv, nrhox_a, &
+               kap5000_w(1)*rhox_a(1))
 
     ! Restore IFPRES=0 so that COMPUTE_ONE_POP (Section 6) does not
     ! trigger NMOLEC internally.

@@ -49,6 +49,9 @@ PROGRAM SYNTHE
   USE mod_parameters, only: LINE_CUTOFF, &
                             CA4227_MODE, CA4227_PP, CA4227_PS, CA4227_PX, &
                             CA4227_DLMAX, CA4227_WLA
+  USE mod_nlte,       only: nlte_on, nlte_init, nlte_report, nlte_dump, &
+                            nlte_scan_reset, nlte_tag_at, nlte_factors, &
+                            nlte_set_params
   USE mod_atlas_data, only: &
     JOSH, READIN, BLOCKJ, BLOCKH, set_bc_data_dir, &
     DATADIR, IFSYNTHE, IFMOLOUT, DUMP_CONTINUUM, TURBV_UNSET, &
@@ -59,7 +62,7 @@ PROGRAM SYNTHE
     ACONT, ALINE, BNU, DELTAW, EHVKT, FREQ, FREQLG, &
     HNU, IFSCAT, IFSURF, NMU, NUHI, NULO, NUMNU, &
     SCONT, SIGMAC, SIGMAL, SLINE, STIM, &
-    SURFI, TAUNU, TEFF
+    SURFI, TAUNU, TEFF, GLOG, ABUND, XRELATIVE
   IMPLICIT NONE
 
   ! --- Source-function fudge parameters ----------------------------------
@@ -120,6 +123,23 @@ PROGRAM SYNTHE
   ! --- In-memory opacity matrix, (length, nrhox) ------------------------
   REAL(4), ALLOCATABLE :: opacity_matrix(:,:)
 
+  ! --- NLTE emissivity deviation, (length, nrhox) -----------------------
+  ! Companion to opacity_matrix holding  sum_i kappa_i * (r_i - 1)  where
+  ! r_i = S_i/B_nu, so that the opacity-weighted line source function is
+  !   SLINE = BNU * (opacity_matrix + dev_matrix) / opacity_matrix.
+  ! Only lines with departure coefficients contribute, so this stays
+  ! identically zero away from them and the LTE line loop never writes to
+  ! it.  Allocated ONLY when nlte_on -- it is the same size as
+  ! opacity_matrix (about 100 MB for a full optical window at R = 3e5),
+  ! and there is no reason to pay that in production.  dev_buffer is its
+  ! per-depth accumulator, the twin of BUFFER.
+  REAL(4), ALLOCATABLE :: dev_matrix(:,:)
+  REAL(4), ALLOCATABLE :: dev_buffer(:)
+  REAL(8)              :: sratio_sv(kw)   ! SLINE/BNU per depth, this lambda
+  REAL(8)              :: fkappa_s, fdev_s, xhnukt
+  REAL(4)              :: devfac_s
+  INTEGER              :: k_nlte
+
   ! --- Scalar work variables --------------------------------------------
   INTEGER   :: i, j, nu, iedge, nbuff_i, eqpos
   INTEGER   :: iline, iwave
@@ -139,6 +159,7 @@ PROGRAM SYNTHE
 
   ! --- CLI / filename scratch -------------------------------------------
   CHARACTER(LEN=512) :: model_file, spec_file, linform_file, mol_file, model_base
+  CHARACTER(LEN=512) :: dep_file
   CHARACTER(LEN=512) :: cont_file
   ! Minimum supported resolving power (see the check below).
   REAL(8), PARAMETER :: RESOLU_MIN = 300000.0D0
@@ -283,6 +304,18 @@ PROGRAM SYNTHE
   END IF
   dotpos = INDEX(TRIM(model_base), '.', BACK=.TRUE.)
   IF (dotpos .GT. 1) model_base = model_base(1:dotpos-1)
+  ! Departure-coefficient sidecar for NLTE_MODE = 2.  Unlike the outputs,
+  ! this is an INPUT and is looked for next to the model file rather than in
+  ! the working directory: b depends on the atmospheric structure, so the
+  ! two belong together.
+  eqpos = INDEX(TRIM(model_file), '/', BACK=.TRUE.)
+  dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
+  IF (dotpos .GT. eqpos + 1) THEN
+    dep_file = model_file(1:dotpos-1) // '.dep'
+  ELSE
+    dep_file = TRIM(model_file) // '.dep'
+  END IF
+
   spec_file    = TRIM(model_base) // '.spec'
   mol_file     = TRIM(model_base) // '.mol'
   linform_file = TRIM(model_base) // '.linform'
@@ -384,6 +417,26 @@ PROGRAM SYNTHE
     xnfh2(j)   = REAL(xf_xnfh2(j))
   END DO
 
+  ! Model parameters for the NLTE_MODE = 3 grid lookup.  vturb is taken at
+  ! the layer nearest tau_5000 = 1, i.e. where the lines form, rather than
+  ! averaged over a scale on which it may vary.
+  eqpos = 1
+  DO j = 2, nrhox
+    IF (ABS(LOG10(MAX(tau5000_sv(j),1.0D-99))) .LT. &
+        ABS(LOG10(MAX(tau5000_sv(eqpos),1.0D-99)))) eqpos = j
+  END DO
+  CALL nlte_set_params(TEFF, GLOG, xf_vturb(eqpos)/1.0D5, &
+                       ABUND(1), ABUND(11) + XRELATIVE(11), &
+                       ABUND(26) + XRELATIVE(26))
+
+  ! Departure coefficients for tagged transitions (NLTE_MODE developer
+  ! flag).  Sets nlte_on; a no-op when NLTE_MODE = 0.  Placed here, after
+  ! the depth structure is unpacked, because the b profile is a function
+  ! of column mass -- for the structured test by construction, and for an
+  ! external grid because that is the variable it must be interpolated on.
+  CALL nlte_init(nrhox, xf_rhox(1:nrhox), xf_t(1:nrhox), &
+                 tau5000_sv(1:nrhox), TRIM(dep_file))
+
   ! --- Unpack continuum opacity tables ---
   DO j = 1, nrhox_a
     nu = 0
@@ -430,10 +483,15 @@ PROGRAM SYNTHE
   WRITE(6,*) 'Accumulating opacity...'
   ALLOCATE(opacity_matrix(length, nrhox))
   opacity_matrix = 0.0
+  IF (nlte_on) THEN
+    ALLOCATE(dev_matrix(length, nrhox), dev_buffer(length))
+    dev_matrix = 0.0
+  END IF
 
   depth_loop: DO j = 1, nrhox
 
     buffer(1:length) = 0.0
+    IF (nlte_on) dev_buffer(1:length) = 0.0
 
     ! Unpack total continuum opacity (log10) into (3, iedge) quadratic
     ! interpolation basis over wavelength, then exponentiate.
@@ -512,7 +570,15 @@ PROGRAM SYNTHE
 
     ! LTE metal lines: Voigt core on the wavelength grid + r^-2 far-wing tail
     IF (nlines_lte .GT. 0) THEN
+       CALL nlte_scan_reset()
        DO iline = 1, nlines_lte
+          ! NLTE membership.  Must be tested before any CYCLE below, since
+          ! the cursor in nlte_tag_at only advances on a hit and expects to
+          ! see every iline in order.  k_nlte = 0 for the overwhelming
+          ! majority of lines; when NLTE is off it costs one compare.
+          k_nlte = 0
+          IF (nlte_on) k_nlte = nlte_tag_at(iline)
+
           nbuff_s   = lte_lines(iline)%nbuff
           congf_s   = lte_lines(iline)%cgf
           congf_nel = lte_lines(iline)%nelion
@@ -527,6 +593,20 @@ PROGRAM SYNTHE
           IF (is_ca4227 .AND. CA4227_MODE .LT. 0) CYCLE
 
           kappa0_s = congf_s * REAL(xnfdop(congf_nel))
+
+          ! Departure coefficients: rescale the opacity and record the
+          ! per-unit-opacity emissivity deviation.  Applied BEFORE the
+          ! cutoff tests so a line weakened out of relevance by NLTE is
+          ! dropped on its true strength.  devfac_s is 0 in LTE, so the
+          ! deviation accumulator stays untouched for every other line.
+          devfac_s = 0.0
+          IF (k_nlte .GT. 0) THEN
+             xhnukt = CLIGHT_NMS / (wbegin * ratio**(nbuff_s-1)) * hkt(j)
+             CALL nlte_factors(k_nlte, j, xhnukt, fkappa_s, fdev_s)
+             kappa0_s = kappa0_s * REAL(fkappa_s, 4)
+             devfac_s = REAL(fdev_s, 4)
+          END IF
+
           kapmin_s = continuum(MIN(MAX(nbuff_s,1),length)) * REAL(LINE_CUTOFF, 4)
           IF (kappa0_s .LT. kapmin_s) CYCLE
           kappa0_s = kappa0_s * REAL(EXP(-elo_s * hckt(j)))
@@ -539,6 +619,8 @@ PROGRAM SYNTHE
           centre_on_grid: IF (nbuff_s .GE. 1 .AND. nbuff_s .LE. length) THEN
              kapcen_s = kappa0_s * voigt_profile(0.0, adamp_s)
              buffer(nbuff_s) = buffer(nbuff_s) + kapcen_s
+             IF (k_nlte .GT. 0) &
+               dev_buffer(nbuff_s) = dev_buffer(nbuff_s) + kapcen_s*devfac_s
           END IF centre_on_grid
 
           dvoigt = 1.0 / dopple_nel / REAL(resolu)
@@ -592,6 +674,12 @@ PROGRAM SYNTHE
              DO istep = minblue_i, maxred
                 buffer(nbuff_s + istep) = buffer(nbuff_s + istep) + profile(istep)
              END DO
+             IF (k_nlte .GT. 0) THEN
+                DO istep = minblue_i, maxred
+                   dev_buffer(nbuff_s + istep) = dev_buffer(nbuff_s + istep) &
+                                               + profile(istep)*devfac_s
+                END DO
+             END IF
              IF (nbuff_s .LE. 1) CYCLE
           END IF
 
@@ -601,10 +689,17 @@ PROGRAM SYNTHE
           DO istep = minblue_i, maxblue
              buffer(nbuff_s - istep) = buffer(nbuff_s - istep) + profile(istep)
           END DO
+          IF (k_nlte .GT. 0) THEN
+             DO istep = minblue_i, maxblue
+                dev_buffer(nbuff_s - istep) = dev_buffer(nbuff_s - istep) &
+                                            + profile(istep)*devfac_s
+             END DO
+          END IF
        END DO
     END IF
 
     opacity_matrix(1:length, j) = buffer(1:length)
+    IF (nlte_on) dev_matrix(1:length, j) = dev_buffer(1:length)
 
   END DO depth_loop
 
@@ -621,9 +716,25 @@ PROGRAM SYNTHE
     DO j = 1, nrhox
       asynth(j) = REAL( opacity_matrix(iwave, j) * (1.0D0 - EXP(-freq8*hkt(j))) )
     END DO
-    CALL process_wavelength_point(wave8, asynth)
+    ! Opacity-weighted line source function in units of B_nu.  The
+    ! stimulated-emission factor is common to numerator and denominator and
+    ! cancels, so this can be formed from the raw (pre-STIM) accumulators.
+    ! Where no line has departure coefficients the deviation is identically
+    ! zero and sratio is exactly 1.
+    sratio_sv(1:nrhox) = 1.0D0
+    IF (nlte_on) THEN
+      DO j = 1, nrhox
+        IF (opacity_matrix(iwave, j) .GT. 0.0) &
+          sratio_sv(j) = 1.0D0 + DBLE(dev_matrix(iwave, j)) &
+                               / DBLE(opacity_matrix(iwave, j))
+      END DO
+    END IF
+    CALL process_wavelength_point(wave8, asynth, sratio_sv)
   END DO
 
+  IF (nlte_on) DEALLOCATE(dev_matrix, dev_buffer)
+  CALL nlte_report()
+  CALL nlte_dump(TRIM(model_base))
   DEALLOCATE(opacity_matrix)
   CLOSE(UNIT=11)
   IF (more_output) THEN
@@ -746,10 +857,13 @@ CONTAINS
   !
   !    wave_in : wavelength in nm
   !    asyn    : stimulated-emission-corrected line opacity vector (nrhox)
+  !    sratio  : opacity-weighted line source function in units of B_nu
+  !              (all 1 in LTE; see the NLTE block in the wavelength loop)
   ! ------------------------------------------------------------------------
-  SUBROUTINE process_wavelength_point(wave_in, asyn)
+  SUBROUTINE process_wavelength_point(wave_in, asyn, sratio)
     REAL(8), INTENT(IN) :: wave_in
     REAL(4), INTENT(IN) :: asyn(kw)
+    REAL(8), INTENT(IN) :: sratio(kw)
 
     REAL(8) :: q_loc(41)
     INTEGER :: jj, mu_loc
@@ -769,6 +883,21 @@ CONTAINS
       SLINE(jj)  = BNU(jj) * STIM(jj) / (bfudge_sv(jj) - EHVKT(jj))
       SIGMAL(jj) = DBLE(asyn(jj)) * fscat_sv(jj)
     END DO
+
+    ! NLTE source function, applied in a SEPARATE guarded loop rather than
+    ! as a fourth factor in the expression above.  sratio is exactly 1 in
+    ! LTE, so folding it in is mathematically a no-op -- but it is not a
+    ! CODEGEN no-op: the extra operand changed how gfortran contracted the
+    ! neighbouring multiply-add at -O3 -march=native, which moved 2 of 2544
+    ! points of a 3000 K spectrum by one unit in the last printed digit.
+    ! Harmless in itself, but it costs the exact mode-0 == pre-change
+    ! equality that makes the null test able to prove anything.  Leaving
+    ! the LTE expression textually untouched keeps that guarantee.
+    IF (nlte_on) THEN
+      DO jj = 1, nrhox
+        SLINE(jj) = SLINE(jj) * sratio(jj)
+      END DO
+    END IF
     CALL josh(1, IFSURF)
 
     IF (more_output) &

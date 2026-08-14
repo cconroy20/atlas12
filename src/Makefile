@@ -6,7 +6,8 @@
 #   make synthe       Build synthe.exe only
 #
 # Compile order:
-#   mod_mklinelist -> atlas12_modules -> {atlas12c, synthe_module -> synthe}
+#   mod_mklinelist -> atlas12_modules -> {atlas12c,
+#                                          mod_nlte -> synthe_module -> synthe}
 # (ATLAS12 now reads diatomic line lists via mod_mklinelist, the same
 #  reader SYNTHE uses, so mklinelist must be built first for both.)
 #
@@ -36,13 +37,14 @@ BINDIR   = ../bin
 # below (mod_mklinelist before atlas12_modules, which USEs it).
 COMMON_OBJ = mod_mklinelist.o atlas12_modules.o
 ATLAS_OBJ  = $(COMMON_OBJ) atlas12c.o
-SYNTHE_OBJ = $(COMMON_OBJ) synthe_module.o synthe.o
+SYNTHE_OBJ = $(COMMON_OBJ) mod_nlte.o synthe_module.o synthe.o
 
 all: clean
 	$(FC) $(FFLAGS) -c mod_mklinelist.f90
 	$(FC) $(FFLAGS) -c atlas12_modules.f90
 	$(FC) $(FFLAGS) -c atlas12c.f90
 	$(FC) $(FFLAGS) -o atlas12c.exe $(ATLAS_OBJ)
+	$(FC) $(FFLAGS) -c mod_nlte.f90
 	$(FC) $(FFLAGS) -c synthe_module.f90
 	$(FC) $(FFLAGS) -c synthe.f90
 	$(FC) $(FFLAGS) -o synthe.exe $(SYNTHE_OBJ)
@@ -60,6 +62,7 @@ atlas: clean
 synthe: clean
 	$(FC) $(FFLAGS) -c mod_mklinelist.f90
 	$(FC) $(FFLAGS) -c atlas12_modules.f90
+	$(FC) $(FFLAGS) -c mod_nlte.f90
 	$(FC) $(FFLAGS) -c synthe_module.f90
 	$(FC) $(FFLAGS) -c synthe.f90
 	$(FC) $(FFLAGS) -o synthe.exe $(SYNTHE_OBJ)
