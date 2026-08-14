@@ -79,7 +79,7 @@ files required.
 | `atlas12c.f90`        | ATLAS12 main program (iteration driver) |
 | `synthe_module.f90`   | SYNTHE shared data and procedures (hydrogen/He profiles, line opacity, `run_xnfpelsyn`) |
 | `mod_mklinelist.f90`  | In-memory line-list preprocessor (replaces standalone mklinelist + `synbeg`/`rgfall`/`rpredict`/`rmolecasc`/`rh2ofast` pipeline) |
-| `mod_nlte.f90`        | Departure coefficients for selected lines (SYNTHE only; scaffolding, default off) |
+| `mod_nlte.f90`        | NLTE departure coefficients for named transitions (SYNTHE only; `NLTE_MODE`, default off) |
 | `synthe.f90`          | SYNTHE main program (spectral synthesis driver) |
 
 ## Building
@@ -193,7 +193,7 @@ read.  Line lists are built in memory by `run_mklinelist`, which reads
 `lines.list` from `$ATLAS12/data/` and dispatches internally to the
 appropriate readers (gfall, predict, mol, h2o).
 
-### Departure coefficients (scaffolding, default off)
+### NLTE departure coefficients (default off)
 
 SYNTHE is an LTE code: every line gets Boltzmann/Saha populations and
 the transfer step is handed one line source function, `SLINE = B_nu`.
@@ -250,16 +250,8 @@ on — hence `--marcs`.  Level indices must be given (`--levels`) or found
 by term energy from a model atom (`--atom`); the tool refuses to guess.
 `--selftest` round-trips the whole path against fabricated files.
 
-`tools/nlte_extract_grid.py` pulls the low-lying levels out of a published
-grid in one streaming pass, so the multi-GB download is paid once rather
-than per model.  The Na I grid has been extracted to
-`~/kurucz/nlte_grids/na/` (1.0 GB: tau_5000 and `b` for the 10 lowest Na I
-levels at all 436 255 nodes, losslessly — see the README there).
-
-The converter has
-been run for real against the Na I 1D grid: see `workdir/nad_nlte_real.png`
-and the ledger entry, and `workdir/nad_nlte/grid_extract/` for a 652 kB
-extract that reproduces the conversion without re-downloading 12 GB.
+The converter has been run for real against the Na I 1D grid; see the
+ledger entry for the results and their caveats.
 
 **Mode 3** is the production path for grid runs.  It reads **one
 self-contained file** from `data/nlte/` — axes, parameter→record index and
@@ -407,6 +399,7 @@ The full contents of the data directory, organized by purpose:
 | `mol.tar.gz` †           | —                | Archive of molecular sub-lists referenced from `lines.list`; unpack in place |
 | `h2opokazatel.bin` ‡     | ATLAS12 / SYNTHE | H₂O pseudo-line list (51.3M records) built from ExoMol POKAZATEL; replaces `h2ofastfix.bin` (P&S 1997).  Rebuild with `tools/build_h2o_pokazatel.py --raw --write-raw` |
 | `mol/tiototo2024.bin` ‡  | ATLAS12 / SYNTHE | TiO line list (131.6M records, ⁴⁶Ti–⁵⁰Ti) from ExoMol Toto; replaces `schwenke.bin` (Schwenke 1997).  Both codes resolve it through `lines.list`, so they cannot diverge |
+| `nlte/*.nlte` ‡          | SYNTHE           | NLTE departure-coefficient grids, one self-contained file per element, for `NLTE_MODE = 3`.  Ships with Na I (789 MB).  Derived — see `data/nlte/README.txt` for provenance and the three-stage rebuild |
 | `mol/alo_atp.dat` ‡      | ATLAS12 / SYNTHE | AlO line list (4.93M records) from ExoMol ATP.  The B–X bands at 4842 and 4648 Å reach 60% of the local extinction at the τ(4500 Å) = 1 layer of a 2900 K dwarf; on by default.  Rebuild with `tools/exomol_to_kurucz.py --gns 6 --icode 813 --iso 16` |
 
 † Not tracked in the repository; download from the Google Drive folder above.
@@ -434,6 +427,12 @@ not in the repository.)
 | `mann_compare_plot.py` | The house three-panel comparison figure (data / ATLAS12+SYNTHE / PHOENIX NewEra), importable as `plot_star()` |
 | `mann_lsf_fit.py` | Per-star effective-resolution measurement of the Mann spectra (chunk fits with velocity nuisance) |
 | `uves_compare.py` | High-resolution line-profile comparison of a ladder star's R=300k synthesis against ESO UVES spectra |
+| `nlte_extract_grid.py` | One streaming pass over a published NLTE grid (15.9 GB zipped for Na I), keeping τ₅₀₀₀ and the low-lying levels of every record.  Pays the download once instead of per model; writes the master store, which lives outside the repository |
+| `nlte_build_index.py` | Parameter→record lookup over the master store (Teff, log g, [Fe/H], v_turb, ΔNa), including the geometry policy: plane-parallel where MARCS has it, otherwise spherical at 1 M⊙ |
+| `nlte_build_runtime.py` | Merges store and index into the single self-contained `data/nlte/*.nlte` file SYNTHE reads, dropping the records the index cannot reach.  Seconds to run, so policy changes are a local rebuild |
+| `nlte_make_dep.py` | Builds a `<model>.dep` sidecar for `NLTE_MODE = 2` (one-off and hand-crafted work); `--selftest` round-trips the whole path against fabricated files |
+| `nlte_check_dump.py` | Differences a `<model>.nlte` diagnostic dump against the profile it should have come from — separates a plumbing bug from bad grid data |
+| `nad_nlte_plot.py` | Stacked LTE-vs-NLTE panels for the Na D region, with per-panel axis control and optional instrumental smoothing (`--smooth-to`) |
 | `tmin_perturb.py`, `tmin_fit.py`, `tmin_rf.py` (+ plot drivers) | T(τ) perturbation / T-min fitting / response-function machinery on converged models |
 | `build_h2o_pokazatel.py` | Build `data/h2opokazatel.bin` from ExoMol POKAZATEL: exact raw-transition binning (`--raw`/`--validate-raw`/`--write-raw`) plus the super-line NNLS cross-check route |
 | `build_cia_table.py` | Build `data/h2collop.dat` from the HITRAN CIA sets (+ BJF01 for the H₂–H₂ continuation above Abel's range); `--validate` re-derives the published Abel/Borysow comparison, the ν² low-frequency slope, and seam continuity from the raw files.  Source URLs in the docstring |

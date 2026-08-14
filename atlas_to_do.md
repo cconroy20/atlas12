@@ -147,3 +147,57 @@ at the percent level; what survives:
   (was ~2.9%) on the corrected network -- rerun the limit-cycle diagnosis.
 - **Solar absolute (+2.1%) recheck at R=300k**; then the sample-wide
   rerun (all medians shift with the resolution fix).
+
+---
+
+## 6. NLTE departure coefficients (Na I D shipped, default off)
+
+**Status: machinery DONE and committed (854228b), `NLTE_MODE = 0`.**  Four
+modes; see CHANGELOG and `data/nlte/README.txt`.  Open items below, roughly
+in the order they would have to be settled before a C3K grid rollout.
+
+- **The grid's atmospheres do not reach the top of ours.**  MARCS stops
+  1.1-2.0 dex of column mass short, so the outermost 15-27 layers hold an
+  endpoint `b`.  |S_l/B - 1| is largest exactly at that edge and still
+  growing, and the D-line cores form above it, so **every effect measured
+  so far is a lower limit**.  This cannot be fixed by better interpolation
+  -- it needs `b` computed on our own structures.
+- **Giants use spherical `b` on plane-parallel structures.**  MARCS has no
+  plane-parallel model at log g <= 2 (it is 100% spherical there) while
+  ATLAS12 is plane-parallel throughout.  Sphericity changes the geometry of
+  the radiation field, which is what sets `b` for a resonance line.
+  Unmeasured.  Worth checking on one cool giant before committing the giant
+  half of any grid; it may argue for shipping dwarfs first.
+- **[alpha/Fe] cannot be varied.**  MARCS `_st_` models tie it to [Fe/H] by
+  the standard relation, so an alpha-enhanced model necessarily gets `b` at
+  the standard alpha for its metallicity.  Expected minor (Na's departures
+  depend on alpha only through T(tau) and n_e) but unquantified.
+- **The log g 2.5/3.0 geometry seam.**  Interpolating across it mixes
+  spherical and plane-parallel corners; SYNTHE warns.  C3K's 0.5-dex log g
+  grid never lands strictly between, so this only bites for arbitrary log g.
+- **QA sweep before any rollout.**  Run mode 3 over a coarse subset spanning
+  the HR diagram and map the clamped fraction, the surviving interpolation
+  weight and S_l/B on the HR diagram.  That table is the real go/no-go, and
+  it is cheap now that the grid is local.
+- **Verify `b -> 1` at the 8000 K grid ceiling.**  Above it there is no NLTE
+  data and Na I is ionised away, so LTE is right -- but if `b` has not
+  converged to 1 by the boundary, switching there puts a seam into the grid.
+- **Other elements.**  The extraction, index and runtime tooling is
+  element-agnostic; only the transition tagging is per-element.  The same
+  grid family covers ~20 elements, and Fe I would matter far more broadly
+  for C3K than Na does.  Decide whether this is "NLTE Na D" or "the NLTE
+  pipeline" before building more of it.
+- **Confounders for any comparison with data**, both larger than the NLTE
+  effect in the cool regime: Na D wings in an M dwarf are broadened by H2
+  and He rather than H I, so ABO does not apply and the Unsold mix in
+  `txnxn` is doing real work (see item 2); and the D cores are
+  chromospherically filled, which no radiative-equilibrium model reproduces.
+
+## 7. Second out-of-bounds read blocking `-fcheck=all`
+
+`number` in `atlas12_modules.f90` is indexed at 2 in a dimension of extent 1
+(around line 8713).  Found while trying to run a bounds-checked build during
+the NLTE work; the companion violation in `interp_logu_cached` was an
+`.AND.` short-circuit assumption and is fixed, but this one is not obviously
+the same class and was left alone.  Until it is resolved no whole-program
+`-fcheck=all` build will run, which costs a useful debugging tool.
