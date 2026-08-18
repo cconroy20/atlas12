@@ -256,13 +256,27 @@ CONTAINS
   !  where ~0.5 is physical, which suppressed line peaks so far that weak lines
   !  fell below LINE_CUTOFF and were dropped outright.
   !
-  !  Conversion, from gamma [cm^-1/bar HWHM at 296 K] to gamma_w [rad s^-1 per
+  !  Conversion, from gamma [cm^-1/atm HWHM at 296 K] to gamma_w [rad s^-1 per
   !  unit effective perturber density at 1e4 K]:
   !
-  !    gamma_w = gamma * (296/T)^n * (k T / 1e6) * 2 pi c / (w * (T/1e4)^0.3)
+  !    gamma_w = gamma * (296/T)^n * (k T / P_atm) * 4 pi c / (w * (T/1e4)^0.3)
   !
   !  evaluated at MOLBROAD_TREF.  w = 0.85 is the H2 weight already inside
   !  txnxn.
+  !
+  !  The 4 pi c is the HWHM -> FWHM_omega conversion, and it is not optional.
+  !  ExoMol and Gharib-Nezhad+21 both tabulate the Lorentz HWHM, whereas every
+  !  gamma in this code is a damping constant in the classical sense -- a FULL
+  !  width in angular frequency -- so that adamp = gamma/(4 pi nu)/dopple comes
+  !  out as the Voigt a = HWHM_nu / Delta_nu_D.  The radiative term pins that
+  !  convention down: gammar = 2.223e13/wl_nm^2 is exactly the classical
+  !  8 pi^2 e^2 / (3 m_e c lambda^2), which is a FWHM in omega.
+  !
+  !  This read 2 pi c until 2026-08-18 -- i.e. it treated the tabulated HWHM as
+  !  a FWHM -- which made every molecular vdW width in BOTH codes a factor of 2
+  !  too narrow.  Correcting it leaves the widths still 5-25x below the legacy
+  !  'X'-label constants they replaced, so the original finding stands; what
+  !  moves is the damping wings of the saturated band-forming lines.
   !
   !  PERTURBER PARTITION -- the known weakness of this treatment.  txnxn
   !  hardwires the ratios 1 : 0.42 : 0.85 for H I : He I : H2, so setting
@@ -348,7 +362,7 @@ CONTAINS
       ! density at 1e4 K).  The same factor scales the J = 0 value and the
       ! slope, the J-dependence being linear.
       conv = (296.0D0 / MOLBROAD_TREF)**n2 &
-           * (KBOL_L * MOLBROAD_TREF / PREF_DYN) * 2.0D0 * PI_L * CLIGHT_L &
+           * (KBOL_L * MOLBROAD_TREF / PREF_DYN) * 4.0D0 * PI_L * CLIGHT_L &
            / (WH2 * (MOLBROAD_TREF / 1.0D4)**0.3D0)
       MOLBROAD_GW(code) = g2 * conv
       MOLBROAD_DG(code) = d2 * conv
