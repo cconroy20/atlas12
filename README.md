@@ -195,78 +195,35 @@ appropriate readers (gfall, predict, mol, h2o).
 
 ### NLTE departure coefficients (default off)
 
-SYNTHE is an LTE code: every line gets Boltzmann/Saha populations and
-the transfer step is handed one line source function, `SLINE = B_nu`.
-`mod_nlte` provides the machinery to override both for named
-transitions, given departure coefficients `b_l`, `b_u`:
+`NLTE_MODE` in `mod_parameters` is **0 = off** (pure LTE; nothing allocated,
+no NLTE code runs) or **1 = on**.  When on, `b_l` and `b_u` for named
+transitions rescale the line opacity and replace `SLINE`:
 
 ```
 kappa = kappa_LTE * b_l * [1 - (b_u/b_l) e^-x] / [1 - e^-x]
 S_l   = (2h nu^3/c^2) / [ (b_l/b_u) e^x - 1 ]        x = h nu / kT
 ```
 
-Because these multiply to `kappa*S = b_u * kappa_LTE * B_nu * (1-e^-x)`,
-the retrofit needs only one extra accumulator carrying the
-opacity-weighted *deviation* of the emissivity from LTE; the tens of
-millions of LTE lines never touch it, and `SLINE` becomes the correct
-opacity-weighted mean where an NLTE line blends with LTE neighbours.
+These multiply to `kappa*S = b_u * kappa_LTE * B_nu * (1-e^-x)`, so only one
+extra accumulator is needed, carrying the opacity-weighted *deviation* of the
+emissivity from LTE; it stays identically zero for every LTE line.  Eligible
+transitions are declared in `mod_mklinelist` and matched on species plus both
+level energies, so every hyperfine component is tagged at once — currently the
+Na I D doublet.
 
-Eligible transitions are declared in `mod_mklinelist`
-(`NLTE_TR_CODE`/`ELO`/`EUP`) and matched on species plus both level
-energies, so every hyperfine component of a multiplet is tagged at once;
-currently the Na I D doublet (10 components in `gfall`).  `read_gfall`
-records the tags unconditionally, exactly as it records `ICA4227`.
+SYNTHE reads one self-contained file from `data/nlte/` (`$NLTE_GRID`
+overrides) and interpolates `b` over Teff, log g, [Fe/H], v_turb and Na
+abundance, reading only the interpolation corners.  Each corner carries its own
+τ₅₀₀₀ grid, so corners are placed on this model's τ₅₀₀₀ before being combined;
+missing corners have their weight dropped and the remainder renormalised, with
+the surviving fraction reported.  Two constraints the grid imposes: `[α/Fe]` is
+not an axis (MARCS `_st_` models tie it to `[Fe/H]`), and MARCS is
+plane-parallel only at log g ≥ 3, so giants use spherical models at 1 M⊙.
 
-`NLTE_MODE` in `mod_parameters` is simply **0 = off** — pure LTE, nothing
-allocated, no NLTE code runs, one logical compare per line — or **1 = on**.
-
-When on, SYNTHE reads **one self-contained file** from `data/nlte/` (axes,
-parameter→record index and records together, so an index can never be paired
-with the wrong data) and interpolates `b` over **Teff, log g, [Fe/H], v_turb
-and Na abundance**: five axes, up to 32 corners, reading only the corner
-records (~79 kB) rather than the whole file.  `$NLTE_GRID` overrides the path.
-
-Two things the interpolation has to handle that a plain weighted sum would
-not.  Every corner carries its **own** τ₅₀₀₀ grid — they are different MARCS
-atmospheres — so corners are placed on *this* model's τ₅₀₀₀ (computed by
-`run_xnfpelsyn`) before being combined, in `log b` against `log τ`, holding
-endpoint values rather than extrapolating.  And corners can be **missing**:
-the grid is 41% filled because it is HR-diagram shaped, so absent weight is
-dropped and the rest renormalised, with the surviving fraction reported rather
-than silently absorbed.
-
-Note `[α/Fe]` is not an axis: the MARCS `_st_` models tie it to `[Fe/H]` by
-the standard relation, so an α-enhanced model receives `b` computed at the
-standard α for its metallicity.  MARCS is also plane-parallel only at
-log g ≥ 3; below that the grid falls back to spherical models at 1 M⊙, and
-mixed-geometry interpolation is flagged.
-
-That file is *derived*.  `tools/nlte_extract_grid.py` makes the master store
-in one streaming pass over the published grid, `tools/nlte_build_index.py`
-adds the parameter lookup, and `tools/nlte_build_runtime.py` merges them and
-drops the 27% of records the index can never reach.  The master lives outside
-the repository; rebuilding the runtime file from it takes seconds, so only
-widening past the ten extracted levels needs the 15.9 GB download again.
-See `data/nlte/README.txt`.
-
-Two things it handles that a plain weighted sum would not.  Each corner
-carries its **own** τ₅₀₀₀ grid, so corners are first placed on *this*
-model's τ₅₀₀₀ (computed by `run_xnfpelsyn`) and only then combined.  And
-corners can be **missing** — the grid is 41% filled because it is
-HR-diagram shaped — so absent weight is dropped and the rest renormalised,
-with the surviving weight fraction reported rather than silently absorbed.
-
-Note `[α/Fe]` is not an axis: the MARCS `_st_` models tie it to `[Fe/H]` by
-the standard relation, so an α-enhanced model receives `b` computed at the
-standard α for its metallicity.  MARCS is also plane-parallel only at
-log g ≥ 3; below that the index falls back to spherical models at
-1 M⊙, and mixed-geometry interpolation is flagged.
-
-Whenever NLTE is active, SYNTHE writes `<base>.nlte`: one row per
-(transition, depth) with the depth scale, the installed `b`, and the
-factors `nlte_factors` actually returned, at full double precision.
-`tools/nlte_check_dump.py` differences that against the profile it should
-have come from.
+The file is derived — `tools/nlte_extract_grid.py`, `nlte_build_index.py`,
+`nlte_build_runtime.py` — from a published grid whose master copy lives outside
+the repository.  See `data/nlte/README.txt` for provenance and the rebuild, and
+CHANGELOG for the physics and its caveats.
 
 The electron density (with its consistent `XNATOM` and `RHO`) is
 recomputed self-consistently from the model structure rather than taken
