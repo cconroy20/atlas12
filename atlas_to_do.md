@@ -5,55 +5,7 @@ Open items only; completed work is recorded in
 
 ---
 
-## 1. Reconverge the cool-star structures
-
-**Status: GJ644C done 2026-08-10; GJ905 and GJ699 open — and ALL of them
-now need redoing again for a different reason: the molecular van der Waals
-widths were corrected the same day (see CHANGELOG), which changes molecular
-blanketing enough that every cool-star structure on disk is built with the
-wrong line widths.  The GJ644C numbers below are syntheses on the old
-structure and are not self-consistent.**  Every cool-star
-ATLAS12 structure on disk predates the opacity fixes and none has CIA
-feedback: the dropped-absorber fix (106d8b7), H2- free-free (dff6224),
-and the CIA modernization + TiO unification.  Band-level conclusions
-drawn on the old structures are not safe.  Cost is the limiting factor,
-not correctness -- and it is now much lower than feared: with the
-block-stream binary readers the 2700 K full 350-2500 nm synthesis takes
-15 min, not the 2.5 h the pre-`be077cb` run needed, so a whole ladder
-star is well under an hour.
-
-The GJ644C (2700 K) rerun sets expectations for the rest.  The near-IR
-excess vs the Mann spectrum collapsed -- H 1.328 -> 1.212, K 1.209 ->
-1.078 -- while the optical did not move at all (TiO/CaH windows shift by
-<0.02, and the model/data ratio curves lie on top of each other below
-1 um).  The structural response is modest and confined to the optically
-thin layers: at fixed column mass the new model is 30-55 K warmer for
-log m < -1 and within 5-20 K through the photosphere.  So the opacity
-changes are near-additive on the emergent spectrum, and reconverging the
-remaining stars is bookkeeping rather than a physics unknown.
-
-Two caveats found doing it: the reconverged model landed at 1.96% RMS /
-11.7% max (old 1.61% / 6.91%) -- the usual cool-dwarf floor -- and it
-carries a one-layer +87 K step in T(m) at J=25 (log m = -1.14, T ~ 1750 K)
-that the old structure does not have.  It sits well outside the tau ~ 1
-layers where the H/K continuum forms and the optical is unchanged, so it
-does not affect the result above, but it should be understood before this
-structure is used for fine T(m) work.
-
----
-
-## 2. Retired line lists staged for deletion
-
-**Status: awaiting a decision.**  4.2 GB moved out of `data/` on
-2026-08-10 to `~/kurucz/superseded_linelists/`, unreferenced by either
-code: `schwenke.bin` (Schwenke 1997 TiO, replaced by ExoMol Toto),
-`mol/tiototo.bin` (previous Toto), `h2ofastfix.bin` (P&S H2O, replaced by
-POKAZATEL).  All were gitignored, so deleting them is unrecoverable from
-the repo -- hence staged rather than removed.  Delete when satisfied.
-
----
-
-## 3. vdW -> ABO Transition for Line Broadening
+## 1. vdW -> ABO Transition for Line Broadening
 
 **Status: open.**
 
@@ -74,7 +26,7 @@ saturated lines.
 
 ---
 
-## 4. Dust Opacity (Dusty Mode)
+## 2. Dust Opacity (Dusty Mode)
 
 **Status: open; only relevant if the grid floor drops below ~2400 K.**
 
@@ -86,7 +38,7 @@ the condensed fractions) would be needed.  Settling/microphysics
 
 ---
 
-## 5. Mann-Validation Open Items (post D0-audit + resolution fixes, 2026-08-09)
+## 3. Mann-Validation Open Items (post D0-audit + resolution fixes, 2026-08-09)
 
 **Status: open.**  At converged synthesis resolution (R=300k) with the
 corrected molecular network, the RE GJ887 model matches the Mann spectrum
@@ -111,13 +63,3 @@ at the percent level; what survives:
 - **Solar absolute (+2.1%) recheck at R=300k**; then the sample-wide
   rerun (all medians shift with the resolution fix).
 
----
-
-## 6. Second out-of-bounds read blocking `-fcheck=all`
-
-`number` in `atlas12_modules.f90` is indexed at 2 in a dimension of extent 1
-(around line 8713).  Found while trying to run a bounds-checked build during
-the NLTE work; the companion violation in `interp_logu_cached` was an
-`.AND.` short-circuit assumption and is fixed, but this one is not obviously
-the same class and was left alone.  Until it is resolved no whole-program
-`-fcheck=all` build will run, which costs a useful debugging tool.

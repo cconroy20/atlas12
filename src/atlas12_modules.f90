@@ -8434,12 +8434,21 @@ SUBROUTINE PFSAHA(J, IZ, NION, MODE, ANSWER)
       K2 = NNN(I,N) - K1*100000
       K3 = K2 / 10
       KSCALE = K2 - K3*10
+      ! NNN is zero for element/ion combinations with no tabulated data, and
+      ! its scale digit is then 0 -- outside SCALE's 1..4.  The old code read
+      ! SCALE(0): harmless in result, because the mantissa is zero in exactly
+      ! those cases (verified: every occurrence has NNN = K1 = K3 = 0, so the
+      ! product is zero whatever SCALE(0) held and PART falls back to
+      ! PMIN = 1, the right answer for "no data"), but it aborted any
+      ! bounds-checked build of the program.  Clamping to a valid index is
+      ! therefore behaviour-preserving, not a repair of a wrong number.
+      KSCALE = MAX(1, MIN(4, KSCALE))
 
       IF (MOD(IT,2) .EQ. 0) THEN
         ! Even IT: interpolate between K3 and next column K1
         P1 = K3 * SCALE(KSCALE)
         K1 = NNN(I+1,N) / 100000
-        KSCALE = MOD(NNN(I+1,N), 10)
+        KSCALE = MAX(1, MIN(4, MOD(NNN(I+1,N), 10)))
         P2 = K1 * SCALE(KSCALE)
       ELSE
         ! Odd IT: interpolate between K1 and K3
@@ -8608,7 +8617,14 @@ SUBROUTINE MOLEC(CODOUT, MODE, NUMBER)
   ! Arguments
   REAL(8),  INTENT(IN)    :: CODOUT
   INTEGER, INTENT(IN)    :: MODE
-  REAL(8),  INTENT(INOUT) :: NUMBER(kw, 1)
+  ! Assumed-size second dimension, NOT (kw,1): MODE 11/12 fill NUMBER(J,ION)
+  ! for ION = 1..NN with NN up to the requested ion stage, and the array is
+  ! handed on to PFSAHA, which declares it (kw,*) as well.  Declaring it
+  ! (kw,1) here was a bounds violation on every multi-ion call -- harmless in
+  ! practice, since COMPUTE_ONE_POP passes through an assumed-size dummy and
+  ! the ultimate caller (xnfp_lc(kw,10,mw)) is large enough, but it aborted
+  ! any -fcheck=bounds build of the whole program.
+  REAL(8),  INTENT(INOUT) :: NUMBER(kw, *)
 
   ! Local variables
   INTEGER :: JMOL, J, NN, ION, ID, I, II
@@ -11680,6 +11696,11 @@ FUNCTION XKARZAS(FREQ, ZEFF2, N, L)
       DO I = 2, NPTS
         IF (FREQLG .GT. FREQN(I, N)) EXIT
       END DO
+      ! A DO loop that runs to completion leaves I = NPTS+1.  The guard above
+      ! only excludes FREQLG < FREQN(NPTS), so exact equality reaches here with
+      ! the EXIT never taken and indexes one past the end.  The n > 15 branch
+      ! above already clamps for this reason; these two did not.
+      IF (I .GT. NPTS) I = NPTS
       X = (FREQLG - FREQN(I, N)) / (FREQN(I-1, N) - FREQN(I, N)) &
         * (XN(I-1, N) - XN(I, N)) + XN(I, N)
     END IF
@@ -11692,6 +11713,7 @@ FUNCTION XKARZAS(FREQ, ZEFF2, N, L)
     DO I = 2, NPTS
       IF (FREQLG .GT. FREQN(I, N)) EXIT
     END DO
+    IF (I .GT. NPTS) I = NPTS        ! see the note in the level-averaged branch
     X = (FREQLG - FREQN(I, N)) / (FREQN(I-1, N) - FREQN(I, N)) &
       * (XL(I-1, L+1, N) - XL(I, L+1, N)) + XL(I, L+1, N)
   END IF
