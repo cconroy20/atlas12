@@ -217,48 +217,29 @@ energies, so every hyperfine component of a multiplet is tagged at once;
 currently the Na I D doublet (10 components in `gfall`).  `read_gfall`
 records the tags unconditionally, exactly as it records `ICA4227`.
 
-`NLTE_MODE` in `mod_parameters` selects: `0` pure LTE (production —
-nothing is allocated and no NLTE code runs); `1` test harness; `2`
-departure coefficients from a `<model>.dep` sidecar; `3` interpolated
-straight from a locally extracted grid, with no per-model step.
+`NLTE_MODE` in `mod_parameters` is simply **0 = off** — pure LTE, nothing
+allocated, no NLTE code runs, one logical compare per line — or **1 = on**.
 
-Mode 1 has two shapes, set by `NLTE_TEST_SHAPE`.  Shape `0` installs the
-constants `NLTE_TEST_BLO`/`NLTE_TEST_BUP` at every depth and for every
-transition; at `b = 1` this reproduces mode 0 bit for bit while running
-the whole NLTE path, which is the null test.  Shape `1` ramps `b` with
-depth (linear in log column mass, the same variable an external grid must
-be interpolated on) and gives the two transitions different values.
-Shape 0 writes the *same number everywhere*, so it cannot detect a wrong
-(transition, depth) index, a reversed depth axis, or coefficients
-attributed to the wrong line — failures that would otherwise first appear
-in mode 2, indistinguishable from bad grid data.
+When on, SYNTHE reads **one self-contained file** from `data/nlte/` (axes,
+parameter→record index and records together, so an index can never be paired
+with the wrong data) and interpolates `b` over **Teff, log g, [Fe/H], v_turb
+and Na abundance**: five axes, up to 32 corners, reading only the corner
+records (~79 kB) rather than the whole file.  `$NLTE_GRID` overrides the path.
 
-**Mode 2** reads `<model>.dep` — looked for next to the *model file*, not
-in the working directory, because `b` belongs to a particular atmospheric
-structure.  The format is free-form text: `NTRANS`, `NDEPTH`, an optional
-`DEPTHVAR LOGRHOX`, then one row per depth holding `log10(rhox)` followed
-by `b_lo b_up` for each transition, ordered surface-first.  SYNTHE
-interpolates it linearly in `log10 b` against `log10` column mass, and
-**holds** the endpoint value outside the table rather than extrapolating;
-clamped layers are counted, warned about, and flagged in the dump.
+Two things the interpolation has to handle that a plain weighted sum would
+not.  Every corner carries its **own** τ₅₀₀₀ grid — they are different MARCS
+atmospheres — so corners are placed on *this* model's τ₅₀₀₀ (computed by
+`run_xnfpelsyn`) before being combined, in `log b` against `log τ`, holding
+endpoint values rather than extrapolating.  And corners can be **missing**:
+the grid is 41% filled because it is HR-diagram shaped, so absent weight is
+dropped and the rest renormalised, with the surviving fraction reported rather
+than silently absorbed.
 
-`tools/nlte_make_dep.py` builds the sidecar from a published grid
-(Amarsi et al. 2020 / Gerber et al. 2023 Turbospectrum packaging).  The
-grids are tabulated against τ₅₀₀₀, which SYNTHE does not carry, so the
-tool converts to column mass through the MARCS model the grid was solved
-on — hence `--marcs`.  Level indices must be given (`--levels`) or found
-by term energy from a model atom (`--atom`); the tool refuses to guess.
-`--selftest` round-trips the whole path against fabricated files.
-
-The converter has been run for real against the Na I 1D grid; see the
-ledger entry for the results and their caveats.
-
-**Mode 3** is the production path for grid runs.  It reads **one
-self-contained file** from `data/nlte/` — axes, parameter→record index and
-records together, so an index can never be paired with the wrong data — and
-interpolates `b` in **Teff, log g, [Fe/H], v_turb and Na abundance**: five
-axes, up to 32 corners, reading only the corner records (~79 kB) rather than
-the whole file.  `$NLTE_GRID` overrides the path.
+Note `[α/Fe]` is not an axis: the MARCS `_st_` models tie it to `[Fe/H]` by
+the standard relation, so an α-enhanced model receives `b` computed at the
+standard α for its metallicity.  MARCS is also plane-parallel only at
+log g ≥ 3; below that the grid falls back to spherical models at 1 M⊙, and
+mixed-geometry interpolation is flagged.
 
 That file is *derived*.  `tools/nlte_extract_grid.py` makes the master store
 in one streaming pass over the published grid, `tools/nlte_build_index.py`
@@ -430,8 +411,7 @@ not in the repository.)
 | `nlte_extract_grid.py` | One streaming pass over a published NLTE grid (15.9 GB zipped for Na I), keeping τ₅₀₀₀ and the low-lying levels of every record.  Pays the download once instead of per model; writes the master store, which lives outside the repository |
 | `nlte_build_index.py` | Parameter→record lookup over the master store (Teff, log g, [Fe/H], v_turb, ΔNa), including the geometry policy: plane-parallel where MARCS has it, otherwise spherical at 1 M⊙ |
 | `nlte_build_runtime.py` | Merges store and index into the single self-contained `data/nlte/*.nlte` file SYNTHE reads, dropping the records the index cannot reach.  Seconds to run, so policy changes are a local rebuild |
-| `nlte_make_dep.py` | Builds a `<model>.dep` sidecar for `NLTE_MODE = 2` (one-off and hand-crafted work); `--selftest` round-trips the whole path against fabricated files |
-| `nlte_check_dump.py` | Differences a `<model>.nlte` diagnostic dump against the profile it should have come from — separates a plumbing bug from bad grid data |
+| `nlte_check_dump.py` | Checks a `<model>.nlte` diagnostic dump for internal consistency (returned factors against their equations, the `κ·S = b_u·κ_LTE·B_ν` identity) — separates a plumbing bug from bad grid data |
 | `nad_nlte_plot.py` | Stacked LTE-vs-NLTE panels for the Na D region, with per-panel axis control and optional instrumental smoothing (`--smooth-to`) |
 | `tmin_perturb.py`, `tmin_fit.py`, `tmin_rf.py` (+ plot drivers) | T(τ) perturbation / T-min fitting / response-function machinery on converged models |
 | `build_h2o_pokazatel.py` | Build `data/h2opokazatel.bin` from ExoMol POKAZATEL: exact raw-transition binning (`--raw`/`--validate-raw`/`--write-raw`) plus the super-line NNLS cross-check route |

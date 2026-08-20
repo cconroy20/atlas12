@@ -1,4 +1,4 @@
-NLTE departure-coefficient grids, ready for SYNTHE's NLTE_MODE = 3.
+NLTE departure-coefficient grids, read by SYNTHE when NLTE_MODE = 1.
 
 One self-contained file per element.  Flat directory, no subdirectories: the
 element and the source grid's release date are in the filename, so several

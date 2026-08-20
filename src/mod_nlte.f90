@@ -58,24 +58,13 @@
 ! -----
 ! Set NLTE_MODE in mod_parameters (developer flag, not a CLI option).
 !
-!   0  pure LTE.  nlte_on stays .FALSE., nothing here allocates or runs.
-!   1  null/identity test: b_l = NLTE_TEST_BLO, b_u = NLTE_TEST_BUP at every
-!      depth, applied to every tagged component.  With BLO = BUP = 1 the
-!      arithmetic below collapses to fkappa = 1.0 and fdev = 0.0 EXACTLY --
-!      not to within rounding -- because 1 - beta e^-x and 1 - e^-x are then
-!      the same expression and y/y is exactly 1 in IEEE arithmetic, so mode 1
-!      reproduces mode 0 bit for bit while still exercising every line of the
-!      new path.  With BLO = BUP = c it scales the tagged lines' opacity by
-!      exactly c, S_l still = B_nu, i.e. identical to shifting their log gf by
-!      log10(c) -- a check of the kappa path against an answer known in
-!      advance.  With BUP < BLO the source function drops below B_nu and the
-!      deviation accumulator carries a nonzero number for the first time.
-!   2  departure coefficients from a <model>.dep sidecar, produced from a
-!      published grid by tools/nlte_make_dep.py and interpolated here onto
-!      the model's own layers.  See read_dep_file for the format, the
-!      interpolation, and why the grid reader lives in Python rather than
-!      here.  Data source: the Amarsi et al. (2020) MARCS grids (3000-8000 K,
-!      Na included), as repackaged by Gerber et al. (2023) for Turbospectrum.
+!   0  OFF -- pure LTE.  nlte_on stays .FALSE., nothing here allocates or
+!      runs, and the line loop pays one logical compare per line.
+!   1  ON -- departure coefficients interpolated from the local grid file over
+!      Teff, log g, [Fe/H], v_turb and Na abundance, on this model's own
+!      layers.  See interp_grid.  Data: Amarsi et al. (2020) on MARCS,
+!      repackaged by Gerber et al. (2023) for Turbospectrum, reduced to one
+!      file by the tools/nlte_* chain.
 !
 ! Which transitions are eligible is declared in mod_mklinelist
 ! (NLTE_TR_CODE/ELO/EUP); read_gfall tags the matching lte_lines entries
@@ -84,8 +73,7 @@
 
 MODULE mod_nlte
 
-  USE mod_parameters, ONLY: kw, NLTE_MODE, NLTE_TEST_SHAPE, &
-                            NLTE_TEST_BLO, NLTE_TEST_BUP
+  USE mod_parameters, ONLY: kw, NLTE_MODE
   USE mod_atlas_data, ONLY: DATADIR
   USE mod_mklinelist, ONLY: NLTE_NTRANS, N_NLTE_TAGGED, &
                             NLTE_TAG_IDX, NLTE_TAG_TRANS, &
@@ -104,35 +92,7 @@ MODULE mod_nlte
   REAL(8), SAVE :: blo(NLTE_NTRANS, kw) = 1.0D0
   REAL(8), SAVE :: bup(NLTE_NTRANS, kw) = 1.0D0
 
-  ! --- STRUCTURED TEST PROFILE (NLTE_MODE = 1, NLTE_TEST_SHAPE = 1) --------
-  !
-  ! Per transition, b ramps linearly in log10(column mass) between a DEEP
-  ! value at the bottom of the atmosphere and a TOP value at the surface:
-  !
-  !     b(j) = b_deep + (b_top - b_deep) * f(j)
-  !     f(j) = [log10(rhox_bottom) - log10(rhox_j)]
-  !            / [log10(rhox_bottom) - log10(rhox_top)]      f: 1 top, 0 bottom
-  !
-  ! The numbers are invented, but the SHAPE is deliberate on three counts.
-  ! (i) Both b_l and b_u sit at 1 deep down, where collisions enforce LTE --
-  ! so the wings, which form deep, stay near their LTE values and the change
-  ! is confined to the core.  A run that moves the far wings as much as the
-  ! core has its depth axis reversed.  (ii) b_l /= b_u AND b_l /= 1, which
-  ! the constant shape never arranges: with b_l = b_u the two are symmetric
-  ! and a swap of their roles is invisible, and with b_l = 1 a b_l that was
-  ! silently ignored would look correct.  (iii) The two transitions get
-  ! DIFFERENT values, so coefficients attributed to the wrong line show up
-  ! as D1 and D2 responding identically.
-  !
-  ! Ordering matches the transition table in mod_mklinelist: 1 = Na I D2,
-  ! 2 = Na I D1.  S_l/B_nu at the surface is b_u/b_l = 0.50 for D2 and 0.73
-  ! for D1 -- distinct, and both in the photon-loss direction.
-  REAL(8), PARAMETER :: BLO_DEEP(NLTE_NTRANS) = [1.00D0, 1.00D0]
-  REAL(8), PARAMETER :: BLO_TOP (NLTE_NTRANS) = [1.20D0, 1.10D0]
-  REAL(8), PARAMETER :: BUP_DEEP(NLTE_NTRANS) = [1.00D0, 1.00D0]
-  REAL(8), PARAMETER :: BUP_TOP (NLTE_NTRANS) = [0.60D0, 0.80D0]
-
-  ! --- NLTE_MODE = 3: the single runtime grid file -------------------------
+  ! --- The single runtime grid file (NLTE_MODE = 1) -------------------------
   ! Built by tools/nlte_build_runtime.py from the master store.  ONE file:
   ! axes, then the parameter -> record index, then the records themselves, so
   ! an index can never be paired with the wrong data, and there is one thing
@@ -192,7 +152,7 @@ MODULE mod_nlte
   ! Depth structure kept for the dump, and what nlte_factors ACTUALLY
   ! computed for each (transition, depth).  Recording the factors rather
   ! than only blo/bup is the point: it makes the dump able to catch an
-  ! indexing error inside nlte_factors, not just one in fill_departures.
+  ! indexing error inside nlte_factors, not just one in the grid read.
   INTEGER, SAVE :: nrhox_sv = 0
   REAL(8), SAVE :: rhox_sv(kw) = 0.0D0
   REAL(8), SAVE :: temp_sv(kw) = 0.0D0
@@ -211,7 +171,7 @@ MODULE mod_nlte
   ! times over; reported and marked in the dump.
   LOGICAL, SAVE :: inverted_sv(NLTE_NTRANS, kw) = .FALSE.
 
-  ! Depths where mode 2 had to hold an endpoint of the .dep table because
+  ! Depths where the grid's tau range had to be held at an endpoint because
   ! the grid did not reach that far.  Flagged in the dump so that a grid
   ! that simply does not cover the model cannot be mistaken for a broken
   ! interpolation.
@@ -228,13 +188,12 @@ CONTAINS
   !  is a legitimate outcome (synthesise 4000-4500 A and Na D is simply not
   !  there), unlike CA4227_MODE, which names one line and so hard-fails.
   ! --------------------------------------------------------------------------
-  SUBROUTINE nlte_init(nrhox, rhox, temp, tau5, depfile)
+  SUBROUTINE nlte_init(nrhox, rhox, temp, tau5)
 
-    INTEGER,          INTENT(IN) :: nrhox
-    REAL(8),          INTENT(IN) :: rhox(:)   ! column mass [g/cm^2], 1=surface
-    REAL(8),          INTENT(IN) :: temp(:)   ! temperature [K]
-    REAL(8),          INTENT(IN) :: tau5(:)   ! continuum tau_5000, same layers
-    CHARACTER(LEN=*), INTENT(IN) :: depfile   ! <model>.dep, used by mode 2
+    INTEGER, INTENT(IN) :: nrhox
+    REAL(8), INTENT(IN) :: rhox(:)   ! column mass [g/cm^2], 1 = surface
+    REAL(8), INTENT(IN) :: temp(:)   ! temperature [K]
+    REAL(8), INTENT(IN) :: tau5(:)   ! continuum tau_5000, same layers
     INTEGER :: i
 
     nlte_on     = .FALSE.
@@ -252,31 +211,17 @@ CONTAINS
     IF (NLTE_MODE .EQ. 0) RETURN
 
     IF (N_NLTE_TAGGED .EQ. 0) THEN
-      WRITE(6,'(A,I0,A)') ' NLTE: mode ', NLTE_MODE, &
-        ' is set but no eligible transition lies in the synthesis' // &
-        ' window; continuing in LTE.'
+      WRITE(6,'(A)') ' NLTE: on, but no eligible transition lies in the' // &
+        ' synthesis window; continuing in LTE.'
       RETURN
     END IF
 
-    CALL fill_departures(nrhox, depfile)
+    CALL interp_grid(nrhox)
 
     nlte_on = .TRUE.
 
-    WRITE(6,'(A,I0,A,I0,A,I0,A)') ' NLTE: mode ', NLTE_MODE, ', ', &
-      N_NLTE_TAGGED, ' tagged line components over ', NLTE_NTRANS, &
-      ' transitions'
-    IF (NLTE_MODE .EQ. 1 .AND. NLTE_TEST_SHAPE .EQ. 0) &
-      WRITE(6,'(A,F10.6,A,F10.6,A)') ' NLTE: constant test, b_lo = ', &
-        NLTE_TEST_BLO, ', b_up = ', NLTE_TEST_BUP, ' at all depths'
-    IF (NLTE_MODE .EQ. 1 .AND. NLTE_TEST_SHAPE .EQ. 1) THEN
-      WRITE(6,'(A)') ' NLTE: structured test, b ramped in log10(column mass)'
-      DO i = 1, NLTE_NTRANS
-        WRITE(6,'(A,I0,A,F6.3,A,F6.3,A,F6.3,A,F6.3)') &
-          ' NLTE:   transition ', i, &
-          ':  b_lo ', BLO_DEEP(i), ' ->', BLO_TOP(i), &
-          ',  b_up ', BUP_DEEP(i), ' ->', BUP_TOP(i)
-      END DO
-    END IF
+    WRITE(6,'(A,I0,A,I0,A)') ' NLTE: on -- ', N_NLTE_TAGGED, &
+      ' tagged line components over ', NLTE_NTRANS, ' transitions'
     DO i = 1, N_NLTE_TAGGED
       IF (i .LE. 12) &
         WRITE(6,'(A,I9,A,I0)') ' NLTE:   lte_lines index', NLTE_TAG_IDX(i), &
@@ -287,79 +232,6 @@ CONTAINS
 
   END SUBROUTINE nlte_init
 
-
-  ! --------------------------------------------------------------------------
-  !  fill_departures(nrhox) -- populate blo/bup.
-  !
-  !  This is the ONLY routine that needs replacing to move from the null
-  !  test to real departure coefficients: everything downstream consumes
-  !  blo/bup and nothing else.
-  ! --------------------------------------------------------------------------
-  SUBROUTINE fill_departures(nrhox, depfile)
-
-    INTEGER,          INTENT(IN) :: nrhox
-    CHARACTER(LEN=*), INTENT(IN) :: depfile
-    INTEGER :: k, j
-    REAL(8) :: lr_top, lr_bot, span, f
-
-    SELECT CASE (NLTE_MODE)
-
-    CASE (1)
-
-      IF (NLTE_TEST_SHAPE .EQ. 0) THEN
-        ! Constant b at every depth and every transition.
-        DO j = 1, nrhox
-          DO k = 1, NLTE_NTRANS
-            blo(k,j) = NLTE_TEST_BLO
-            bup(k,j) = NLTE_TEST_BUP
-          END DO
-        END DO
-
-      ELSE
-        ! Structured: linear ramp in log10(column mass), per transition.
-        ! Column mass is the same variable mode 2 must interpolate its
-        ! grid on, so exercising it here is not incidental.
-        IF (nrhox .LT. 2 .OR. rhox_sv(1) .LE. 0.0D0 .OR. &
-            rhox_sv(nrhox) .LE. 0.0D0) THEN
-          WRITE(6,'(A)') ' ERROR: NLTE structured test needs a positive,' // &
-                         ' multi-layer column-mass scale.'
-          CALL EXIT(1)
-        END IF
-        lr_top = LOG10(rhox_sv(1))
-        lr_bot = LOG10(rhox_sv(nrhox))
-        span   = lr_bot - lr_top
-        IF (ABS(span) .LT. 1.0D-8) THEN
-          WRITE(6,'(A)') ' ERROR: NLTE structured test: column mass does' // &
-                         ' not span a range.'
-          CALL EXIT(1)
-        END IF
-        DO j = 1, nrhox
-          f = (lr_bot - LOG10(rhox_sv(j))) / span    ! 1 at surface, 0 at base
-          DO k = 1, NLTE_NTRANS
-            blo(k,j) = BLO_DEEP(k) + (BLO_TOP(k) - BLO_DEEP(k)) * f
-            bup(k,j) = BUP_DEEP(k) + (BUP_TOP(k) - BUP_DEEP(k)) * f
-          END DO
-        END DO
-      END IF
-
-    CASE (2)
-      ! Departure coefficients from an external grid, pre-extracted for
-      ! this model into a <model>.dep sidecar and interpolated here onto
-      ! the model's own depth scale.
-      CALL read_dep_file(depfile, nrhox)
-
-    CASE (3)
-      ! Straight from the local extracted grid, interpolated in stellar
-      ! parameters here.  No sidecar, no per-model preparation step.
-      CALL interp_grid(nrhox)
-
-    CASE DEFAULT
-      WRITE(6,'(A,I0)') ' ERROR: unknown NLTE_MODE = ', NLTE_MODE
-      CALL EXIT(1)
-
-    END SELECT
-
-  END SUBROUTINE fill_departures
 
 
 
@@ -374,7 +246,7 @@ CONTAINS
   !  the standard alpha for its metallicity.
   ! --------------------------------------------------------------------------
   ! --------------------------------------------------------------------------
-  !  nlte_set_params -- tell mode 3 which model this is.
+  !  nlte_set_params -- tell the grid lookup which model this is.
   !
   !  Abundances come in as the code stores them: ABUND(IZ) is log10(N_Z/N_tot)
   !  for Z >= 3 with XRELATIVE(IZ) an additive log offset, while ABUND(1) is
@@ -412,7 +284,7 @@ CONTAINS
 
     INQUIRE(FILE=fn, EXIST=ex)
     IF (.NOT. ex) THEN
-      WRITE(6,'(A,A)') ' ERROR: NLTE_MODE = 3 needs the runtime grid file;' &
+      WRITE(6,'(A,A)') ' ERROR: NLTE needs the runtime grid file;' &
                        // ' not found: ', TRIM(fn)
       WRITE(6,'(A)')   '        Build it with tools/nlte_extract_grid.py,' &
                        // ' nlte_build_index.py and nlte_build_runtime.py'
@@ -475,7 +347,7 @@ CONTAINS
   !
   !  Returns the lower node i and the weight w of node i+1, both CLAMPED to
   !  the axis ends: outside the grid the edge value is held, never
-  !  extrapolated, exactly as read_dep_file does in depth.
+  !  extrapolated, as in depth.
   ! --------------------------------------------------------------------------
   SUBROUTINE bracket(ax, n, x, i, w)
     REAL(4), INTENT(IN)  :: ax(:)
@@ -508,7 +380,7 @@ CONTAINS
 
 
   ! --------------------------------------------------------------------------
-  !  interp_grid(nrhox) -- NLTE_MODE = 3.
+  !  interp_grid(nrhox) -- install b for this model.
   !
   !  Multilinear interpolation of b over the five axes, evaluated on this
   !  model's own layers.
@@ -592,7 +464,7 @@ CONTAINS
                 lt = LOG10(MAX(tau5_sv(j), 1.0D-99))
                 ! Mark layers outside the corner's own tau range.  Mode 2
                 ! reports this and it is how the grid's truncation became
-                ! visible at all; mode 3 must not lose it.
+                ! visible at all and must not be lost.
                 IF (lt .LT. ltau(1) .OR. lt .GT. ltau(gndep)) clamped_sv(j) = .TRUE.
                 IF (lt .LE. ltau(1)) THEN
                   t = lb(1)
@@ -629,7 +501,7 @@ CONTAINS
     DEALLOCATE(buf, ltau, lb)
 
     IF (wsum .LE. 0.0D0) THEN
-      WRITE(6,'(A)') ' ERROR: NLTE_MODE = 3 found no populated grid cell'  &
+      WRITE(6,'(A)') ' ERROR: NLTE found no populated grid cell'  &
                      // ' near this model.'
       WRITE(6,'(A,F8.1,A,F6.2,A,F6.2,A,F5.1,A,F6.2)') &
         '        Teff=', m_teff, ' logg=', m_logg, ' [Fe/H]=', m_feh, &
@@ -664,269 +536,6 @@ CONTAINS
 
   END SUBROUTINE interp_grid
 
-
-  ! --------------------------------------------------------------------------
-  !  read_dep_file(depfile, nrhox) -- NLTE_MODE = 2.
-  !
-  !  Reads <model>.dep and interpolates it onto this model's depth scale.
-  !
-  !  WHY A SIDECAR RATHER THAN THE GRID ITSELF
-  !  -----------------------------------------
-  !  The published departure-coefficient grids (Amarsi et al. 2020, as
-  !  repackaged by Gerber et al. 2023) are multi-gigabyte binaries indexed
-  !  by (Teff, log g, [Fe/H], [alpha/Fe]) over thousands of MARCS models,
-  !  with their own auxiliary index files and their own level ordering per
-  !  model atom.  Putting a reader for that inside SYNTHE would bury the
-  !  physics under file format, and would have to be rewritten whenever the
-  !  grid is reissued.  Instead tools/nlte_make_dep.py does the grid I/O,
-  !  the stellar-parameter interpolation, and the model-atom level -> our
-  !  transition mapping, and emits one small text file per model.  What is
-  !  left here is the part that genuinely belongs in the synthesiser:
-  !  putting b onto this atmosphere's layers.
-  !
-  !  FILE FORMAT (free-form, '#' comments and blank lines ignored)
-  !  ------------------------------------------------------------
-  !    NTRANS  <m>          must equal NLTE_NTRANS; transition order must
-  !                         match NLTE_TR_* in mod_mklinelist
-  !    NDEPTH  <n>          number of table rows, n >= 2
-  !    DEPTHVAR LOGRHOX     optional, but if present must say LOGRHOX.  The
-  !                         published grids are tabulated against tau_5000,
-  !                         which SYNTHE does not carry; the converter maps
-  !                         them onto column mass using the MARCS model the
-  !                         grid was computed on.  The keyword exists so that
-  !                         a tau-based table cannot be fed in silently and
-  !                         read as if its first column were log column mass.
-  !    then n rows of  log10(rhox[g/cm^2])  b_lo(1) b_up(1) ... b_lo(m) b_up(m)
-  !    rows ordered by INCREASING log10(rhox), i.e. surface first
-  !
-  !  INTERPOLATION
-  !  -------------
-  !  Linear in log10(b) against log10(column mass).  Column mass, not tau,
-  !  because the grids are computed on MARCS structures and an equal-tau
-  !  mapping between codes whose continuum opacities differ misplaces the
-  !  layers -- the same trap that once faked a 440 K offset in a cross-code
-  !  temperature comparison here.  log b rather than b because b is a ratio
-  !  that can run over decades, and because interpolating it linearly can
-  !  cross zero on a steep gradient while log b cannot.  All b in the file
-  !  must therefore be strictly positive; a non-positive value is an error,
-  !  not something to quietly floor.
-  !
-  !  OUTSIDE THE FILE'S RANGE the endpoint value is HELD, never
-  !  extrapolated: departure coefficients turn over sharply at the top of
-  !  the atmosphere and a linear continuation there produces confident
-  !  nonsense.  Clamped layers are counted, reported, and flagged in the
-  !  .nlte dump, because "my grid did not cover the model" and "my
-  !  interpolation is wrong" are the two failure modes that otherwise look
-  !  identical.
-  ! --------------------------------------------------------------------------
-  SUBROUTINE read_dep_file(depfile, nrhox)
-
-    CHARACTER(LEN=*), INTENT(IN) :: depfile
-    INTEGER,          INTENT(IN) :: nrhox
-
-    INTEGER, PARAMETER :: MAXDEP = 500     ! rows allowed in the sidecar
-
-    REAL(8) :: lrx(MAXDEP)
-    REAL(8) :: blo_f(NLTE_NTRANS, MAXDEP), bup_f(NLTE_NTRANS, MAXDEP)
-    REAL(8) :: row(1 + 2*NLTE_NTRANS)
-    REAL(8) :: lr, t, lb, rtest
-    INTEGER :: u, ios, ntr, ndep, n, k, j, i, lo, hi, mid
-    INTEGER :: nclamp_top, nclamp_bot
-    CHARACTER(LEN=512) :: line
-    CHARACTER(LEN=32)  :: tag, dvar
-    LOGICAL :: exists
-
-    INQUIRE(FILE=depfile, EXIST=exists)
-    IF (.NOT. exists) THEN
-      WRITE(6,'(A,A)') ' ERROR: NLTE_MODE = 2 needs a departure-coefficient' // &
-                       ' sidecar; not found: ', TRIM(depfile)
-      WRITE(6,'(A)')   '        Build one with tools/nlte_make_dep.py.'
-      CALL EXIT(1)
-    END IF
-
-    OPEN(NEWUNIT=u, FILE=depfile, STATUS='OLD', ACTION='READ')
-
-    ntr  = -1
-    ndep = -1
-    n    =  0
-
-    DO
-      READ(u,'(A)',IOSTAT=ios) line
-      IF (ios .NE. 0) EXIT
-      line = ADJUSTL(line)
-      IF (LEN_TRIM(line) .EQ. 0) CYCLE
-      IF (line(1:1) .EQ. '#')    CYCLE
-
-      ! Keyword or table row?  Decided by whether the first token parses as
-      ! a number, not by position: an earlier version kept a "still in the
-      ! header" flag that cleared as soon as NTRANS and NDEPTH had both been
-      ! seen, so a DEPTHVAR line written after them was read as data and
-      ! reported as a malformed row.
-      READ(line,*,IOSTAT=ios) rtest
-      IF (ios .NE. 0) THEN
-        ! Read the keyword ALONE first, then re-read the line with the type
-        ! that keyword's argument actually has.  Demanding an integer up
-        ! front misreports "DEPTHVAR LOGTAU5000" as a malformed NTRANS.
-        READ(line,*,IOSTAT=ios) tag
-        IF (ios .NE. 0) THEN
-          WRITE(6,'(A,A)') ' ERROR: .dep: cannot parse line: ', TRIM(line)
-          CALL EXIT(1)
-        END IF
-
-        IF (TRIM(tag) .EQ. 'DEPTHVAR') THEN
-          READ(line,*,IOSTAT=ios) tag, dvar
-          IF (ios .NE. 0 .OR. TRIM(dvar) .NE. 'LOGRHOX') THEN
-            WRITE(6,'(A,A)') ' ERROR: .dep DEPTHVAR must be LOGRHOX, got: ', &
-                             TRIM(line)
-            WRITE(6,'(A)')   '        The depth column is log10 column mass' // &
-                             ' [g/cm^2], not an optical depth.'
-            CALL EXIT(1)
-          END IF
-          CYCLE
-        END IF
-
-        READ(line,*,IOSTAT=ios) tag, i
-        IF (ios .NE. 0) THEN
-          WRITE(6,'(A,A)') ' ERROR: .dep: ', TRIM(tag) // &
-                           ' needs an integer argument.'
-          CALL EXIT(1)
-        END IF
-        SELECT CASE (TRIM(tag))
-        CASE ('NTRANS');  ntr  = i
-        CASE ('NDEPTH');  ndep = i
-        CASE DEFAULT
-          WRITE(6,'(A,A)') ' ERROR: .dep: unknown keyword ', TRIM(tag)
-          CALL EXIT(1)
-        END SELECT
-        IF (ntr .GE. 0 .AND. ntr .NE. NLTE_NTRANS) THEN
-          WRITE(6,'(A,I0,A,I0)') ' ERROR: .dep declares NTRANS = ', ntr, &
-            ' but this build has NLTE_NTRANS = ', NLTE_NTRANS
-          CALL EXIT(1)
-        END IF
-        IF (ndep .GT. MAXDEP) THEN
-          WRITE(6,'(A,I0,A,I0)') ' ERROR: .dep declares NDEPTH = ', ndep, &
-            ', above the compiled limit ', MAXDEP
-          CALL EXIT(1)
-        END IF
-        CYCLE
-      END IF
-
-      ! Table body.
-      IF (ntr .LT. 0 .OR. ndep .LT. 0) THEN
-        WRITE(6,'(A)') ' ERROR: .dep has data before its NTRANS/NDEPTH' // &
-                       ' headers.'
-        CALL EXIT(1)
-      END IF
-      IF (n .GE. ndep) THEN
-        WRITE(6,'(A,I0,A)') ' ERROR: .dep has more rows than the declared' // &
-                            ' NDEPTH = ', ndep, '.'
-        CALL EXIT(1)
-      END IF
-      READ(line,*,IOSTAT=ios) row
-      IF (ios .NE. 0) THEN
-        WRITE(6,'(A,I0,A,I0,A)') ' ERROR: .dep row ', n+1, ' needs ', &
-          1 + 2*NLTE_NTRANS, ' numbers: log10(rhox) then b_lo b_up per transition.'
-        CALL EXIT(1)
-      END IF
-      n = n + 1
-      lrx(n) = row(1)
-      DO k = 1, NLTE_NTRANS
-        blo_f(k,n) = row(2*k)
-        bup_f(k,n) = row(2*k + 1)
-        IF (blo_f(k,n) .LE. 0.0D0 .OR. bup_f(k,n) .LE. 0.0D0) THEN
-          WRITE(6,'(A,I0,A,I0)') ' ERROR: .dep has a non-positive departure' // &
-            ' coefficient at row ', n, ', transition ', k
-          CALL EXIT(1)
-        END IF
-      END DO
-      IF (n .GE. 2) THEN
-        IF (lrx(n) .LE. lrx(n-1)) THEN
-          WRITE(6,'(A,I0,A)') ' ERROR: .dep log10(rhox) must increase' // &
-            ' (surface first); row ', n, ' does not.'
-          CALL EXIT(1)
-        END IF
-      END IF
-    END DO
-    CLOSE(u)
-
-    IF (ntr .LT. 0 .OR. ndep .LT. 0) THEN
-      WRITE(6,'(A)') ' ERROR: .dep is missing an NTRANS or NDEPTH header.'
-      CALL EXIT(1)
-    END IF
-    IF (n .NE. ndep) THEN
-      WRITE(6,'(A,I0,A,I0)') ' ERROR: .dep declared NDEPTH = ', ndep, &
-        ' but supplied ', n
-      CALL EXIT(1)
-    END IF
-    IF (n .LT. 2) THEN
-      WRITE(6,'(A)') ' ERROR: .dep needs at least two depth rows.'
-      CALL EXIT(1)
-    END IF
-
-    ! --- interpolate onto this model's layers -------------------------------
-    nclamp_top = 0
-    nclamp_bot = 0
-    DO j = 1, nrhox
-      lr = LOG10(rhox_sv(j))
-
-      IF (lr .LE. lrx(1)) THEN
-        lo = 1;  hi = 1;  t = 0.0D0
-        IF (lr .LT. lrx(1)) THEN
-          nclamp_top     = nclamp_top + 1
-          clamped_sv(j)  = .TRUE.
-        END IF
-      ELSE IF (lr .GE. lrx(n)) THEN
-        lo = n;  hi = n;  t = 0.0D0
-        IF (lr .GT. lrx(n)) THEN
-          nclamp_bot     = nclamp_bot + 1
-          clamped_sv(j)  = .TRUE.
-        END IF
-      ELSE
-        lo = 1;  hi = n
-        DO WHILE (hi - lo .GT. 1)
-          mid = (lo + hi) / 2
-          IF (lrx(mid) .GT. lr) THEN
-            hi = mid
-          ELSE
-            lo = mid
-          END IF
-        END DO
-        t = (lr - lrx(lo)) / (lrx(hi) - lrx(lo))
-      END IF
-
-      ! t == 0 covers both clamped ends and an exact hit on a table node.
-      ! Take the tabulated value straight through in that case rather than
-      ! round-tripping it via 10**log10(b), which is not the identity in
-      ! floating point.  A sidecar sampled on the model's own layers then
-      ! reproduces itself exactly, which is what makes it usable as a
-      ! reference against the mode-1 harness.
-      IF (t .EQ. 0.0D0) THEN
-        DO k = 1, NLTE_NTRANS
-          blo(k,j) = blo_f(k,lo)
-          bup(k,j) = bup_f(k,lo)
-        END DO
-      ELSE
-        DO k = 1, NLTE_NTRANS
-          lb = LOG10(blo_f(k,lo)) + t*(LOG10(blo_f(k,hi)) - LOG10(blo_f(k,lo)))
-          blo(k,j) = 10.0D0**lb
-          lb = LOG10(bup_f(k,lo)) + t*(LOG10(bup_f(k,hi)) - LOG10(bup_f(k,lo)))
-          bup(k,j) = 10.0D0**lb
-        END DO
-      END IF
-    END DO
-
-    WRITE(6,'(A,A)')       ' NLTE: departures from ', TRIM(depfile)
-    WRITE(6,'(A,I0,A,F8.4,A,F8.4)') ' NLTE:   ', n, &
-      ' rows, log10(rhox) ', lrx(1), ' to ', lrx(n)
-    WRITE(6,'(A,F8.4,A,F8.4)') ' NLTE:   model spans log10(rhox) ', &
-      LOG10(rhox_sv(1)), ' to ', LOG10(rhox_sv(nrhox))
-    IF (nclamp_top + nclamp_bot .GT. 0) THEN
-      WRITE(6,'(A,I0,A,I0,A)') ' NLTE: WARNING -- grid does not cover the' // &
-        ' model: ', nclamp_top, ' layers above its top, ', nclamp_bot, &
-        ' below its base; endpoint b held (not extrapolated).'
-    END IF
-
-  END SUBROUTINE read_dep_file
 
 
   ! --------------------------------------------------------------------------
@@ -1024,7 +633,7 @@ CONTAINS
   !
   !  This is the file that makes the depth mapping observable.  Checking
   !  the dumped b against the profile it was supposed to come from -- the
-  !  analytic ramp in the structured test, the input grid in mode 2 --
+  !  the input grid --
   !  tests the (transition, depth) indexing directly, rather than trying
   !  to infer it from an emergent flux that depends on everything at once.
   !  S_l/B_nu is written out too, from the same b and x the opacity loop
@@ -1042,16 +651,15 @@ CONTAINS
 
     OPEN(NEWUNIT=u, FILE=TRIM(basename)//'.nlte', STATUS='REPLACE', &
          ACTION='WRITE')
-    WRITE(u,'(A,I0,A,I0)') '# NLTE_MODE=', NLTE_MODE, &
-                           '  NLTE_TEST_SHAPE=', NLTE_TEST_SHAPE
+    WRITE(u,'(A,I0)') '# NLTE_MODE=', NLTE_MODE
     WRITE(u,'(A)') '# One row per (transition, depth).  inv=1 marks a depth' // &
                    ' where b_u/b_l implied a'
     WRITE(u,'(A)') '# population inversion and the line was forced back to' // &
                    ' LTE (fkappa=1, fdev=0).'
     WRITE(u,'(A)') '# seen=0 means the opacity loop never reached this' // &
                    ' transition at this depth.'
-    WRITE(u,'(A)') '# clm=1 (mode 2 only) marks a depth outside the .dep' // &
-                   ' table, where the endpoint'
+    WRITE(u,'(A)') '# clm=1 marks a depth outside the grid tau range,' // &
+                   ' where the endpoint'
     WRITE(u,'(A)') '# value was held rather than extrapolated.'
     WRITE(u,'(A)') '#'
     WRITE(u,'(A)') '# Values are written at full double precision on' // &

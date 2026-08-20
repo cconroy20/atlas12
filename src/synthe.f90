@@ -159,7 +159,6 @@ PROGRAM SYNTHE
 
   ! --- CLI / filename scratch -------------------------------------------
   CHARACTER(LEN=512) :: model_file, spec_file, linform_file, mol_file, model_base
-  CHARACTER(LEN=512) :: dep_file
   CHARACTER(LEN=512) :: cont_file
   ! Minimum supported resolving power (see the check below).
   REAL(8), PARAMETER :: RESOLU_MIN = 300000.0D0
@@ -304,18 +303,6 @@ PROGRAM SYNTHE
   END IF
   dotpos = INDEX(TRIM(model_base), '.', BACK=.TRUE.)
   IF (dotpos .GT. 1) model_base = model_base(1:dotpos-1)
-  ! Departure-coefficient sidecar for NLTE_MODE = 2.  Unlike the outputs,
-  ! this is an INPUT and is looked for next to the model file rather than in
-  ! the working directory: b depends on the atmospheric structure, so the
-  ! two belong together.
-  eqpos = INDEX(TRIM(model_file), '/', BACK=.TRUE.)
-  dotpos = INDEX(TRIM(model_file), '.', BACK=.TRUE.)
-  IF (dotpos .GT. eqpos + 1) THEN
-    dep_file = model_file(1:dotpos-1) // '.dep'
-  ELSE
-    dep_file = TRIM(model_file) // '.dep'
-  END IF
-
   spec_file    = TRIM(model_base) // '.spec'
   mol_file     = TRIM(model_base) // '.mol'
   linform_file = TRIM(model_base) // '.linform'
@@ -435,7 +422,7 @@ PROGRAM SYNTHE
   ! of column mass -- for the structured test by construction, and for an
   ! external grid because that is the variable it must be interpolated on.
   CALL nlte_init(nrhox, xf_rhox(1:nrhox), xf_t(1:nrhox), &
-                 tau5000_sv(1:nrhox), TRIM(dep_file))
+                 tau5000_sv(1:nrhox))
 
   ! --- Unpack continuum opacity tables ---
   DO j = 1, nrhox_a

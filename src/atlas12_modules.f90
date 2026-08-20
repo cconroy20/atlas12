@@ -257,58 +257,14 @@ MODULE mod_parameters
   ! depth), so what actually has to be tracked alongside it is the
   ! opacity-weighted DEVIATION of the emissivity from LTE; see mod_nlte.
   !
-  ! NLTE_MODE: 0 = pure LTE (production).  No extra arrays are allocated
-  !                and no NLTE code runs.
-  !            1 = null/identity test.  The full NLTE path is exercised
-  !                with b_l = NLTE_TEST_BLO and b_u = NLTE_TEST_BUP at
-  !                every depth.  Three settings matter:
-  !                  BLO = BUP = 1 : must reproduce mode 0 BIT FOR BIT.
-  !                    The factors above collapse to exactly 1.0 and 0.0
-  !                    -- not to within rounding -- because 1 - beta e^-x
-  !                    and 1 - e^-x become the same expression and y/y is
-  !                    exactly 1 in IEEE arithmetic.
-  !                  BLO = BUP = c : pure opacity rescaling of the tagged
-  !                    lines by exactly c with S_l still = B_nu, i.e.
-  !                    identical to shifting their log gf by log10(c) --
-  !                    a test of the kappa path against an answer known
-  !                    in advance.
-  !                  BUP < BLO     : S_l < B_nu, the photon-loss case.
-  !                    Opacity barely moves (the correction is O(e^-x),
-  !                    under a per cent at Na D in a solar photosphere)
-  !                    but the saturated core darkens toward b_u/b_l.
-  !                    This is the only setting that puts a nonzero number
-  !                    into the deviation accumulator.
-  !            2 = departure coefficients read from a <model>.dep sidecar,
-  !                built from a published grid by tools/nlte_make_dep.py and
-  !                interpolated onto this model's layers.  See read_dep_file
-  !                in mod_nlte for the format and the interpolation.  Good
-  !                for one-off and hand-crafted work.
-  !            3 = departure coefficients interpolated straight from the
-  !                locally extracted grid (tools/nlte_extract_grid.py +
-  !                nlte_build_index.py), in Teff, log g, [Fe/H], v_turb and
-  !                Na abundance, with no per-model preparation step.  This
-  !                is the production path for grid runs.  Point $NLTE_GRID
-  !                at the store prefix, or edit NLTE_GRID_DEFAULT.
-  !
-  ! NLTE_TEST_SHAPE selects what mode 1 puts into b (ignored otherwise):
-  !            0 = CONSTANT: b_l = NLTE_TEST_BLO, b_u = NLTE_TEST_BUP at
-  !                every depth and for every transition.  This is the
-  !                null test described above.
-  !            1 = STRUCTURED: b ramps with depth and differs between
-  !                transitions, per the table in mod_nlte.  Shape 0
-  !                writes the SAME number into every element of b, so it
-  !                cannot detect a wrong (transition, depth) index, a
-  !                reversed depth axis, or coefficients attributed to the
-  !                wrong line -- all of which are live risks the moment
-  !                mode 2 starts interpolating a real grid, and all of
-  !                which would then be indistinguishable from bad grid
-  !                data.  Shape 1 exists to separate those two failures
-  !                before the reader is written.  It is a harness, not
-  !                physics: the profile is analytic and made up.
-  INTEGER, PARAMETER :: NLTE_MODE       = 0
-  INTEGER, PARAMETER :: NLTE_TEST_SHAPE = 0
-  REAL(8), PARAMETER :: NLTE_TEST_BLO   = 1.0D0
-  REAL(8), PARAMETER :: NLTE_TEST_BUP   = 1.0D0
+  ! NLTE_MODE: 0 = OFF, pure LTE (production default).  No extra arrays are
+  !                allocated and no NLTE code runs; the line loop pays one
+  !                logical compare per line.
+  !            1 = ON.  Departure coefficients are interpolated from the
+  !                runtime grid file in data/nlte/ over Teff, log g, [Fe/H],
+  !                v_turb and Na abundance, onto this model's own layers.
+  !                See mod_nlte; $NLTE_GRID overrides the file path.
+  INTEGER, PARAMETER :: NLTE_MODE = 0
 
   ! Debug flag: set to 1 to print subroutine entry tracing to unit 6
   INTEGER, PARAMETER :: IDEBUG = 0
