@@ -11,4 +11,8 @@ hilines.bin
 h2ofastfix.bin
 h2opokazatel.bin
 mol/caoh_oyt6_super.bin
-nlte/Na_MARCS_Jul-14-2023.nlte
+# NLTE runtime grids: hundreds of MB each, rebuilt from the master stores in
+# ~/kurucz/nlte_grids/ (see data/nlte/README.txt), so never committed --
+# nor any tarball made of them for shipping to a cluster.
+nlte/*.nlte
+nlte*.tar.gz

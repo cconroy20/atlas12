@@ -54,11 +54,17 @@ grid's own convergence is far coarser than float32 resolution.
 USAGE
 -----
   python3 tools/nlte_extract_grid.py OUT_PREFIX --aux auxData_Na.dat \\
-      [--url URL | --zip LOCAL.zip] [--levels 10]
+      [--url URL | --zip LOCAL.zip] [--levels 10] [--element Na] \\
+      [--atom atom.na_qmh]
+
+The grid layout is the same for every element in the collection -- only ndep,
+nlev and the record stride differ -- so the same pass serves all of them; give
+--nlev the element's level count and --levels how many to keep.
 """
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -86,12 +92,60 @@ def read_index(path):
         sys.exit(f"ERROR: no usable records in {path}")
     rows.sort()
     ptr = np.array([r[0] for r in rows], dtype=np.int64)
-    gaps = np.unique(np.diff(ptr))
-    if len(gaps) != 1:
-        sys.exit(f"ERROR: records are not fixed-stride ({len(gaps)} distinct "
-                 "gaps).  This extractor assumes they are; a variable-length "
-                 "grid needs the pointer list threaded through the pass.")
-    return rows, int(ptr[0]), int(gaps[0])
+    gaps = np.diff(ptr)
+    if len(gaps) and gaps.min() <= 0:
+        sys.exit("ERROR: duplicate or non-monotonic pointers in the index")
+    vals, cnt = np.unique(gaps, return_counts=True)
+    stride = int(vals[cnt.argmax()])          # the record size itself
+    # Records are fixed-stride, but the index does not necessarily list every
+    # record in the file: Mg's index skips some, so its gaps are multiples of
+    # the stride.  Take the modal gap as the record size and let the caller
+    # drive the pass off the pointers themselves, which covers both cases.
+    extra = int(cnt.sum() - cnt.max())
+    if extra:
+        bad = int(((vals % stride) != 0).sum())
+        if bad:
+            sys.exit(f"ERROR: {bad} pointer gaps are not multiples of the "
+                     f"record size {stride}; the layout is not what this "
+                     "extractor assumes")
+        print(f"note      : index skips records -- {extra} of {len(gaps)} "
+              f"gaps exceed one record ({int(ptr[-1] - ptr[0]) // stride + 1} "
+              f"records span the file, {len(rows)} are indexed)")
+    return rows, int(ptr[0]), stride
+
+
+def read_model_atom(path, keep):
+    """The first `keep` levels of a MULTI model atom: energy, g, label, ion.
+
+    The grid stores b by level INDEX, so turning "Ca II H" into a pair of
+    indices needs the atom the grid was solved with.  Recording it alongside
+    the store keeps that mapping with the data instead of in someone's head.
+    The level block starts after the line carrying nlev/nline/ncont and runs
+    to the first line that does not parse as `energy g 'label' ion`; comment
+    lines (leading *) are skipped, as MULTI allows them anywhere.
+    """
+    lev, started = [], False
+    for ln in open(path, errors="replace"):
+        s = ln.strip()
+        if not s or s.startswith("*"):
+            continue
+        t = s.split()
+        if not started:
+            # the counts line: >=3 integers, the first being nlev
+            if len(t) >= 3 and all(x.lstrip("+-").isdigit() for x in t[:3]):
+                started = True
+            continue
+        m = re.match(r"\s*([-\d.eEdD+]+)\s+([-\d.eEdD+]+)\s+'([^']*)'\s+(\d+)", ln)
+        if not m:
+            break
+        lev.append({"index": len(lev) + 1,
+                    "energy_cm": float(m.group(1).replace("D", "E")),
+                    "g": float(m.group(2).replace("D", "E")),
+                    "label": m.group(3).strip(),
+                    "ion": int(m.group(4))})
+        if len(lev) >= keep:
+            break
+    return lev
 
 
 def open_stream(url=None, zippath=None):
@@ -127,6 +181,11 @@ def main():
     ap.add_argument("--ndep", type=int, default=56, help="depths per record")
     ap.add_argument("--nlev", type=int, default=290, help="levels per record")
     ap.add_argument("--idlen", type=int, default=500, help="id field bytes")
+    ap.add_argument("--element", default="", help="element symbol, recorded "
+                    "in the json (the store itself is element-agnostic)")
+    ap.add_argument("--atom", help="MULTI model atom the grid was solved with;"
+                    " its level table is copied into the json, which is what "
+                    "later maps a transition's energies onto level indices")
     a = ap.parse_args()
     if not (a.url or a.zip):
         ap.error("give --url or --zip")
@@ -142,9 +201,15 @@ def main():
     if expect != stride:
         sys.exit(f"ERROR: index stride {stride} != layout {expect} implied by "
                  f"idlen={a.idlen} ndep={a.ndep} nlev={a.nlev}")
-    skip_rest = stride - need
+    # Byte to start each record at, from the index rather than from a running
+    # count: the two agree only when every record is indexed.
+    ptrs = np.array([r[0] for r in rows], dtype=np.int64) - 1
+    skips = ptrs - np.concatenate(([0], ptrs[:-1] + need))
+    if skips.min() < 0:
+        sys.exit("ERROR: records overlap given the bytes kept per record")
 
-    print(f"records   : {nrec}  stride {stride} B, header {hdr} B")
+    print(f"records   : {nrec}  stride {stride} B, header {hdr} B, "
+          f"{int(skips[1:].sum())} B skipped between records")
     print(f"keeping   : tau({a.ndep}) + b({keep} of {a.nlev} levels) "
           f"= {need - a.idlen - 8} B/record of {stride}")
     print(f"output    : {nrec * (a.ndep + keep * a.ndep) * 4 / 1e6:.0f} MB "
@@ -156,7 +221,7 @@ def main():
     d = zlib.decompressobj(-15)
     fout = open(a.out + ".f32", "wb")
 
-    mode, remaining = "skip", hdr
+    mode, remaining = "skip", int(skips[0])
     blk = bytearray()
     n = 0
     bad = 0
@@ -193,7 +258,8 @@ def main():
                 fout.write(tau.astype("<f4").tobytes())
                 fout.write(b.astype("<f4").tobytes())
                 n += 1
-                mode, remaining = "skip", skip_rest
+                mode = "skip"
+                remaining = int(skips[n]) if n < nrec else 0
         if cpos >= nextrep:
             el = time.time() - t0
             print(f"  {cpos/1e9:6.2f} GB in | {n:>7}/{nrec} records | "
@@ -227,11 +293,9 @@ def main():
         "depth_variable": "tau_5000 (linear, as stored in the grid)",
         "source_member": name,
         "index": os.path.basename(a.aux),
-        "na_levels": {"1": "3s 2S", "2": "3p 2P1/2", "3": "3p 2P3/2",
-                      "4": "4s 2S", "5": "3d 2D", "6": "3d 2D"},
-        "na_transitions": {"D2 5891.6": [1, 3], "D1 5897.6": [1, 2],
-                           "8183": [2, 5], "8195": [3, 5],
-                           "11385": [2, 4], "11407": [3, 4]},
+        "element": a.element,
+        "model_atom": os.path.basename(a.atom) if a.atom else None,
+        "levels": read_model_atom(a.atom, keep) if a.atom else None,
     }, open(a.out + ".json", "w"), indent=2)
 
     el = time.time() - t0

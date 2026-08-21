@@ -404,7 +404,7 @@ PROGRAM SYNTHE
     xnfh2(j)   = REAL(xf_xnfh2(j))
   END DO
 
-  ! Model parameters for the NLTE_MODE = 3 grid lookup.  vturb is taken at
+  ! Model parameters for the NLTE grid lookup.  vturb is taken at
   ! the layer nearest tau_5000 = 1, i.e. where the lines form, rather than
   ! averaged over a scale on which it may vary.
   eqpos = 1
@@ -412,9 +412,7 @@ PROGRAM SYNTHE
     IF (ABS(LOG10(MAX(tau5000_sv(j),1.0D-99))) .LT. &
         ABS(LOG10(MAX(tau5000_sv(eqpos),1.0D-99)))) eqpos = j
   END DO
-  CALL nlte_set_params(TEFF, GLOG, xf_vturb(eqpos)/1.0D5, &
-                       ABUND(1), ABUND(11) + XRELATIVE(11), &
-                       ABUND(26) + XRELATIVE(26))
+  CALL nlte_set_params(TEFF, GLOG, xf_vturb(eqpos)/1.0D5, ABUND, XRELATIVE)
 
   ! Departure coefficients for tagged transitions (NLTE_MODE developer
   ! flag).  Sets nlte_on; a no-op when NLTE_MODE = 0.  Placed here, after

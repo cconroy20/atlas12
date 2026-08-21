@@ -8,7 +8,7 @@ The store from nlte_extract_grid.py is a flat array of records; what it lacks
 is a way to get from stellar parameters to a record number.  Resampling it
 onto a dense rectangular table would be the obvious fix, but it bakes in the
 axis choices of whatever grid is current -- and the requirement here is to
-build models at ANY Teff, log g, metallicity, Na abundance and microturbulence.
+build models at ANY Teff, log g, metallicity, element abundance and vturb.
 So the sparse store is kept as it is and this writes a small integer index over
 the full axis product: cell -> record number, or 0 where the grid has nothing.
 SYNTHE then binary-searches each axis and reads only the corner records it
@@ -16,9 +16,10 @@ needs (~79 kB), never the 1 GB.
 
 THE AXES, AND ONE THAT ISN'T
 ----------------------------
-    Teff, log g, [Fe/H], v_turb, dNa          five axes
-    dNa = A(Na) - [Fe/H] is a fixed 31-value ladder, identical for every model,
-    so Na abundance is a proper interpolation axis (about +-1.5 dex on solar).
+    Teff, log g, [Fe/H], v_turb, dX           five axes
+    dX = A(X) - [Fe/H] is a fixed ladder (31 values for Na, 21 for Mg and Ca),
+    identical for every model, so the element's abundance is a proper
+    interpolation axis -- roughly +-1.5 dex about the scaled-solar value.
 
 [alpha/Fe] is NOT an axis.  These are MARCS '_st_' standard-composition models,
 in which alpha is a deterministic function of [Fe/H] (0 at [Fe/H] >= 0, ramping
@@ -71,15 +72,58 @@ def main():
     z = np.load(a.prefix + ".npz", allow_pickle=True)
     tf, lg, fe, vt, ab = (z[k] for k in ("teff", "logg", "feh", "vturb", "abund"))
     mod = z["model"]
-    geom = np.array([m[0] for m in mod])
-    mass = np.array([float(re.search(r"_m([0-9.]+)_", m).group(1)) for m in mod])
-    # dNa is the ladder offset; rounded because it is a difference of two
-    # values printed to 2 dp in the index file.
+    # Geometry letter and mass come from the MARCS model name.  Not every
+    # record has one: the Mg grid carries 21 records named simply "sun",
+    # which are extra models rather than nodes of the rectangular grid --
+    # and whose leading "s" would otherwise be read as "spherical".  Anything
+    # that does not match the MARCS pattern is dropped, with a count.
+    pat = re.compile(r"^([ps])\d+_g[+-][\d.]+_m([0-9.]+)_")
+    mm = [pat.match(m) for m in mod]
+    named = np.array([x is not None for x in mm])
+    geom = np.array([x.group(1) if x else "?" for x in mm])
+    mass = np.array([float(x.group(2)) if x else -1.0 for x in mm])
+    # dX = A(X) - [Fe/H] is the ladder offset; rounded because it is a
+    # difference of two values printed to 2 dp in the index file.
     dna = np.round(ab - fe, 3)
 
-    sel = (geom == "p") | ((geom == "s") & (mass == a.mass))
+    sel = named & ((geom == "p") | ((geom == "s") & (mass == a.mass)))
+    if (~named).any():
+        print(f"unnamed   : {int((~named).sum())} records are not MARCS grid "
+              f"nodes (e.g. {mod[~named][0]!r}) and are excluded")
     if not sel.any():
         sys.exit(f"ERROR: no records with geometry p or (s, M={a.mass})")
+
+    # DOES A(X) VARY AT ALL AT FIXED ATMOSPHERE?  For a trace species the
+    # grid carries a ladder of 21-31 abundances per atmosphere and dX is a
+    # genuine fifth axis.  For two elements it is not:
+    #
+    #   H   A(H) = 12.000 always -- it is the definition of the scale, not a
+    #       free parameter, so dX = 12 - [Fe/H] takes 15 values that are
+    #       PERFECTLY DEGENERATE with the [Fe/H] axis.  Left alone that builds
+    #       a 15x15 ([Fe/H], dX) plane with only the anti-diagonal filled, and
+    #       a model landing between two [Fe/H] nodes then finds 2 of its 4
+    #       corners missing, drops half the interpolation weight and
+    #       renormalises -- a silent collapse to something far cruder than an
+    #       interpolation in metallicity.
+    #   Fe  A(Fe) = [Fe/H] + 7.500 exactly, since in a scaled-solar MARCS
+    #       model the iron abundance IS the metallicity.  dX is single-valued
+    #       already, so this costs nothing but is recorded for the same reason.
+    #
+    # Detected from the data rather than hard-coded per element: if no
+    # atmosphere carries more than one A(X), the axis is collapsed to length 1
+    # and the runtime lookup lands on it unconditionally.
+    atm = np.stack([tf[sel], lg[sel], fe[sel], z["alpha"][sel], vt[sel]], 1)
+    nkey = len(np.unique(atm, axis=0))
+    nkeyab = len(np.unique(np.column_stack([atm, dna[sel]]), axis=0))
+    varies = nkeyab > nkey
+    if not varies:
+        dfix = float(np.median(dna[sel]))
+        print(f"abundance : A(X) does not vary at fixed atmosphere; the dX "
+              f"axis is COLLAPSED to length 1 rather than left degenerate "
+              f"with [Fe/H].  The stored value {dfix:+.3f} is a placeholder "
+              f"-- a length-1 axis always brackets to itself, so it is never "
+              f"compared against anything")
+        dna = np.full_like(dna, dfix)
 
     T, G, F, V, D = (np.unique(x[sel]) for x in (tf, lg, fe, vt, dna))
     shape = (len(T), len(G), len(F), len(V), len(D))
@@ -115,7 +159,7 @@ def main():
     json.dump({
         "shape": list(shape),
         "axes": {"teff": T.tolist(), "logg": G.tolist(), "feh": F.tolist(),
-                 "vturb": V.tolist(), "dNa": D.tolist()},
+                 "vturb": V.tolist(), "dX": D.tolist()},
         "cells": int(rec.size), "filled": filled,
         "fill_fraction": filled / rec.size,
         "plane_parallel": npp, "spherical": nsp,
@@ -126,12 +170,20 @@ def main():
                       "[Fe/H] by the standard relation (15 pairs of 75). An "
                       "alpha-enhanced model gets b at the standard alpha for "
                       "its [Fe/H].",
-        "dNa_definition": "A(Na) - [Fe/H]; a fixed ladder common to all models",
+        "dX_definition": "A(X) - [Fe/H]; a fixed ladder common to all models",
+        "dX_is_an_axis": bool(varies),
+        "dX_note": ("A(X) varies at fixed atmosphere, so dX is a genuine fifth "
+                    "axis" if varies else
+                    "A(X) does not vary at fixed atmosphere (H: fixed at 12; "
+                    "Fe: equal to [Fe/H] by construction), so the dX axis was "
+                    "collapsed to length 1; leaving it would make it "
+                    "degenerate with [Fe/H] and lose half the interpolation "
+                    "weight between metallicity nodes"),
         "overlapping_records_resolved": nover,
     }, open(a.prefix + ".idx.json", "w"), indent=2)
 
     print(f"axes      : {len(T)} Teff x {len(G)} logg x {len(F)} feh x "
-          f"{len(V)} vturb x {len(D)} dNa = {rec.size} cells")
+          f"{len(V)} vturb x {len(D)} dX = {rec.size} cells")
     print(f"filled    : {filled} ({100*filled/rec.size:.1f} %)  "
           f"{npp} plane-parallel, {nsp} spherical M={a.mass}")
     print(f"overlaps  : {nover} resolved in favour of plane-parallel")

@@ -108,28 +108,112 @@ MODULE mod_mklinelist
   ! one pair of fine-structure levels and therefore one pair of departure
   ! coefficients.  Energy matching tags the whole multiplet at once.
   !
-  ! Entries are the Na I D doublet, 3s 2S1/2 - 3p 2P3/2 (D2, 5891.58 A
-  ! vac) and 3s 2S1/2 - 3p 2P1/2 (D1, 5897.56 A vac).  Codes are Kurucz
-  ! species codes x 100, so 1100 = Na I -- which is CODEX entry 15, i.e.
+  ! ELEMENTS.  One published grid per element, so an element is also a
+  ! runtime file and an abundance axis; NLTE_TR_EL says which one a
+  ! transition draws its b from.  Order here is the order of the grid
+  ! array in mod_nlte and must match NLTE_GRID_NAME there.
+  INTEGER, PARAMETER, PUBLIC :: NLTE_NELEM = 4
+  CHARACTER(LEN=2), PARAMETER, PUBLIC :: NLTE_EL_SYM(NLTE_NELEM) = &
+      [ 'Na', 'Mg', 'Ca', 'Fe' ]
+  ! Atomic number, used to pull A(X) out of the model's abundance vector.
+  INTEGER, PARAMETER, PUBLIC :: NLTE_EL_Z(NLTE_NELEM) = [ 11, 12, 20, 26 ]
+
+  ! TRANSITIONS.  Codes are Kurucz species codes x 100, so 1100 = Na I,
+  ! 1200 = Mg I, 2000 = Ca I, 2001 = Ca II.  Na I is CODEX entry 15, i.e.
   ! already on Kurucz's own NLTE whitelist.
-  INTEGER, PARAMETER, PUBLIC :: NLTE_NTRANS = 2
-  INTEGER, PARAMETER :: NLTE_TR_CODE(NLTE_NTRANS) = [ 1100,       1100      ]
-  REAL(8), PARAMETER :: NLTE_TR_ELO (NLTE_NTRANS) = [    0.000D0,    0.000D0]
-  REAL(8), PARAMETER :: NLTE_TR_EUP (NLTE_NTRANS) = [16973.366D0, 16956.170D0]
+  !
+  !   1  Na I  D2      5891.58 vac    3s 2S1/2  - 3p 2P3/2
+  !   2  Na I  D1      5897.56 vac    3s 2S1/2  - 3p 2P1/2
+  !   3  Mg I  b4      5168.76 vac    3p 3P0    - 4s 3S1
+  !   4  Mg I  b2      5174.13 vac    3p 3P1    - 4s 3S1
+  !   5  Mg I  b1      5185.05 vac    3p 3P2    - 4s 3S1
+  !   6  Ca I  4226.73 4227.92 vac    4s2 1S0   - 4s4p 1P1
+  !   7  Ca II K       3934.77 vac    4s 2S1/2  - 4p 2P3/2
+  !   8  Ca II H       3969.59 vac    4s 2S1/2  - 4p 2P1/2
+  !   9  Ca II 8498.02 8500.36 vac    3d 2D3/2  - 4p 2P3/2
+  !  10  Ca II 8542.09 8544.44 vac    3d 2D5/2  - 4p 2P3/2
+  !  11  Ca II 8662.14 8664.52 vac    3d 2D3/2  - 4p 2P1/2
+  !
+  ! The two weaker triplet members are easy to transpose -- 8498 goes to
+  ! 4p 2P3/2 and 8662 to 4p 2P1/2, not the other way round -- so check
+  ! against 1e8/(Eup-Elo) rather than against memory before editing.
+  ! Fe I, 12-22.  Chosen with tools/nlte_pick_transitions.py rather than from
+  ! memory: atom.fe607a has 548 Fe I levels, many within a few cm^-1 of each
+  ! other, so a transition assigned to the wrong level would get a
+  ! plausible-looking but wrong b.  That tool matches both level energies
+  ! against the atom the grid was solved with and refuses anything ambiguous;
+  ! every row below matched to better than 1 cm^-1 on both levels and, at the
+  ! NLTE_TR_ETOL used here, tags exactly one gfall line each.
+  !
+  !  12  Fe I 3931.4 vac   a5D2 - z5D3    }
+  !  13  Fe I 3929.0 vac   a5D1 - z5D2    } multiplet 4, low excitation,
+  !  14  Fe I 3924.0 vac   a5D3 - z5D4    } the strongest Fe I in the H&K
+  !  15  Fe I 3921.4 vac   a5D0 - z5D1    } window
+  !  16  Fe I 5170.3 vac   a5D3 - z7D3
+  !  17  Fe I 5167.7 vac   a5D4 - z7D5    ground state, beside Mg b4
+  !  18  Fe I 5170.7 vac   c3F4 - t3D3    high excitation, for contrast
+  !  19  Fe I 5173.1 vac   b3D3 - y1G4
+  !  20  Fe I 8517.4 vac   b3G3 - z3G3
+  !  21  Fe I 8584.6 vac   b3G4 - z3G4
+  !  22  Fe I 8624.0 vac   b3G5 - z3G5
+  !
+  ! Fe II is deliberately absent.  The grid's model atom merges it into 58
+  ! SUPERLEVELS -- g = 30, 28, 20, ... , i.e. whole terms (a6D entire, a4F
+  ! entire) at term-averaged energies -- so no individual Fe II line can be
+  ! addressed by level energy at all.  Fe II is also the dominant stage in
+  ! these stars and close to LTE, so little is lost; but do not "fix" this by
+  ! loosening the tolerance until something matches.
+  INTEGER, PARAMETER, PUBLIC :: NLTE_NTRANS = 22
+  INTEGER, PARAMETER, PUBLIC :: NLTE_TR_EL  (NLTE_NTRANS) = &
+      [    1,     1,     2,     2,     2,     3,     3,     3,     3,     3,     3, &
+           4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4]
+  INTEGER, PARAMETER :: NLTE_TR_CODE(NLTE_NTRANS) = &
+      [ 1100,  1100,  1200,  1200,  1200,  2000,  2001,  2001,  2001,  2001,  2001, &
+        2600,  2600,  2600,  2600,  2600,  2600,  2600,  2600,  2600,  2600,  2600]
+  REAL(8), PARAMETER :: NLTE_TR_ELO (NLTE_NTRANS) = &
+      [     0.000D0,     0.000D0, 21850.400D0, 21870.460D0, 21911.170D0, &
+            0.000D0,     0.000D0,     0.000D0, 13650.190D0, 13710.880D0, &
+        13650.190D0, &
+          704.007D0,   888.132D0,   415.933D0,   978.074D0,   415.933D0, &
+            0.000D0, 32873.632D0, 29371.812D0, 24338.767D0, 24118.819D0, &
+        23783.619D0]
+  REAL(8), PARAMETER :: NLTE_TR_EUP (NLTE_NTRANS) = &
+      [ 16973.366D0, 16956.170D0, 41197.403D0, 41197.403D0, 41197.403D0, &
+        23652.300D0, 25414.400D0, 25191.510D0, 25414.400D0, 25414.400D0, &
+        25191.510D0, &
+        26140.170D0, 26339.690D0, 25899.980D0, 26479.380D0, 19757.030D0, &
+        19350.890D0, 52213.230D0, 48702.530D0, 36079.370D0, 35767.560D0, &
+        35379.200D0]
   ! Tolerance on both level energies [cm^-1].  Loose enough to absorb the
   ! level-energy revisions between gfall releases, tight enough that no
-  ! other Na I transition can collide (the next 3p-related level is
-  ! thousands of cm^-1 away, and the D1/D2 upper levels are 17 apart).
+  ! other transition of the same species can collide: the closest pair
+  ! here is Mg b4/b2, whose lower levels are 20 cm^-1 apart.
   REAL(8), PARAMETER :: NLTE_TR_ETOL = 5.0D0
 
-  ! Level indices of each transition IN THE GRID'S MODEL ATOM, needed by
-  ! NLTE_MODE = 3 which reads b per level straight from the extracted store.
-  ! For Na (atom.na_qmh, 290 levels): 1 = 3s 2S at 0 cm^-1, 2 = 3p 2P1/2 at
-  ! 16956.170, 3 = 3p 2P3/2 at 16973.366.  So D2 = 1->3 and D1 = 1->2.
-  ! These are a property of the GRID, not of our line list, and must be
-  ! rechecked against the model atom if the grid is ever reissued.
-  INTEGER, PARAMETER, PUBLIC :: NLTE_TR_LEVLO(NLTE_NTRANS) = [1, 1]
-  INTEGER, PARAMETER, PUBLIC :: NLTE_TR_LEVUP(NLTE_NTRANS) = [3, 2]
+  ! Level indices of each transition IN THE GRID'S MODEL ATOM.  These are a
+  ! property of the GRID, not of our line list, and must be rechecked
+  ! against the model atom if a grid is reissued.
+  !   Na  atom.na_qmh  290 levels:  1 = 3s 2S, 2 = 3p 2P1/2, 3 = 3p 2P3/2
+  !   Mg  atom.mg86d    86 levels:  1 = 3s2 1S, 2,3,4 = 3p 3P0,1,2,
+  !                                 6 = 4s 3S
+  !   Ca  atom.ca105b  105 levels:  1 = 4s2 1S, 9 = 4s4p 1P,
+  !                                 68 = Ca II 4s 2S, 69,70 = 3d 2D3/2,5/2,
+  !                                 71,72 = 4p 2P1/2,3/2
+  ! Ca's atom runs both stages in ONE level list with energies on a single
+  ! scale (Ca II 4s sits at 49305.952 = the Ca I ionization energy), while
+  ! gfall zeroes each stage separately -- hence Elo = 0 above for both
+  ! Ca I 4226 and Ca II H&K while the level indices differ.
+  !   Fe  atom.fe607a  607 levels: 1-548 are Fe I and individually resolved
+  !                                 (a5D4 at 0.000, a5D3 at 415.933, ...);
+  !                                 549-606 are Fe II SUPERLEVELS and 607 is
+  !                                 Fe III.  Levels above 566 are not clean in
+  !                                 the source and must not be selected.
+  INTEGER, PARAMETER, PUBLIC :: NLTE_TR_LEVLO(NLTE_NTRANS) = &
+      [ 1, 1, 2, 3, 4, 1, 68, 68, 69, 70, 69, &
+        3, 4, 2, 5, 2, 1, 87, 77, 49, 46, 45]
+  INTEGER, PARAMETER, PUBLIC :: NLTE_TR_LEVUP(NLTE_NTRANS) = &
+      [ 3, 2, 6, 6, 6, 9, 72, 71, 72, 72, 71, &
+        56, 58, 54, 61, 23, 18, 361, 252, 111, 109, 107]
 
   ! Indices into lte_lines() of the tagged components, ASCENDING, with the
   ! transition each belongs to.  Recorded unconditionally by read_gfall --
@@ -137,7 +221,10 @@ MODULE mod_mklinelist
   ! the NLTE_MODE setting; SYNTHE decides whether to use them.  As with
   ! ICA4227 the indices survive assembly because run_mklinelist copies the
   ! gfall block to the FRONT of lte_lines.
-  INTEGER, PARAMETER, PUBLIC :: MAX_NLTE_TAGGED = 64
+  ! Ca II alone contributes 62 components in gfall (K 11, H 9, 8498 11,
+  ! 8542 17, 8662 14, all isotopic/hyperfine splittings of one pair of
+  ! levels), so this has to be a few hundred, not a few dozen.
+  INTEGER, PARAMETER, PUBLIC :: MAX_NLTE_TAGGED = 256
   INTEGER, PUBLIC :: NLTE_TAG_IDX(MAX_NLTE_TAGGED)   = 0
   INTEGER, PUBLIC :: NLTE_TAG_TRANS(MAX_NLTE_TAGGED) = 0
   INTEGER, PUBLIC :: N_NLTE_TAGGED = 0

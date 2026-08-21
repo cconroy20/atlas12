@@ -4,7 +4,31 @@ One self-contained file per element.  Flat directory, no subdirectories: the
 element and the source grid's release date are in the filename, so several
 elements coexist here.
 
-  Na_MARCS_Jul-14-2023.nlte   789 MB   Na I, 10 levels
+  Na_MARCS_Jul-14-2023.nlte   789 MB   Na I,   levels 1-10
+  Mg_MARCS_Nov-13-2024.nlte   570 MB   Mg I,   levels 1-10
+  Ca_MARCS_Jun-02-2021.nlte   825 MB   Ca I+II, levels 1-10 and 68-72
+  Fe_MARCS_May-07-2021.nlte    55 MB   Fe I,   21 selected levels
+
+Fe is the cheapest element in the collection despite having the MOST levels
+(607), because it carries no A(X) abundance ladder -- A(Fe) is the metallicity
+by construction -- so it has ~1 record per atmosphere instead of ~21.  Its
+runtime file holds only the 21 levels the eleven tagged Fe I transitions need;
+widening that is a seconds-long rebuild from the master store.  Two limits:
+levels 549-606 are Fe II SUPERLEVELS (whole terms merged, g = 30, 28, ...) and
+cannot represent an individual Fe II line, and levels above 566 are
+contaminated in the source and must never be selected.
+
+Ca's model atom runs both ionization stages in ONE level list (Ca II 4s sits
+at 49305.952 cm^-1, the Ca I ionization energy), which is why its level
+selection is in two blocks: 1-10 are Ca I, 68-72 are the Ca II levels that
+H&K and the infrared triplet need.  gfall zeroes each stage separately, so
+the transition table in mod_mklinelist carries E_low = 0 for both Ca I 4226
+and Ca II H&K while their level indices differ.
+
+Which files are needed depends on the synthesis window: mod_nlte opens only
+the elements that own a tagged transition inside it, so a Na D run does not
+require Mg or Ca to be installed.  Each has its own override -- $NLTE_GRID_NA,
+$NLTE_GRID_MG, $NLTE_GRID_CA, $NLTE_GRID_FE.
 
 Each file carries its own axes, its parameter -> record index, and the records,
 so there is nothing to pair up and no way to combine an index with the wrong
@@ -13,10 +37,25 @@ the whole file, so size here costs disk and not run time.
 
 PROVENANCE
   Amarsi et al. (2020, A&A 642, A62), 1D MARCS, repackaged for Turbospectrum
-  by Gerber et al. (2023, A&A 669, A43).  Source member
-  NLTEgrid4TS_Na_MARCS_Jul-14-2023.bin (15.9 GB zipped, 57.1 GB raw, 436255
-  records) from the MPDL keeper server; links in TSFitPy's
-  utilities/nlte_grids_links.cfg.  Model atom atom.na_qmh, 290 levels.
+  by Gerber et al. (2023, A&A 669, A43), from the MPDL keeper server; links in
+  TSFitPy's utilities/nlte_grids_links.cfg.  That collection holds 17 elements
+  (H, O, Mg, Al, Si, Ca, Ti, Cr, Mn, Fe, Co, Ni, Na, Sr, Y, Ba, Eu), ALL on the
+  same MARCS base: Teff 2500-8000 K, log g -0.5..5.5, [Fe/H] -5..+1, vturb
+  0/1/2/5, ~11200 atmospheres, ~60 per cent of them spherical.  Sources here:
+
+    Na  NLTEgrid4TS_Na_MARCS_Jul-14-2023.bin  15.9 GB zip, 436255 rec,
+        atom.na_qmh, 290 levels
+    Mg  NLTEgrid4TS_Mg_MARCS_Nov-13-2024.bin   4.6 GB zip, 319260 rec,
+        atom.mg86d,  86 levels
+    Ca  NLTEgrid4TS_Ca_MARCS_Jun-02-2021.bin   6.8 GB zip, 314482 rec,
+        atom.ca105b, 105 levels
+    Fe  NLTEgrid4TS_Fe_MARCS_May-07-2021.bin   1.7 GB zip,  15229 rec,
+        atom.fe607a, 607 levels
+
+  The master stores keeping EVERY level of these three (plus H, O and Fe,
+  which are not wired into the code) are in ~/kurucz/nlte_grids/; see the
+  README there.  Rebuilding a runtime file with a different level selection
+  is a local operation against those and needs no download.
 
 HOW IT WAS BUILT, AND HOW TO REBUILD
   1. tools/nlte_extract_grid.py   one streaming pass over the 15.9 GB zip,
