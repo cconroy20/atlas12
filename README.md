@@ -20,12 +20,21 @@ over ~30,000 wavelength points replaces the older opacity-distribution
 function approach of ATLAS9.
 
 At each iteration the code solves hydrostatic equilibrium, computes
-Saha-Boltzmann ionization and molecular equilibrium for all species
-(including equilibrium condensation at cool photospheric temperatures),
-builds continuous and line opacity tables, loops over the full
-wavelength grid solving the Feautrier radiative transfer equation at
-each point, and applies a temperature correction to enforce radiative
-plus convective flux conservation.
+number densities for all species, builds continuous and line opacity
+tables, loops over the full wavelength grid solving the Feautrier
+radiative transfer equation at each point, and applies a temperature
+correction to enforce radiative plus convective flux conservation.
+
+The number densities come from one of two solvers, chosen by Teff at
+`TEFF_MOLEC_LIMIT` (10000 K).  Below it, `NMOLEC` solves ionization and
+molecular dissociation as a single coupled network — including
+equilibrium condensation at cool photospheric temperatures — over the
+species listed in `data/molecules.dat`.  Above it, molecules carry no
+photospheric opacity and `NELECT`/`PFSAHA` solve pure Saha instead,
+which reaches ionization stage X for the iron group where the hot-star
+line opacity lives.  This is Kurucz's own regime split, restored: his
+default was molecules off, switched on per model by a `MOLECULES ON`
+card that the move to command-line arguments removed.
 
 ### SYNTHE — Spectral Synthesis
 
@@ -46,8 +55,8 @@ and continuum flux at each point.
 git clone https://github.com/cconroy20/atlas12.git
 cd atlas12
 
-# Download the eight large data files from the Google Drive folder
-# linked in the Input Data section, and place them in data/.
+# Download the large data files marked † in the Input Data section
+# from the Google Drive folder linked there, and place them in data/.
 # Unpack the molecular archive in place:
 cd data && tar xzf mol.tar.gz && cd ..
 
@@ -148,7 +157,9 @@ vs. legacy analytic fits, default on), `USE_CZ_CONSTRUCTOR` (deep-CZ
 temperature constructor, default on), `USE_CZC_POLISH` (terminal
 deep-CZ flux-closure polish, default on), `USE_FLXCNV_SMOOTH` (interior
 1-2-1 convective-flux smoothing, default on), `TFLOOR_ATM` (temperature-
-correction floor, 1200 K), `IROSSTAB` (Rosseland-table interpolation:
+correction floor, 1200 K), `TEFF_MOLEC_LIMIT` (Teff above which molecular
+equilibrium is switched off and the Saha/`NELECT` path with ionization
+stages to X is used instead, 10000 K), `IROSSTAB` (Rosseland-table interpolation:
 1=bilinear, 2=Shepard, 3=moving least squares), and `IQUAD` (`INTEG`
 quadrature: 0=legacy blended-parabola, 1=Steffen monotone cubic).
 `USE_KP_HYDROGEN` (Kurucz–Peterson hydrogen Stark profiles instead of
@@ -156,6 +167,46 @@ Stehlé–Hutcheon) lives in `synthe_module.f90`, and `CA4227_MODE`
 (Ca I 4227 resonance profile) and `NLTE_MODE` (departure coefficients
 for selected lines, see "Departure coefficients" below) live in
 `mod_parameters`.
+
+### Teff-dependent switches
+
+Several behaviours are selected automatically from the model's effective
+temperature, so that a single command line gives a sensible configuration
+across the whole HR diagram.  All of them key off the **final** Teff, after
+any `teff=` override has been applied.  They are collected here because
+nothing else announces them except a line in the run banner.
+
+| Threshold | Above it | Below it | Constant / location |
+|-----------|----------|----------|---------------------|
+| **10000 K** | molecular equilibrium **off**: `NELECT`/`PFSAHA` solve pure Saha, reaching ionization stage X for the iron group | molecular equilibrium **on**: `NMOLEC` solves the coupled network in `molecules.dat`, ion stages I–V for Ca–Ni | `TEFF_MOLEC_LIMIT` (`mod_atlas_data`), applied in both `atlas12c.f90` and `synthe.f90` |
+| **8000 K** | TiO and H₂O line lists skipped — both are dissociated, so reading them is wasted work | TiO and H₂O read from `lines.list` | `TEFF_COOL_LIMIT` (`mod_mklinelist`), shared by `SELECTLINES` |
+| **3500 K** | polyatomic (`polymol`) lists skipped — CaOH and its kin need late-M densities | polyatomic lists read | `TEFF_POLYMOL_LIMIT` (`mod_mklinelist`) |
+| **30000 K** | wavelength grid starts at index 1 (full extent) | grid starts at the He II edge, 22.8 nm | `NUSTART` in `atlas12c.f90` |
+| **13000 K** | — | grid starts at the He I edge, 50.4 nm | `NUSTART` |
+| **7250 K** | — | grid starts at the H Lyman limit, 91.2 nm | `NUSTART` |
+| **4500 K** | — | grid starts at the C I edge | `NUSTART` |
+| **4250 K** | — | E₃ suppressed for 0.005 < Δτ < 0.02 (cool-star stability patch in the Feautrier diagonal) | `atlas12_modules.f90` |
+
+The banner reports the molecular switch explicitly, e.g.
+
+```
+  molecules        =   off   (Teff > 10000 K: Saha/NELECT, ion stages to X)
+```
+
+and skipped line lists appear as zero-count rows in the line-list summary.
+
+Two caveats on the 10000 K boundary.  It is measured, not chosen: at
+9000 K molecules still set the structure (turning them off costs 38.5 K rms
+in the photosphere) while at 10000 K they are irrelevant (0.1 K rms), a
+sharp transition across one grid step.  And between roughly 8000 and
+10000 K the deepest layers reach 41000–52000 K, hot enough for ionization
+stages `molecules.dat` does not carry; their lines are discarded, the model
+carries a few per cent flux error well below the photosphere, and
+`MOLZERO_REPORT` prints a one-line warning saying so.  The photosphere and
+emergent spectrum are unaffected.  See `atlas_to_do.md` item 3.
+
+Equilibrium **condensation** is gated on the local temperature
+(`COND_TMAX`), not on Teff, so it does not appear in this table.
 
 Abundance override file format: one element per line with two
 whitespace-separated columns, `Z  log10(number_fraction)`.  Lines
@@ -288,7 +339,7 @@ The full contents of the data directory, organized by purpose:
 |------|---------|----------|
 | `ionpots.dat`       | `IONPOTS`  | Ionization potentials, all species |
 | `isotopes.dat`      | `ISOTOPES` | Isotope mass fractions |
-| `molecules.dat`     | `READMOL`  | Molecular equilibrium constants, 297 rows (see [Tools](#tools)) |
+| `molecules.dat`     | `READMOL`  | Molecular equilibrium constants, 297 rows (see [Tools](#tools)).  Also the species list of the `NMOLEC` network, in which ionization is itself a dissociation reaction, so this file decides which ion stages exist at all below `TEFF_MOLEC_LIMIT` — I–V for Ca–Ni.  A stage absent here gets a zero population and its lines are discarded; `MOLZERO_REPORT` warns when that would matter |
 | `condensates.dat`   | `READCOND` | Condensate saturation ln K(T) fits, 21 solids, for equilibrium condensation (see [Tools](#tools)) |
 | `partfn_bc2016.dat` | B&C partition-function module (lazy-loaded) | Barklem & Collet (2016) atomic partition functions, Z = 1–92, ion stages I–III — the production U(T) source |
 | `pfsaha.dat`        | `PFSAHA`   | Legacy Kurucz atomic partition-function data (retained as an internal safety net) |
@@ -329,13 +380,11 @@ The full contents of the data directory, organized by purpose:
 | File | Used by | Contents |
 |------|---------|----------|
 | `lines.list`             | `run_mklinelist` | Plain-text manifest pointing at the line-list files below |
-| `gfallvac08oct17.dat` †  | `read_gfall`     | Kurucz atomic line list (vacuum wavelengths, Oct 2017) |
-| `gfpred29dec2014.bin` †  | `read_predict`, SELECTLINES | Kurucz predicted atomic lines (Dec 2014) |
-| `hilines.bin` †          | SELECTLINES      | Hydrogen/helium line table |
-| `lowobsat12.bin` †       | SELECTLINES      | Low-excitation observed atomic lines |
-| `nltelinobsat12.bin` †   | ATLAS12 / XLINOP | NLTE line data |
+| `gfallvac08oct17.dat` †  | `read_gfall`, `read_gfall_for_atlas` | Kurucz atomic line list (vacuum wavelengths, Oct 2017).  The single atomic source for both codes: `read_gfall_for_atlas` splits it into plain Voigt lines for SELECTLINES/LINOP1 and the 17 CODEX species for XLINOP.  Replaced `lowobsat12.bin` and `nltelinobsat12.bin`, of which it is a strict superset |
+| `gfpred29dec2014.bin` †  | `read_predict`, SELECTLINES | Kurucz predicted atomic lines (Dec 2014), the first `predict` row |
+| `hilines.bin` †          | `read_predict`, SELECTLINES | Kurucz predicted lines of Ca–Ni in ionization stages VI–IX (10.3M records).  NOT in `gfall`, which carries 42k lines for those 36 species, and only partly in `gfpred` (Fe V–VII, Ni V–VIII).  Same packed 16-byte layout as `gfpred`, so it is simply a second `predict` row and both codes read it.  Only contributes above `TEFF_MOLEC_LIMIT`, since those ion stages have no populations while molecular equilibrium is on |
 | `mol.tar.gz` †           | —                | Archive of molecular sub-lists referenced from `lines.list`; unpack in place |
-| `h2opokazatel.bin` ‡     | ATLAS12 / SYNTHE | H₂O pseudo-line list (51.3M records) built from ExoMol POKAZATEL; replaces `h2ofastfix.bin` (P&S 1997).  Rebuild with `tools/build_h2o_pokazatel.py --raw --write-raw` |
+| `mol/h2opokazatel.bin` ‡ | ATLAS12 / SYNTHE | H₂O pseudo-line list (51.3M records) built from ExoMol POKAZATEL; replaces `h2ofastfix.bin` (P&S 1997).  Rebuild with `tools/build_h2o_pokazatel.py --raw --write-raw` |
 | `mol/tiototo2024.bin` ‡  | ATLAS12 / SYNTHE | TiO line list (131.6M records, ⁴⁶Ti–⁵⁰Ti) from ExoMol Toto; replaces `schwenke.bin` (Schwenke 1997).  Both codes resolve it through `lines.list`, so they cannot diverge |
 | `nlte/*.nlte` ‡          | SYNTHE           | NLTE departure-coefficient grids, one self-contained file per element, for `NLTE_MODE = 3`.  Ships with Na I (789 MB).  Derived — see `data/nlte/README.txt` for provenance and the three-stage rebuild |
 | `mol/alo_atp.dat` ‡      | ATLAS12 / SYNTHE | AlO line list (4.93M records) from ExoMol ATP.  The B–X bands at 4842 and 4648 Å reach 60% of the local extinction at the τ(4500 Å) = 1 layer of a 2900 K dwarf; on by default.  Rebuild with `tools/exomol_to_kurucz.py --gns 6 --icode 813 --iso 16` |
@@ -371,7 +420,7 @@ not in the repository.)
 | `nlte_check_dump.py` | Checks a `<model>.nlte` diagnostic dump for internal consistency (returned factors against their equations, the `κ·S = b_u·κ_LTE·B_ν` identity) — separates a plumbing bug from bad grid data |
 | `nad_nlte_plot.py` | Stacked LTE-vs-NLTE panels for the Na D region, with per-panel axis control and optional instrumental smoothing (`--smooth-to`) |
 | `tmin_perturb.py`, `tmin_fit.py`, `tmin_rf.py` (+ plot drivers) | T(τ) perturbation / T-min fitting / response-function machinery on converged models |
-| `build_h2o_pokazatel.py` | Build `data/h2opokazatel.bin` from ExoMol POKAZATEL: exact raw-transition binning (`--raw`/`--validate-raw`/`--write-raw`) plus the super-line NNLS cross-check route |
+| `build_h2o_pokazatel.py` | Build `data/mol/h2opokazatel.bin` from ExoMol POKAZATEL: exact raw-transition binning (`--raw`/`--validate-raw`/`--write-raw`) plus the super-line NNLS cross-check route |
 | `build_cia_table.py` | Build `data/h2collop.dat` from the HITRAN CIA sets (+ BJF01 for the H₂–H₂ continuation above Abel's range); `--validate` re-derives the published Abel/Borysow comparison, the ν² low-frequency slope, and seam continuity from the raw files.  Source URLs in the docstring |
 | `cia_ab.py` | Same-structure A/B of CIA variants at 2700 K against the PHOENIX NewEra spectrum: per-window flux and continuum ratios |
 | `tio_ttau_plot.py` | T(τ) comparison of two ATLAS12 runs (used for the TiO line-list swap); reads a partial `.iter` file to preview a run still converging |

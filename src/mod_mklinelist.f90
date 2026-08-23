@@ -62,6 +62,20 @@ MODULE mod_mklinelist
     INTEGER  :: lim      ! wing extent index (0=widest, 6=narrowest)
   END TYPE nlte_line_t
 
+  ! Physical-units atomic line record handed to ATLAS12's SELECTLINES.
+  ! Counterpart of diatomic_record_t for the atomic half: no grid-index
+  ! packing here, that happens in ATLAS12 (see read_gfall_for_atlas).
+  ! `nelion` is ATLAS12's triangular species index, NOT SYNTHE's.
+  TYPE, PUBLIC :: atomic_record_t
+    REAL(8) :: wlvac_nm
+    REAL(8) :: elo_cm
+    REAL(8) :: gflog_dex
+    REAL(8) :: gammar_log
+    REAL(8) :: gammas_log
+    REAL(8) :: gammaw_log
+    INTEGER :: nelion
+  END TYPE atomic_record_t
+
   !  Diatomic record for ATLAS12 ingestion — bare physical quantities, with
   !  isotope (x1+x2+fudge) gf correction already applied to gflog_dex.  The
   !  ATLAS12 SELECTLINES dispatcher packs these into the 4-INT(4) LINEREC
@@ -235,10 +249,20 @@ MODULE mod_mklinelist
 
   PUBLIC :: run_mklinelist
   PUBLIC :: read_diatomics_for_atlas
+  PUBLIC :: read_gfall_for_atlas
+  PUBLIC :: parse_lines_list
   PUBLIC :: get_mol_bin_path
+  PUBLIC :: basename
+  PUBLIC :: TEFF_COOL_LIMIT, TEFF_POLYMOL_LIMIT
 
   ! --- Module-level ionisation potential table (replaces COMMON /potion/)
   REAL(8), SAVE :: potion(999)
+
+  ! --- Maximum number of `predict` rows honoured in lines.list ----------
+  ! Kurucz's predicted-line data ships as more than one file (the bulk
+  ! gfpred list plus the Ca-Ni V-IX `hilines` list), and both use the same
+  ! 16-byte packed record layout, so the manifest carries one row each.
+  INTEGER, PARAMETER, PUBLIC :: MAXPREDICT = 16
 
   ! --- Teff gate for polyatomic (polymol) line lists.  CaOH and its kin
   !     only reach significant number density in late-M photospheres
@@ -502,7 +526,9 @@ CONTAINS
     REAL(8) :: wbegin
 
     ! File paths parsed from lines.list
-    CHARACTER(LEN=512) :: gfall_file, predict_file, h2o_file
+    CHARACTER(LEN=512) :: gfall_file, h2o_file
+    CHARACTER(LEN=512), SAVE :: predict_files(MAXPREDICT)
+    INTEGER :: npredict, ipred
     CHARACTER(LEN=512), SAVE :: mol_files(256)
     INTEGER :: nmol
     CHARACTER(LEN=512), SAVE :: polymol_files(16)
@@ -511,7 +537,9 @@ CONTAINS
     ! Temporary per-reader arrays (LTE)
     TYPE(lte_line_t),  ALLOCATABLE :: lte_gfall(:),   lte_predict(:)
     TYPE(lte_line_t),  ALLOCATABLE :: lte_mol(:),     lte_h2o(:)
+    TYPE(lte_line_t),  ALLOCATABLE :: lte_pred1(:)
     INTEGER :: n_lte_gfall, n_lte_predict, n_lte_mol, n_lte_h2o
+    INTEGER :: n_lte_pred1
 
     ! Temporary per-reader arrays (NLTE)
     TYPE(nlte_line_t), ALLOCATABLE :: nlte_gfall(:)
@@ -541,11 +569,11 @@ CONTAINS
 
     ! --- Parse lines.list and init per-reader output arrays --------------
     gfall_file   = ''
-    predict_file = ''
+    npredict     = 0
     h2o_file     = ''
     nmol         = 0
     CALL parse_lines_list(lines_list_path, datadir, &
-                          gfall_file, predict_file, h2o_file, &
+                          gfall_file, predict_files, npredict, h2o_file, &
                           mol_files, nmol, polymol_files, npolymol)
 
     n_lte_gfall   = 0
@@ -583,12 +611,18 @@ CONTAINS
       END IF
     END IF
 
-    IF (predict_file .NE. '') THEN
-      CALL read_predict(predict_file, wlbeg, wlend, ratiolg, ixwlbeg, &
-                        lte_predict, n_lte_predict)
+    ! Predicted-line files: read each manifest entry and concatenate.
+    ! read_predict reallocates its output array, so accumulate through a
+    ! per-file scratch array rather than letting it overwrite the total.
+    DO ipred = 1, npredict
+      CALL read_predict(predict_files(ipred), wlbeg, wlend, ratiolg, ixwlbeg, &
+                        lte_pred1, n_lte_pred1)
+      IF (n_lte_pred1 .GT. 0) THEN
+        CALL append_lte(lte_predict, n_lte_predict, lte_pred1, n_lte_pred1)
+      END IF
       IF (VERBOSE .EQ. 1) &
-        WRITE(6,ROW_FMT) 'pr', n_lte_predict, 0, TRIM(basename(predict_file))
-    END IF
+        WRITE(6,ROW_FMT) 'pr', n_lte_pred1, 0, TRIM(basename(predict_files(ipred)))
+    END DO
 
     DO imol = 1, nmol
       IF (is_tio_file(mol_files(imol)) .AND. teff .GT. TEFF_COOL_LIMIT) THEN
@@ -665,6 +699,7 @@ CONTAINS
     END IF
 
     DEALLOCATE(lte_gfall, lte_predict, lte_mol, lte_h2o, nlte_gfall)
+    IF (ALLOCATED(lte_pred1)) DEALLOCATE(lte_pred1)
 
     IF (VERBOSE .EQ. 1) THEN
       WRITE(6,'(a4,2x,a12,2x,a12)') '---', '------------', '------------'
@@ -678,11 +713,13 @@ CONTAINS
   ! ============================================================================
   !  PARSE_LINES_LIST — read lines.list and populate file path variables
   ! ============================================================================
-  SUBROUTINE parse_lines_list(listfile, datadir, gfall_file, predict_file, h2o_file, &
-                               mol_files, nmol, polymol_files, npolymol)
+  SUBROUTINE parse_lines_list(listfile, datadir, gfall_file, predict_files, npredict, &
+                               h2o_file, mol_files, nmol, polymol_files, npolymol)
     CHARACTER(LEN=*),   INTENT(IN)  :: listfile
     CHARACTER(LEN=*),   INTENT(IN)  :: datadir
-    CHARACTER(LEN=512), INTENT(OUT) :: gfall_file, predict_file, h2o_file
+    CHARACTER(LEN=512), INTENT(OUT) :: gfall_file, h2o_file
+    CHARACTER(LEN=512), INTENT(OUT) :: predict_files(MAXPREDICT)
+    INTEGER,            INTENT(OUT) :: npredict
     CHARACTER(LEN=512), INTENT(OUT) :: mol_files(256)
     INTEGER,            INTENT(OUT) :: nmol
     CHARACTER(LEN=512), INTENT(OUT) :: polymol_files(16)
@@ -695,7 +732,7 @@ CONTAINS
     INTEGER :: ios
 
     gfall_file   = ''
-    predict_file = ''
+    npredict     = 0
     h2o_file     = ''
     nmol         = 0
     npolymol     = 0
@@ -742,7 +779,15 @@ CONTAINS
       CASE ('gfall')
         gfall_file = TRIM(filepath)
       CASE ('predict')
-        predict_file = TRIM(filepath)
+        ! Multiple predicted-line files are allowed; they are read in
+        ! manifest order and each is individually sorted by wavelength.
+        IF (npredict .LT. MAXPREDICT) THEN
+          npredict = npredict + 1
+          predict_files(npredict) = TRIM(filepath)
+        ELSE
+          WRITE(6,'(a,i0,a)') 'WARNING: more than ', MAXPREDICT, &
+            ' predict entries in lines.list; extras ignored'
+        END IF
       CASE ('mol')
         IF (nmol .LT. 256) THEN
           nmol = nmol + 1
@@ -2196,15 +2241,17 @@ CONTAINS
     CHARACTER(LEN=512), INTENT(OUT) :: path
     LOGICAL,            INTENT(OUT) :: found
 
-    CHARACTER(LEN=512) :: gfall_file, predict_file, h2o_file
+    CHARACTER(LEN=512) :: gfall_file, h2o_file
+    CHARACTER(LEN=512) :: predict_files(MAXPREDICT)
     CHARACTER(LEN=512) :: mol_files(256), polymol_files(16)
+    INTEGER            :: npredict
     INTEGER            :: nmol, npolymol, k
 
     path  = ''
     found = .FALSE.
 
-    CALL parse_lines_list(lines_list_path, datadir, gfall_file, predict_file, &
-                          h2o_file, mol_files, nmol, polymol_files, npolymol)
+    CALL parse_lines_list(lines_list_path, datadir, gfall_file, predict_files, &
+                          npredict, h2o_file, mol_files, nmol, polymol_files, npolymol)
 
     DO k = 1, nmol
       IF (ends_with_bin(mol_files(k))) THEN
@@ -2249,9 +2296,11 @@ CONTAINS
     TYPE(diatomic_record_t), ALLOCATABLE,   INTENT(OUT) :: recs(:)
     INTEGER,                                INTENT(OUT) :: n_recs
 
-    CHARACTER(LEN=512) :: gfall_file, predict_file, h2o_file
+    CHARACTER(LEN=512) :: gfall_file, h2o_file
+    CHARACTER(LEN=512) :: predict_files(MAXPREDICT)
     CHARACTER(LEN=512) :: mol_files(256)
     CHARACTER(LEN=512) :: polymol_files(16)
+    INTEGER            :: npredict
     INTEGER            :: nmol, npolymol, k, plen
     LOGICAL            :: file_exists
 
@@ -2265,8 +2314,8 @@ CONTAINS
 
     ! Parse manifest (reuses SYNTHE's parser, which already extracts the
     ! mol_files list; non-mol entries are ignored here).
-    CALL parse_lines_list(lines_list_path, datadir, gfall_file, predict_file, &
-                          h2o_file, mol_files, nmol, polymol_files, npolymol)
+    CALL parse_lines_list(lines_list_path, datadir, gfall_file, predict_files, &
+                          npredict, h2o_file, mol_files, nmol, polymol_files, npolymol)
 
     DO k = 1, nmol
       ! Skip .bin entries — only TiO uses .bin format and that is handled
@@ -2297,6 +2346,240 @@ CONTAINS
     DEALLOCATE(buf)
 
   END SUBROUTINE read_diatomics_for_atlas
+
+
+  ! ============================================================================
+  !  READ_GFALL_FOR_ATLAS — resolve the atomic line list through lines.list
+  !                          and emit ATLAS12-format records.
+  !
+  !  Replaces ATLAS12's three private atomic binaries -- lowobsat12.bin
+  !  (SELECTLINES case 2), hilines.bin (case 3, now a second `predict` row)
+  !  and nltelinobsat12.bin (XLINOP's unit 19) -- with the same
+  !  gfallvac08oct17.dat that SYNTHE reads, parsed by the same read_gfall.
+  !  Both codes therefore see one atomic source and cannot silently drift,
+  !  which is the whole point (see atlas_to_do item 3).
+  !
+  !  Two outputs, split the way ATLAS12 splits its opacity routines:
+  !
+  !    arecs — plain Voigt lines for SELECTLINES/LINOP1, in physical units.
+  !            Everything whose species is NOT in CODEX.
+  !    xrecs — the CODEX species (H I, He I/II, B I, C I/II, O I, Na I,
+  !            Mg I/II, Al I/II, Si I/II, K I, Ca I/II) for XLINOP, which
+  !            gives them Stark, Fano and merged-continuum profiles.
+  !            This reproduces Kurucz's split exactly: lowobsat12.bin holds
+  !            ZERO lines of those 17 species -- they were all carved out
+  !            into nltelinobsat12.bin.
+  !
+  !  TYPE translation, and it is not cosmetic.  read_gfall's negative types
+  !  are SYNTHE's profile selectors; XLINOP understands only -1 (hydrogen
+  !  Stark), 0/3 (Voigt), 1 (autoionizing Fano) and 2 (coronal, skipped),
+  !  and sends everything else to its merged-continuum branch.  Passing
+  !  SYNTHE's -3/-4/-6 through would turn every He I and He II line into a
+  !  flat continuum.  So they are mapped back to 0, and -2 (deuterium) to
+  !  -1, which is what nltelinobsat12.bin carried.
+  !
+  !  wlbeg_nm, wlend_nm: vacuum-wavelength window (nm) of the sampling grid
+  ! ============================================================================
+  SUBROUTINE read_gfall_for_atlas(lines_list_path, datadir, wlbeg_nm, wlend_nm, &
+                                   arecs, n_arecs, xrecs, n_xrecs)
+    CHARACTER(LEN=*),                    INTENT(IN)  :: lines_list_path
+    CHARACTER(LEN=*),                    INTENT(IN)  :: datadir
+    REAL(8),                             INTENT(IN)  :: wlbeg_nm, wlend_nm
+    TYPE(atomic_record_t), ALLOCATABLE,  INTENT(OUT) :: arecs(:)
+    INTEGER,                             INTENT(OUT) :: n_arecs
+    TYPE(nlte_line_t),     ALLOCATABLE,  INTENT(OUT) :: xrecs(:)
+    INTEGER,                             INTENT(OUT) :: n_xrecs
+
+    CHARACTER(LEN=512) :: gfall_file, h2o_file
+    CHARACTER(LEN=512) :: predict_files(MAXPREDICT)
+    CHARACTER(LEN=512) :: mol_files(256), polymol_files(16)
+    INTEGER            :: npredict, nmol, npolymol
+    LOGICAL            :: file_exists
+
+    TYPE(lte_line_t),  ALLOCATABLE :: lte_g(:)
+    TYPE(nlte_line_t), ALLOCATABLE :: nlte_g(:)
+    INTEGER :: n_lte_g, n_nlte_g
+
+    REAL(8) :: ratiolg, wlvac, frelin, frq4pi, gf
+    INTEGER :: ixwlbeg, ixwl, k, nelem, icharge, nel_tri, itype
+    INTEGER :: n_demoted
+    ! ATLAS12 triangular species offsets: NOFF(Z) = Z*(Z+1)/2
+    INTEGER :: noff_z
+
+    n_arecs   = 0
+    n_xrecs   = 0
+    n_demoted = 0
+
+    CALL parse_lines_list(lines_list_path, datadir, gfall_file, predict_files, &
+                          npredict, h2o_file, mol_files, nmol, polymol_files, npolymol)
+
+    IF (gfall_file .EQ. '') THEN
+      WRITE(6,'(a)') ' WARNING: lines.list names no gfall entry; no atomic lines'
+      ALLOCATE(arecs(0)); ALLOCATE(xrecs(0))
+      RETURN
+    END IF
+    INQUIRE(FILE=gfall_file, EXIST=file_exists)
+    IF (.NOT. file_exists) THEN
+      WRITE(6,'(a,a)') ' WARNING: gfall file not found: ', TRIM(gfall_file)
+      ALLOCATE(arecs(0)); ALLOCATE(xrecs(0))
+      RETURN
+    END IF
+
+    ! ATLAS12's storage grid is R = 2e6 in log wavelength, the same grid
+    ! IWL indexes, so read_gfall's nbuff inverts back to IWL exactly.
+    ratiolg = LOG(1.0D0 + 1.0D0 / 2000000.0D0)
+    ixwlbeg = INT(LOG(wlbeg_nm) / ratiolg)
+
+    n_lte_g  = 0
+    n_nlte_g = 0
+    CALL read_gfall(gfall_file, wlbeg_nm, wlend_nm, ratiolg, ixwlbeg, &
+                    lte_g, n_lte_g, nlte_g, n_nlte_g)
+
+    ALLOCATE(arecs(n_lte_g + n_nlte_g))
+    ALLOCATE(xrecs(n_lte_g + n_nlte_g))
+
+    ! --- plain Voigt lines from read_gfall -------------------------------
+    DO k = 1, n_lte_g
+      nelem   = INT(lte_g(k)%code)
+      icharge = NINT((lte_g(k)%code - REAL(nelem,4)) * 100.0)
+      CALL atlas_nelion(nelem, icharge, nel_tri)
+      IF (nel_tri .LE. 0) CYCLE
+
+      ixwl  = lte_g(k)%nbuff + ixwlbeg - 1
+      wlvac = EXP(ixwl * ratiolg)
+
+      IF (in_codex(nelem, icharge)) THEN
+        ! CODEX species -> XLINOP, as a plain Voigt line (TYPE 0).
+        n_xrecs = n_xrecs + 1
+        xrecs(n_xrecs) = nlte_line_t(wlvac, lte_g(k)%elo, lte_g(k)%cgf, &
+          0, 0, nel_tri, 0, 0, codex_index(nelem, icharge), &
+          lte_g(k)%gamrf, lte_g(k)%gamsf, lte_g(k)%gamwf, ixwl, 7)
+      ELSE
+        ! Undo read_gfall's SYNTHE-side normalisations to recover the
+        ! physical quantities ATLAS12's scaled-integer format stores.
+        frelin = 2.99792458D17 / wlvac
+        frq4pi = 12.5664D0 * frelin
+        gf     = DBLE(lte_g(k)%cgf) * frelin * 1.77245D0 / 0.026538D0
+        n_arecs = n_arecs + 1
+        arecs(n_arecs) = atomic_record_t( &
+          wlvac, DBLE(lte_g(k)%elo), LOG10(MAX(gf, 1.0D-30)), &
+          LOG10(MAX(ABS(DBLE(lte_g(k)%gamrf)) * frq4pi, 1.0D-30)), &
+          LOG10(MAX(ABS(DBLE(lte_g(k)%gamsf)) * frq4pi, 1.0D-30)), &
+          LOG10(MAX(ABS(DBLE(lte_g(k)%gamwf)) * frq4pi, 1.0D-30)), &
+          nel_tri)
+      END IF
+    END DO
+
+    ! --- complex-profile lines from read_gfall ---------------------------
+    DO k = 1, n_nlte_g
+      ! Invert SYNTHE's nelion.  Its high-ion branch for Z=20-28 aliases
+      ! onto Z>=50 above index 299, but no complex-profile line reaches
+      ! there (they are CODEX species plus a few S I autoionizing lines),
+      ! so the plain inversion is exact for everything we actually get.
+      IF (nlte_g(k)%nelion .GE. 299) THEN
+        n_demoted = n_demoted + 1
+        CYCLE
+      END IF
+      nelem   = (nlte_g(k)%nelion - 1) / 6 + 1
+      icharge = MOD(nlte_g(k)%nelion - 1, 6)
+      CALL atlas_nelion(nelem, icharge, nel_tri)
+      IF (nel_tri .LE. 0) CYCLE
+
+      IF (.NOT. in_codex(nelem, icharge)) THEN
+        ! Not an XLINOP species.  ATLAS12 has never had a detailed profile
+        ! for these (lowobsat12.bin carried no TYPE field at all), so keep
+        ! today's behaviour and treat them as plain Voigt lines.
+        wlvac  = nlte_g(k)%wlvac
+        frelin = 2.99792458D17 / wlvac
+        frq4pi = 12.5664D0 * frelin
+        IF (nlte_g(k)%itype .EQ. 1 .OR. nlte_g(k)%itype .GT. 3) THEN
+          ! stored raw gf and undivided damping constants
+          gf = DBLE(nlte_g(k)%gf)
+          n_arecs = n_arecs + 1
+          arecs(n_arecs) = atomic_record_t(wlvac, DBLE(nlte_g(k)%elo), &
+            LOG10(MAX(gf, 1.0D-30)), &
+            LOG10(MAX(ABS(DBLE(nlte_g(k)%gammar)), 1.0D-30)), &
+            LOG10(MAX(ABS(DBLE(nlte_g(k)%gammas)), 1.0D-30)), &
+            LOG10(MAX(ABS(DBLE(nlte_g(k)%gammaw)), 1.0D-30)), nel_tri)
+        ELSE
+          gf = DBLE(nlte_g(k)%gf) * frelin * 1.77245D0 / 0.026538D0
+          n_arecs = n_arecs + 1
+          arecs(n_arecs) = atomic_record_t(wlvac, DBLE(nlte_g(k)%elo), &
+            LOG10(MAX(gf, 1.0D-30)), &
+            LOG10(MAX(ABS(DBLE(nlte_g(k)%gammar)) * frq4pi, 1.0D-30)), &
+            LOG10(MAX(ABS(DBLE(nlte_g(k)%gammas)) * frq4pi, 1.0D-30)), &
+            LOG10(MAX(ABS(DBLE(nlte_g(k)%gammaw)) * frq4pi, 1.0D-30)), nel_tri)
+        END IF
+        CYCLE
+      END IF
+
+      itype = nlte_g(k)%itype
+      SELECT CASE (itype)
+      CASE (-2)
+        itype = -1        ! deuterium: same Stark profile as H
+      CASE (-3, -4, -5, -6)
+        itype = 0         ! He I / He II: plain Voigt in ATLAS12
+      END SELECT
+
+      n_xrecs = n_xrecs + 1
+      ! XLINOP compares this field against IWAVETAB, which holds ABSOLUTE
+      ! grid indices, so undo read_gfall's window-relative offset.  Also
+      ! fill nelionx unconditionally: read_gfall only looks it up for
+      ! lines that carry level indices, but XLINOP indexes CONTX with it.
+      xrecs(n_xrecs) = nlte_line_t(nlte_g(k)%wlvac, nlte_g(k)%elo, &
+        nlte_g(k)%gf, nlte_g(k)%nblo, nlte_g(k)%nbup, nel_tri, itype, &
+        nlte_g(k)%ncon, codex_index(nelem, icharge), nlte_g(k)%gammar, &
+        nlte_g(k)%gammas, nlte_g(k)%gammaw, &
+        nlte_g(k)%nbuff + ixwlbeg - 1, nlte_g(k)%lim)
+    END DO
+
+    IF (n_demoted .GT. 0) &
+      WRITE(6,'(a,i0,a)') ' WARNING: read_gfall_for_atlas dropped ', n_demoted, &
+        ' complex-profile lines with an ambiguous species index'
+
+    DEALLOCATE(lte_g, nlte_g)
+
+  CONTAINS
+
+    ! ATLAS12 species index: triangular Z*(Z+1)/2 + charge for Z <= 30,
+    ! five slots per element above that.  Returns 0 for anything outside.
+    SUBROUTINE atlas_nelion(z, ich, nel)
+      INTEGER, INTENT(IN)  :: z, ich
+      INTEGER, INTENT(OUT) :: nel
+      nel = 0
+      IF (z .LT. 1 .OR. z .GT. 99 .OR. ich .LT. 0) RETURN
+      IF (z .LE. 30) THEN
+        IF (ich .GT. z) RETURN
+        nel = z * (z + 1) / 2 + ich
+      ELSE
+        nel = 496 + (z - 31) * 5 + MIN(ich, 4)
+      END IF
+    END SUBROUTINE atlas_nelion
+
+    ! Is this species one of the 17 XLINOP handles?
+    LOGICAL FUNCTION in_codex(z, ich)
+      INTEGER, INTENT(IN) :: z, ich
+      in_codex = (codex_index(z, ich) .GT. 0)
+    END FUNCTION in_codex
+
+    ! Position in CODEX, which is what XLINOP's CONTX table is indexed by.
+    INTEGER FUNCTION codex_index(z, ich)
+      INTEGER, INTENT(IN) :: z, ich
+      INTEGER, PARAMETER :: CODEX_A(17) = [ &
+        100, 200, 201, 600, 601, 1200, 1201, 1300, 1301, &
+        1400, 1401, 2000, 2001, 800, 1100, 500, 1900]
+      INTEGER :: ic, want
+      codex_index = 0
+      want = z * 100 + ich
+      DO ic = 1, 17
+        IF (want .EQ. CODEX_A(ic)) THEN
+          codex_index = ic
+          RETURN
+        END IF
+      END DO
+    END FUNCTION codex_index
+
+  END SUBROUTINE read_gfall_for_atlas
 
 
   ! ============================================================================
@@ -2598,6 +2881,28 @@ CONTAINS
     CALL MOVE_ALLOC(tmp, buf)
     cap = cap * 2
   END SUBROUTINE grow_lte
+
+  ! ============================================================================
+  !  APPEND_LTE — concatenate src(1:nsrc) onto dst(1:ndst), growing dst.
+  !
+  !  Used to accumulate the output of readers that reallocate their own
+  !  result array (read_predict) across several manifest entries.
+  ! ============================================================================
+  SUBROUTINE append_lte(dst, ndst, src, nsrc)
+    TYPE(lte_line_t), ALLOCATABLE, INTENT(INOUT) :: dst(:)
+    INTEGER,                       INTENT(INOUT) :: ndst
+    TYPE(lte_line_t),              INTENT(IN)    :: src(:)
+    INTEGER,                       INTENT(IN)    :: nsrc
+    TYPE(lte_line_t), ALLOCATABLE :: tmp(:)
+
+    IF (nsrc .LE. 0) RETURN
+    ALLOCATE(tmp(ndst + nsrc))
+    IF (ndst .GT. 0) tmp(1:ndst) = dst(1:ndst)
+    tmp(ndst+1 : ndst+nsrc) = src(1:nsrc)
+    CALL MOVE_ALLOC(tmp, dst)
+    ndst = ndst + nsrc
+  END SUBROUTINE append_lte
+
 
   SUBROUTINE grow_nlte(buf, cap)
     TYPE(nlte_line_t), ALLOCATABLE, INTENT(INOUT) :: buf(:)

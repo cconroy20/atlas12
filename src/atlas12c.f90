@@ -245,11 +245,6 @@ PROGRAM ATLAS12
   ! --- Load ionization potentials for all species ---
   CALL IONPOTS
 
-  ! --- Open optional pre-computed line data file (unit 19) ---
-  !     ERR branch: if file doesn't exist, just continue
-  OPEN(UNIT=19, FILE=TRIM(DATADIR)//'nltelinobsat12.bin', &
-       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', ERR=10)
-10 continue
   ITEMP = 0
 
   ! --- Read and compute a single model -----------------------------------
@@ -391,6 +386,12 @@ PROGRAM ATLAS12
         CHARGESQ = XNE * 2.0D0
     END IF
 
+    ! --- Select the equation-of-state path from Teff --------------------
+    ! See TEFF_MOLEC_LIMIT in mod_atlas_data for why these are two regimes
+    ! rather than a feature toggle.  Must follow SCALE_MODEL, so that a
+    ! teff= override picks the path for the Teff actually being computed.
+    IF (TEFF .GT. TEFF_MOLEC_LIMIT) IFMOL = 0
+
     ! --- Echo run parameters (resolved values after CLI/model merge) ---
     ! Mirrors SYNTHE's input-echo style.  All values are final at this
     ! point; the (CLI override) tag flags parameters whose value came from
@@ -403,6 +404,13 @@ PROGRAM ATLAS12
     WRITE(6,'(A,F5.2)')  '  vturb (km/s)     = ', VTURB(1) * 1.0D-5
     WRITE(6,'(A,I5)')    '  teff (K)         = ', INT(TEFF)
     WRITE(6,'(A,F5.2)')  '  logg             = ', GLOG
+    IF (IFMOL .EQ. 1) THEN
+      WRITE(6,'(A,I6,A)') '  molecules        =    on   (Teff <= ', &
+        INT(TEFF_MOLEC_LIMIT), ' K: NMOLEC network, ion stages I-V)'
+    ELSE
+      WRITE(6,'(A,I6,A)') '  molecules        =   off   (Teff > ', &
+        INT(TEFF_MOLEC_LIMIT), ' K: Saha/NELECT, ion stages to X)'
+    END IF
     IF (LEN_TRIM(CMD_SOLAR) .GT. 0) &
       WRITE(6,'(A,A,A)')    '  solar scale      = ', TRIM(CMD_SOLAR), '   (CLI override)'
     IF (IQUAD .NE. 0) &

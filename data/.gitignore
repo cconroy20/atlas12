@@ -9,7 +9,6 @@ gfall29dec2014.bin
 diatomicspacksrt.bin
 hilines.bin
 h2ofastfix.bin
-h2opokazatel.bin
 mol/caoh_oyt6_super.bin
 # NLTE runtime grids: hundreds of MB each, rebuilt from the master stores in
 # ~/kurucz/nlte_grids/ (see data/nlte/README.txt), so never committed --

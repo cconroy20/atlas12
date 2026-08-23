@@ -1089,7 +1089,9 @@ MODULE mod_atlas_data
   USE mod_constants
   USE mod_partition_functions
   USE mod_mklinelist, only: read_diatomics_for_atlas, diatomic_record_t, &
-                            get_mol_bin_path
+                            get_mol_bin_path, read_gfall_for_atlas, &
+                            atomic_record_t, nlte_line_t, parse_lines_list, &
+                            MAXPREDICT, basename, TEFF_COOL_LIMIT
   IMPLICIT NONE
   SAVE
 
@@ -1291,6 +1293,69 @@ MODULE mod_atlas_data
 
   ! --- Control flags ---
   INTEGER :: IFCORR = 1, IFPRES = 1, IFSURF = 0, IFSCAT = 1, IFMOL = 1, IFREADLINES = 1
+
+  ! --- Teff gate selecting the equation-of-state path (IFMOL) -----------
+  ! Kurucz's two number-density solvers are alternatives for two regimes,
+  ! not a feature toggle (his own header: "IFMOL=1 SET UP EQUILIBRIUM
+  ! EQUATIONS FOR NUMBER DENSITIES / IFMOL=0 ASSUME NO MOLECULES AND
+  ! ITERATE FOR NUMBER DENSITIES"), and his compiled default was 0 with a
+  ! MOLECULES ON card to switch it:
+  !
+  !   IFMOL = 1  NMOLEC: one coupled network solving charge conservation,
+  !              particle conservation and dissociation together.  Its
+  !              species list is data/molecules.dat, where ionization is
+  !              written as a dissociation reaction (Si 3+ = 14,101,101,101,
+  !              species 101 being the electron).  Carries molecules, but
+  !              only the ion stages that file lists -- I-V for Ca-Ni.
+  !
+  !   IFMOL = 0  NELECT/PFSAHA: pure Saha, no molecules except the analytic
+  !              H2 and CO fits below 9000 K.  Reaches ionization stage X
+  !              for the iron group (PFSAHA sets NIONS=10 for Z=20-28, and
+  !              pfiron.dat tabulates I-X), which is where hot-star opacity
+  !              lives -- hilines.bin is 10.3M lines of Ca-Ni VI-IX.
+  !
+  ! Card-based input went away in the modernization and IFMOL was left
+  ! hardcoded to 1, which silently removed the hot-star mode: every line
+  ! of stage VI and above was discarded on the zero-population test, since
+  ! MOLEC returns 0 for an ion stage molecules.dat does not list.  The gate
+  ! restores Kurucz's regime split automatically.  With populations back,
+  ! hilines contributes 87k selected lines at 15000 K, 1.03M at 25000 K and
+  ! 5.34M at 45000 K, none of which had ever entered a model.
+  !
+  ! The value is measured, not chosen for roundness.  Running each Teff both
+  ! ways (molecules off vs on, log g 4.5, 30 iterations) gives:
+  !
+  !   Teff     photospheric cost of molecules=off      deep flux error on->off
+  !   8000     max |dT| 3749 K, rms 692 K, -0.66%      7.56% -> 1.46%
+  !   9000     max |dT|  157 K, rms 38.5 K, -0.148%    7.05% -> 0.134%
+  !  10000     max |dT|  0.4 K, rms  0.1 K, +0.002%    6.52% -> 0.060%
+  !
+  ! The transition is sharp between 9000 and 10000 K: molecules still set
+  ! the structure at 9000 K and are irrelevant at 10000 K.  Lowering the
+  ! gate would cure the sub-photospheric convergence artifact in the
+  ! 8000-10000 K band at the price of a real photospheric error, which is
+  ! the wrong trade -- that artifact is pre-existing and mild (the code
+  ! before this change gave 7.71% at 10000 K where it now gives 6.52%).
+  REAL(8), PARAMETER :: TEFF_MOLEC_LIMIT = 10000.0D0
+
+  ! --- Bookkeeping for ion stages molecules.dat does not list -----------
+  ! MOLEC's atomic lookup has three outcomes: an exact code match uses the
+  ! NMOLEC population, an element absent from the table falls through to
+  ! PFSAHA (correct, all stages), and -- between those two -- an element
+  ! that IS in the table but lacks the requested stage gets a silent
+  ! NUMBER(:,ION) = 0.  SELECTLINES then drops every line of that species
+  ! on its zero-population test, which is correct behaviour for a species
+  ! that genuinely is not there and therefore indistinguishable from it.
+  ! Partial coverage is thus worse than none, and the failure is silent at
+  ! the lookup, silent at the discard, and reported as "0 lines from ..."
+  ! which reads as a physical result.  That is how 10.3M lines of Ca-Ni
+  ! VI-IX stayed invisible from Kurucz's original through to 2026-08.
+  ! Record what gets zeroed so molzero_report can say so.
+  INTEGER, PARAMETER :: MOLZERO_MAX = 128
+  INTEGER :: MOLZERO_Z(MOLZERO_MAX)   = 0
+  INTEGER :: MOLZERO_ION(MOLZERO_MAX) = 0
+  INTEGER :: N_MOLZERO       = 0
+  LOGICAL :: MOLZERO_REPORTED = .FALSE.
 
   ! ROSSTAB interpolation mode (developer option, set here; no CLI):
   !   1 = original bilinear (4-quadrant nearest neighbor)
@@ -1917,6 +1982,13 @@ MODULE mod_atlas_data
   ! --- In-memory line data storage (replaces fort.12 I/O) ---
   INTEGER(4), ALLOCATABLE :: LINEDATA(:,:)   ! (4, NLINES_STORED)
   INTEGER :: NLINES_STORED = 0
+
+  ! --- Complex-profile lines for XLINOP (replaces the fort.19 file) -----
+  ! Filled once by SELECTLINES from gfall via read_gfall_for_atlas; XLINOP
+  ! walks it every iteration.  These are the 17 CODEX species, which get
+  ! Stark, Fano and merged-continuum profiles instead of a plain Voigt.
+  TYPE(nlte_line_t), ALLOCATABLE :: XLINEDATA(:)
+  INTEGER :: NXLINES_STORED = 0
 
   ! --- Stehlé MMM hydrogen Stark broadening tables ---
   ! Preprocessed from Stehlé & Hutcheon (1999) and Stehlé & Fouquet (2010).
@@ -8704,7 +8776,11 @@ SUBROUTINE MOLEC(CODOUT, MODE, NUMBER)
       found = .FALSE.
       DO JMOL = 1, NUMMOL
         IF (INT(XNMOLCODE(JMOL)) .EQ. ID) THEN
-          ! Element exists but this specific ion not tabulated: zero it
+          ! Element exists but this specific ion not tabulated: zero it.
+          ! Record it first -- an unlogged zero here is indistinguishable
+          ! from a species that is genuinely absent (see MOLZERO_* in the
+          ! module header), and molzero_report exists to break that tie.
+          CALL molzero_record(ID, ION)
           NUMBER(:, ION) = 0.d0
           found = .TRUE.
           EXIT  ! exit JMOL loop
@@ -8732,6 +8808,128 @@ SUBROUTINE MOLEC(CODOUT, MODE, NUMBER)
   RETURN
 
 END SUBROUTINE MOLEC
+
+
+!=========================================================================
+! SUBROUTINE MOLZERO_RECORD(IZ, ION)
+!
+! Note that MOLEC returned a zero population for ionization stage ION
+! (1 = neutral) of element IZ because data/molecules.dat carries no row
+! for it.  Duplicates are ignored, so the list stays one entry per
+! species/stage no matter how many depths or iterations hit it.
+!=========================================================================
+
+SUBROUTINE MOLZERO_RECORD(IZ, ION)
+
+  IMPLICIT NONE
+  INTEGER, INTENT(IN) :: IZ, ION
+  INTEGER :: K
+
+  DO K = 1, N_MOLZERO
+    IF (MOLZERO_Z(K) .EQ. IZ .AND. MOLZERO_ION(K) .EQ. ION) RETURN
+  END DO
+  IF (N_MOLZERO .GE. MOLZERO_MAX) RETURN
+
+  N_MOLZERO              = N_MOLZERO + 1
+  MOLZERO_Z(N_MOLZERO)   = IZ
+  MOLZERO_ION(N_MOLZERO) = ION
+
+END SUBROUTINE MOLZERO_RECORD
+
+
+!=========================================================================
+! SUBROUTINE MOLZERO_REPORT
+!
+! Report, once per run, the ion stages MOLEC zeroed for want of a row in
+! molecules.dat -- but only those whose population would NOT have been
+! negligible, so this does not cry wolf on every cool model.
+!
+! Cool stars request nine stages for Ca-Ni (NION_XNFP) against the five
+! molecules.dat lists, so four stages per iron-group element are zeroed in
+! every molecules-on run.  At photospheric temperatures that is harmless:
+! the stages carry no population, and zero is the right answer for the
+! wrong reason.  It only matters when the gas is hot enough to reach them,
+! which is exactly the case that went unnoticed for years.
+!
+! The test is a Saha estimate at the hottest layer, taking the partition
+! function ratio as unity -- good to order unity, which is ample against a
+! 0.1% threshold.  IP is the potential to reach the zeroed stage, i.e. the
+! one belonging to the stage below it, indexed as PFSAHA does.
+!=========================================================================
+
+SUBROUTINE MOLZERO_REPORT
+
+  IMPLICIT NONE
+
+  CHARACTER(LEN=2), PARAMETER :: ELSYM(30) = [ &
+    'H ','He','Li','Be','B ','C ','N ','O ','F ','Ne', &
+    'Na','Mg','Al','Si','P ','S ','Cl','Ar','K ','Ca', &
+    'Sc','Ti','V ','Cr','Mn','Fe','Co','Ni','Cu','Zn']
+  CHARACTER(LEN=4), PARAMETER :: ROMAN(12) = [ &
+    'I   ','II  ','III ','IV  ','V   ','VI  ', &
+    'VII ','VIII','IX  ','X   ','XI  ','XII ']
+
+  ! Warn when the missing stage would hold more than this fraction of the
+  ! stage below it at the hottest layer.
+  REAL(8), PARAMETER :: MOLZERO_FRAC = 1.0D-3
+
+  INTEGER :: K, JHOT, IDX, NBAD
+  REAL(8) :: TMAX, RATIO, CHI_EV, KTEV, WORST
+  CHARACTER(LEN=8) :: NAME
+
+  IF (MOLZERO_REPORTED) RETURN
+  MOLZERO_REPORTED = .TRUE.
+  IF (N_MOLZERO .EQ. 0) RETURN
+
+  ! Hottest layer: where a high stage has its best chance of mattering.
+  JHOT = 1
+  TMAX = T(1)
+  DO K = 2, NRHOX
+    IF (T(K) .GT. TMAX) THEN
+      TMAX = T(K)
+      JHOT = K
+    END IF
+  END DO
+  IF (XNE(JHOT) .LE. 0.0D0) RETURN
+  KTEV = 8.617333D-5 * TMAX
+
+  NBAD  = 0
+  WORST = 0.0D0
+  NAME  = ''
+  DO K = 1, N_MOLZERO
+    IF (MOLZERO_Z(K) .LT. 1 .OR. MOLZERO_Z(K) .GT. 30) CYCLE
+    IF (MOLZERO_ION(K) .LT. 2 .OR. MOLZERO_ION(K) .GT. 12) CYCLE
+
+    ! Potential to reach this stage = IP of the stage below it.
+    IDX = MOLZERO_Z(K) * (MOLZERO_Z(K) + 1) / 2 + MOLZERO_ION(K) - 2
+    IF (IDX .LT. 1 .OR. IDX .GT. 999) CYCLE
+    IF (POTION(IDX) .LE. 0.0D0) CYCLE
+    CHI_EV = POTION(IDX) / 8065.479D0
+
+    RATIO = 2.0D0 * 2.4147D15 * TMAX * SQRT(TMAX) / XNE(JHOT) &
+            * EXP(-CHI_EV / KTEV)
+    IF (RATIO .LT. MOLZERO_FRAC) CYCLE
+
+    NBAD = NBAD + 1
+    IF (RATIO .GT. WORST) THEN
+      WORST = RATIO
+      NAME  = TRIM(ELSYM(MOLZERO_Z(K))) // ' ' // TRIM(ROMAN(MOLZERO_ION(K)))
+    END IF
+    ! Full list only when asked for: one line is enough to act on, and this
+    ! condition is expected (and accepted) through the 8000-10000 K band.
+    IF (IDEBUG .EQ. 1) &
+      WRITE(6,'(A,A8,A,1PE9.2)') '          molecules.dat missing ', &
+        TRIM(ELSYM(MOLZERO_Z(K))) // ' ' // TRIM(ROMAN(MOLZERO_ION(K))), &
+        '   n(this)/n(below) = ', RATIO
+  END DO
+
+  IF (NBAD .GT. 0) &
+    WRITE(6,'(A,I3,A,F8.0,A,A,A,1PE8.1,A)') &
+      ' WARNING: ', NBAD, ' ion stages absent from molecules.dat are populated at ', &
+      TMAX, ' K (worst ', TRIM(NAME), ' at ', WORST, &
+      '); their lines are discarded.  See TEFF_MOLEC_LIMIT.'
+
+END SUBROUTINE MOLZERO_REPORT
 
 !=========================================================================
 ! SUBROUTINE NMOLEC(MODE)
@@ -10271,6 +10469,10 @@ SUBROUTINE COMPUTE_ALL_POPS
   DO IMOL = 1, NMOL_SPECIES
     CALL COMPUTE_ONE_POP(MOL_CODE(IMOL), 1, XNFP(1, MOL_NELION(IMOL)))
   END DO
+
+  ! Say so if any ion stage was zeroed for want of a molecules.dat row and
+  ! would have mattered here.  Silent when the zeroed stages are cold.
+  CALL MOLZERO_REPORT
 
   RETURN
 
@@ -19143,13 +19345,15 @@ END SUBROUTINE KAPCONT
 ! First-pass line selection filter: reads line databases and selects
 ! lines strong enough to affect the model atmosphere.
 !
-! Reads from 7 line databases in sequence:
-!   (1) LOWLINES predicted (unit 11) — atomic predicted lines
-!   (2) LOWLINES observed  (unit 111) — atomic observed lines
-!   (3) HILINES            (unit 21) — atomic high-excitation lines
-!   (4) DIATOMICS          (unit 31) — diatomic molecular lines
-!   (5) TiO                (unit 41) — titanium oxide lines
-!   (6) H2O                (unit 51) — water lines (special format)
+! Every line source is named in the lines.list manifest, so ATLAS12 and
+! SYNTHE cannot silently disagree about what lines exist:
+!   (1) predicted atomic  — every `predict` row (gfpred + hilines)
+!   (2) observed atomic   — `gfall`, split by read_gfall_for_atlas into
+!                           plain Voigt lines (here) and the 17 CODEX
+!                           species (XLINEDATA, for XLINOP)
+!   (4) DIATOMICS         — per-molecule `mol` rows
+!   (5) TiO               — the `mol` .bin row
+!   (6) H2O               — `h2o` row (special 3-integer record format)
 !   (7) H3+               (unit 61) — trihydrogen cation lines
 !
 ! Selection criteria (for each line):
@@ -19211,7 +19415,7 @@ SUBROUTINE SELECTLINES
   REAL(8)  :: CENRATIO, RATIOLG, GR, tablog8
   INTEGER(4) :: LINEREC(4)
   INTEGER :: NU, I, J, K, LINE
-  INTEGER :: N12, N122, N22, N32, N42, N52, N62, N18
+  INTEGER :: N12, N122, N32, N42, N52, N62, N18
   INTEGER :: MOLCODE, MOLCODEOLD, KGFLOG, ISO, IMOL
   INTEGER :: LINEDATA_CAP, IOS
   INTEGER :: IOS_OPEN, IOS_READ
@@ -19256,149 +19460,201 @@ SUBROUTINE SELECTLINES
   END DO
 
   RATIOLG = log(1.0D0 + 1.0D0 / 2000000.0D0)
-  N12 = 0; N122 = 0; N22 = 0; N32 = 0; N42 = 0; N52 = 0; N62 = 0
+  N12 = 0; N122 = 0; N32 = 0; N42 = 0; N52 = 0; N62 = 0
   NU = 1
 
   !=====================================================================
-  ! (1) LOWLINES predicted (unit 11)
+  ! (1) PREDICTED atomic lines — every `predict` row in lines.list
   !=====================================================================
-  OPEN(UNIT=11, FILE=trim(DATADIR)//'gfpred29dec2014.bin', &
-       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-       ACCESS='STREAM', IOSTAT=IOS_OPEN)
-  IF (IOS_OPEN .EQ. 0) THEN
-    LINE = 0
-    lowlines_pred_loop: DO LINE = 1, MAX_LINES
-      READ(11, IOSTAT=IOS_READ) LINEREC
-      IF (IOS_READ .NE. 0) EXIT lowlines_pred_loop
-      CALL UNPACK_LINEDATA(LINEREC)
-      IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-        WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+  ! Kurucz's predicted-line data ships as more than one file: the bulk
+  ! gfpred list, plus the Ca-Ni V-IX list that used to be read here as
+  ! the private `hilines.bin` (10.3M lines that gfall does not carry --
+  ! it has 42k for those 36 species -- and that gfpred covers for only
+  ! Fe V-VII and Ni V-VIII).  Both use the same 16-byte packed record
+  ! layout, so both are now manifest rows and SYNTHE reads them too.
+  !
+  ! Each file is individually sorted by wavelength, so the NU cursor is
+  ! rewound between files.
+  !=====================================================================
+  BLOCK
+    CHARACTER(LEN=512) :: gfall_file, h2o_file
+    CHARACTER(LEN=512) :: predict_files(MAXPREDICT)
+    CHARACTER(LEN=512) :: mol_files_p(256), polymol_files_p(16)
+    INTEGER :: npredict, nmol_p, npolymol_p, ipred, npred_this
+    LOGICAL :: pred_exists
 
-      ! Advance wavelength bin to match line position
-      DO WHILE (IWL .GE. IWAVETAB(NU))
-        FREQ = CLIGHT_NMS / WAVETAB(NU)
-        NU = NU + 1
-      END DO
+    CALL parse_lines_list(TRIM(DATADIR)//'lines.list', TRIM(DATADIR), &
+                          gfall_file, predict_files, npredict, h2o_file, &
+                          mol_files_p, nmol_p, polymol_files_p, npolymol_p)
 
-      ! Apply selection filters
-      NELION = abs(IELION / 10)
-      IF (NELION .LT. 1 .OR. NELION .GT. mion) THEN
-        IF (IDEBUG .EQ. 1) WRITE(6, '(A,I6,A,I10)') &
-          '  SELECTLINES: NELION=', NELION, ' OOB, LINE=', LINE
+    DO ipred = 1, npredict
+      INQUIRE(FILE=predict_files(ipred), EXIST=pred_exists)
+      IF (.NOT. pred_exists) THEN
+        WRITE(6, '(A,A)') ' WARNING: skipping missing predict file: ', &
+          TRIM(predict_files(ipred))
         CYCLE
       END IF
-      IF (XNFDOPMAX(NELION, NU) .LE. 1.0D-37) CYCLE
-      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-      IF (CENRATIO .LT. 1.0D0) CYCLE
-      tablog8 = TABLOG(IELO)
-      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+      OPEN(UNIT=11, FILE=TRIM(predict_files(ipred)), &
+           STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
+           ACCESS='STREAM', IOSTAT=IOS_OPEN)
+      IF (IOS_OPEN .NE. 0) CYCLE
 
-      NLINES_STORED = NLINES_STORED + 1
-      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+      NU         = 1
+      npred_this = 0
+      LINE       = 0
+      predict_loop: DO LINE = 1, MAX_LINES
+        READ(11, IOSTAT=IOS_READ) LINEREC
+        IF (IOS_READ .NE. 0) EXIT predict_loop
+        CALL UNPACK_LINEDATA(LINEREC)
+
+        ! Advance wavelength bin to match line position
+        DO WHILE (IWL .GE. IWAVETAB(NU))
+          FREQ = CLIGHT_NMS / WAVETAB(NU)
+          NU = NU + 1
+        END DO
+
+        ! Apply selection filters
+        NELION = abs(IELION / 10)
+        IF (NELION .LT. 1 .OR. NELION .GT. mion) THEN
+          IF (IDEBUG .EQ. 1) WRITE(6, '(A,I6,A,I10)') &
+            '  SELECTLINES: NELION=', NELION, ' OOB, LINE=', LINE
+          CYCLE
+        END IF
+        IF (XNFDOPMAX(NELION, NU) .LE. 1.0D-37) CYCLE
+        CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+        IF (CENRATIO .LT. 1.0D0) CYCLE
+        tablog8 = TABLOG(IELO)
+        IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+
+        NLINES_STORED = NLINES_STORED + 1
+        IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          CALL EXIT(1)
+        END IF
+        LINEDATA(:, NLINES_STORED) = LINEREC
+        IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+          WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+        npred_this = npred_this + 1
+      END DO predict_loop
+      IF (LINE .GT. MAX_LINES) THEN
+        WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, &
+          ') exhausted reading predicted lines'
         CALL EXIT(1)
       END IF
-      LINEDATA(:, NLINES_STORED) = LINEREC
-      IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-        WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-      N12 = N12 + 1
-    END DO lowlines_pred_loop
-    IF (LINE .GT. MAX_LINES) THEN
-      WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES predicted'
-      CALL EXIT(1)
-    END IF
-    WRITE(6, '(I12,A)') N12, ' lines from lowlines (predicted)'
-    CLOSE(UNIT=11)
-  END IF
+      CLOSE(UNIT=11)
+      WRITE(6, '(I12,A,A)') npred_this, ' lines from predicted ', &
+        TRIM(basename(predict_files(ipred)))
+      N12 = N12 + npred_this
+    END DO
+  END BLOCK
 
   !=====================================================================
-  ! (2) LOWLINES observed (unit 111)
+  ! (2/3) OBSERVED atomic lines — gfall, via lines.list
   !=====================================================================
-  OPEN(UNIT=111, FILE=trim(DATADIR)//'lowobsat12.bin', &
-       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-       ACCESS='STREAM', IOSTAT=IOS_OPEN)
-  IF (IOS_OPEN .EQ. 0) THEN
-    LINE = 0
-    lowlines_obs_loop: DO LINE = 1, MAX_LINES
-      READ(111, IOSTAT=IOS_READ) LINEREC
-      IF (IOS_READ .NE. 0) EXIT lowlines_obs_loop
-      CALL UNPACK_LINEDATA(LINEREC)
+  ! Replaces the private lowobsat12.bin (case 2) and the XLINOP-side
+  ! nltelinobsat12.bin.  gfall is a strict superset of both: 2.31M lines
+  ! against lowobs's 1.68M, and 145,858 lines of the 17 XLINOP species
+  ! against nlteobs's 123,211.
+  !
+  ! read_gfall_for_atlas returns the split Kurucz built by hand into two
+  ! files: `arecs` are the plain Voigt lines LINOP1 handles, `xrecs` the
+  ! 17 CODEX species XLINOP gives detailed profiles.  lowobsat12.bin
+  ! carried exactly zero lines of those 17 species, so the partition is
+  ! the same one and nothing is double counted.
+  !=====================================================================
+  BLOCK
+    TYPE(atomic_record_t), ALLOCATABLE :: arecs(:)
+    INTEGER, ALLOCATABLE :: aorder(:), akeys(:)
+    INTEGER :: natom, ii, jj
 
-      DO WHILE (IWL .GE. IWAVETAB(NU))
-        FREQ = CLIGHT_NMS / WAVETAB(NU)
-        NU = NU + 1
+    CALL read_gfall_for_atlas( &
+      lines_list_path = TRIM(DATADIR)//'lines.list', &
+      datadir         = TRIM(DATADIR), &
+      wlbeg_nm        = WAVETAB(1), &
+      wlend_nm        = WAVETAB(NWAVE), &
+      arecs           = arecs, &
+      n_arecs         = natom, &
+      xrecs           = XLINEDATA, &
+      n_xrecs         = NXLINES_STORED)
+
+    IF (natom .EQ. 0) THEN
+      WRITE(6, '(A)') '           0 lines from gfall (no lines.list or empty)'
+    ELSE
+      ! Sort by IWL; gfall is ordered by wavelength but the CONTINUU
+      ! records take theirs from level energies and can land out of place.
+      ALLOCATE(akeys(natom), aorder(natom))
+      DO ii = 1, natom
+        akeys(ii)  = NINT(LOG(arecs(ii)%wlvac_nm) / RATIOLG)
+        aorder(ii) = ii
       END DO
+      CALL sort_indirect_by_int(akeys, aorder, natom)
 
-      NELION = abs(IELION / 10)
-      IF (XNFDOPMAX(NELION, NU) .LE. 1.0D-37) CYCLE
-      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-      IF (CENRATIO .LT. 1.0D0) CYCLE
-      tablog8 = TABLOG(IELO)
-      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+      NU = 1
+      DO ii = 1, natom
+        jj  = aorder(ii)
+        IWL = akeys(ii)
 
-      NLINES_STORED = NLINES_STORED + 1
-      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-        CALL EXIT(1)
-      END IF
-      LINEDATA(:, NLINES_STORED) = LINEREC
-      IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-        WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-      WLVAC = exp(IWL * RATIOLG)
-      N122 = N122 + 1
-    END DO lowlines_obs_loop
-    IF (LINE .GT. MAX_LINES) THEN
-      WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading LOWLINES observed'
-      CALL EXIT(1)
-    END IF
-    WRITE(6, '(I12,A)') N122, ' lines from lowlines (observed)'
-    CLOSE(UNIT=111)
-  END IF
+        DO WHILE (IWL .GE. IWAVETAB(NU))
+          FREQ = CLIGHT_NMS / WAVETAB(NU)
+          NU = NU + 1
+        END DO
 
+        NELION = arecs(jj)%nelion
+        IF (NELION .LT. 1 .OR. NELION .GT. mion) CYCLE
 
-  !=====================================================================
-  ! (3) HILINES (unit 21)
-  !=====================================================================
-  OPEN(UNIT=21, FILE=trim(DATADIR)//'hilines.bin', &
-       STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
-       ACCESS='STREAM', IOSTAT=IOS_OPEN)
-  IF (IOS_OPEN .EQ. 0) THEN
-    NU = 1
-    LINE = 0
-    hilines_loop: DO LINE = 1, MAX_LINES
-      READ(21, IOSTAT=IOS_READ) LINEREC
-      IF (IOS_READ .NE. 0) EXIT hilines_loop
-      CALL UNPACK_LINEDATA(LINEREC)
+        IELION = NELION * 10
+        IELO   = NINT(LOG10(MAX(arecs(jj)%elo_cm, 1.0D-10)) * 1000.0D0 + 16384.0D0)
+        IGFLOG = NINT(arecs(jj)%gflog_dex  * 1000.0D0 + 16384.0D0)
+        IGR    = NINT(arecs(jj)%gammar_log * 1000.0D0 + 16384.0D0)
+        IGS    = NINT(arecs(jj)%gammas_log * 1000.0D0 + 16384.0D0)
+        IGW    = NINT(arecs(jj)%gammaw_log * 1000.0D0 + 16384.0D0)
 
-      DO WHILE (IWL .GE. IWAVETAB(NU))
-        FREQ = CLIGHT_NMS / WAVETAB(NU)
-        NU = NU + 1
+        IF (XNFDOPMAX(NELION, NU) .LE. 1.0D-37) CYCLE
+        CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
+        IF (CENRATIO .LT. 1.0D0) CYCLE
+        tablog8 = TABLOG(IELO)
+        IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
+
+        CALL PACK_LINEDATA(LINEREC)
+        NLINES_STORED = NLINES_STORED + 1
+        IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
+          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          CALL EXIT(1)
+        END IF
+        LINEDATA(:, NLINES_STORED) = LINEREC
+        IF (mod(ii, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
+          WRITE(6, '(8I15)') ii, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
+        N122 = N122 + 1
       END DO
-
-      NELION = abs(IELION / 10)
-      IF (XNFDOPMAX(NELION, NU) .EQ. 0.0D0) CYCLE
-      CENRATIO = CEN_PREFAC * TABLOG(IGFLOG) * XNFDOPMAX(NELION, NU) / FREQ
-      IF (CENRATIO .LT. 1.0D0) CYCLE
-      tablog8 = TABLOG(IELO)
-      IF (CENRATIO * exp(-tablog8 * HCKT(NRHOX)) .LT. 1.0D0) CYCLE
-
-      NLINES_STORED = NLINES_STORED + 1
-      IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
-        CALL EXIT(1)
-      END IF
-      LINEDATA(:, NLINES_STORED) = LINEREC
-      IF (mod(LINE, 100000) .EQ. 1 .AND. IDEBUG .EQ. 1) &
-        WRITE(6, '(8I15)') LINE, IWL, IELION, IELO, IGFLOG, IGR, IGS, IGW
-      N22 = N22 + 1
-    END DO hilines_loop
-    IF (LINE .GT. MAX_LINES) THEN
-      WRITE(6, '(A,I12,A)') ' FATAL: MAX_LINES (', MAX_LINES, ') exhausted reading HILINES'
-      CALL EXIT(1)
+      DEALLOCATE(akeys, aorder)
     END IF
-    WRITE(6, '(I12,A)') N22, ' lines from hilines'
-    CLOSE(UNIT=21)
-  END IF
+
+    IF (ALLOCATED(arecs)) DEALLOCATE(arecs)
+    WRITE(6, '(I12,A,I12,A)') N122, ' lines from gfall (of ', natom, ' read)'
+
+    ! XLINOP walks its records with a monotonic wavelength cursor and stops
+    ! at the first line past the grid, so the array must be sorted.  gfall
+    ! is ordered by wavelength but the CONTINUU records recompute theirs
+    ! from level energies and can land out of place.
+    IF (NXLINES_STORED .GT. 1) THEN
+      ALLOCATE(akeys(NXLINES_STORED), aorder(NXLINES_STORED))
+      DO ii = 1, NXLINES_STORED
+        akeys(ii)  = XLINEDATA(ii)%nbuff
+        aorder(ii) = ii
+      END DO
+      CALL sort_indirect_by_int(akeys, aorder, NXLINES_STORED)
+      BLOCK
+        TYPE(nlte_line_t), ALLOCATABLE :: xtmp(:)
+        ALLOCATE(xtmp(NXLINES_STORED))
+        DO ii = 1, NXLINES_STORED
+          xtmp(ii) = XLINEDATA(aorder(ii))
+        END DO
+        CALL MOVE_ALLOC(xtmp, XLINEDATA)
+      END BLOCK
+      DEALLOCATE(akeys, aorder)
+    END IF
+    WRITE(6, '(I12,A)') NXLINES_STORED, ' complex-profile lines for XLINOP'
+  END BLOCK
 
   !=====================================================================
   ! (4) DIATOMICS — per-molecule ASCII files via lines.list manifest
@@ -19553,9 +19809,11 @@ SUBROUTINE SELECTLINES
   !
   ! Skip TiO entirely for hot stars — molecules are dissociated above
   ! a few thousand K, so reading and packing the whole TiO list is wasted
-  ! work.  Threshold matches mod_mklinelist's TEFF_COOL_LIMIT.
-  IF (TEFF .GT. 8000.0D0) THEN
-    WRITE(6, '(A)') '           0 lines from tiolines (skip: Teff > 8000 K)'
+  ! work.  Shares mod_mklinelist's TEFF_COOL_LIMIT rather than repeating
+  ! the number, so the two codes cannot drift apart on it.
+  IF (TEFF .GT. TEFF_COOL_LIMIT) THEN
+    WRITE(6, '(A,I5,A)') '           0 lines from tiolines (skip: Teff > ', &
+      INT(TEFF_COOL_LIMIT), ' K)'
   ELSE
     CALL get_mol_bin_path(trim(DATADIR)//'lines.list', DATADIR, TIOFILE, TIOFOUND)
     IF (.NOT. TIOFOUND) THEN
@@ -19651,10 +19909,11 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   ! Same hot-star skip as TiO: H2O is fully dissociated above a few
   ! thousand K and contributes nothing to the opacity.
-  IF (TEFF .GT. 8000.0D0) THEN
-    WRITE(6, '(A)') '           0 lines from h2opokazatel (skip: Teff > 8000 K)'
+  IF (TEFF .GT. TEFF_COOL_LIMIT) THEN
+    WRITE(6, '(A,I5,A)') '           0 lines from h2opokazatel (skip: Teff > ', &
+      INT(TEFF_COOL_LIMIT), ' K)'
   ELSE
-    OPEN(UNIT=51, FILE=trim(DATADIR)//'h2opokazatel.bin', &
+    OPEN(UNIT=51, FILE=trim(DATADIR)//'mol/h2opokazatel.bin', &
          STATUS='OLD', FORM='UNFORMATTED', ACTION='READ', &
          ACCESS='STREAM', IOSTAT=IOS_OPEN)
     IF (IOS_OPEN .EQ. 0) THEN
@@ -19769,7 +20028,7 @@ SUBROUTINE SELECTLINES
   !=====================================================================
   ! Summary
   !=====================================================================
-  N18 = N12 + N122 + N22 + N32 + N42 + N52 + N62
+  N18 = N12 + N122 + N32 + N42 + N52 + N62
   WRITE(6, '(I12,A)') N18, ' lines total'
   WRITE(6,*) 
   IF (NLINES_STORED .EQ. 0) THEN
@@ -19989,15 +20248,29 @@ SUBROUTINE XLINOP
   !---------------------------------------------------------------------
   ! Main line loop (unit 19)
   !---------------------------------------------------------------------
-  REWIND 19
   NUCONT = 1
   NU = 1
   IFJ(1) = 0    ! NOTE: was uninitialized in original code
 
-  DO LINE = 1, 500000
-    READ(19, IOSTAT=IOS_RD) WLVAC, ELO4, GF4, NBLO, NBUP, NELION, TYPE, &
-                      NCON, NELIONX, GAMMAR4, GAMMAS4, GAMMAW4, IWL, LIM
-    IF (IOS_RD .NE. 0) RETURN   ! end-of-file or read error
+  ! Complex-profile lines come from XLINEDATA, filled once by SELECTLINES
+  ! out of gfall (this replaced the private nltelinobsat12.bin on unit 19).
+  IF (.NOT. allocated(XLINEDATA)) RETURN
+
+  DO LINE = 1, NXLINES_STORED
+    WLVAC   = XLINEDATA(LINE)%wlvac
+    ELO4    = XLINEDATA(LINE)%elo
+    GF4     = XLINEDATA(LINE)%gf
+    NBLO    = XLINEDATA(LINE)%nblo
+    NBUP    = XLINEDATA(LINE)%nbup
+    NELION  = XLINEDATA(LINE)%nelion
+    TYPE    = XLINEDATA(LINE)%itype
+    NCON    = XLINEDATA(LINE)%ncon
+    NELIONX = XLINEDATA(LINE)%nelionx
+    GAMMAR4 = XLINEDATA(LINE)%gammar
+    GAMMAS4 = XLINEDATA(LINE)%gammas
+    GAMMAW4 = XLINEDATA(LINE)%gammaw
+    IWL     = XLINEDATA(LINE)%nbuff
+    LIM     = XLINEDATA(LINE)%lim
     ELO = dble(ELO4)
     GF  = dble(GF4)
     GAMMAR = dble(GAMMAR4)
@@ -20058,7 +20331,8 @@ SUBROUTINE XLINOP
         ! Blue-wing cutoff at continuum edge
         WCON = 0.0D0
         IF (NCON .GT. 10) NCON = 0
-        IF (NCON .GT. 0) WCON = 1.0D7 / (CONTX(NCON, NELIONX) - EMERGE(J))
+        IF (NCON .GT. 0 .AND. NELIONX .GE. 1 .AND. NELIONX .LE. 16) &
+          WCON = 1.0D7 / (CONTX(NCON, NELIONX) - EMERGE(J))
         IF (WLVAC .LT. WCON) CYCLE
 
         IF (ADAMP .GT. ADAMP_THRESH) THEN
@@ -20178,7 +20452,14 @@ SUBROUTINE XLINOP
       DO J = 1, NRHOX
         CENTER = CGF * BOLTH(J, NBLO)
         IF (CENTER .LT. TABCONT(J, NUCONT)) CYCLE
-        WCON = 1.0D7 / (CONTX(NCON, 1) - EMERGE(J))
+        ! 113 of gfall's H I lines carry no continuum-edge index (and 53
+        ! of nltelinobsat12.bin's did too, so CONTX(0,1) was being read
+        ! out of bounds here).  No index means no blue-wing cutoff.
+        IF (NCON .GE. 1 .AND. NCON .LE. 25) THEN
+          WCON = 1.0D7 / (CONTX(NCON, 1) - EMERGE(J))
+        ELSE
+          WCON = 0.0D0
+        END IF
         ! Red wing
         DO IW = NU, min(NU + MAX_WING, NUMNU)
           IF (WAVESET(IW) .LT. WCON) CYCLE

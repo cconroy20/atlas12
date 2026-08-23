@@ -38,42 +38,52 @@ the condensed fractions) would be needed.  Settling/microphysics
 
 ---
 
-## 3. Retire ATLAS12's private atomic line files
+## 3. Ion stages absent from molecules.dat
 
-**Status: open.**
+**Status: the silent-zero trap is FIXED (2026-08-23); one judgement call
+is recorded below so it is not reopened.**
 
-ATLAS12's `SELECTLINES` still reads Kurucz-era binaries that SYNTHE does not
-use, while SYNTHE resolves every list through the `lines.list` manifest and
-`mod_mklinelist`:
+`MOLEC`'s atomic lookup has three outcomes, and the middle one was the
+problem: an exact code match uses the NMOLEC population, an element absent
+from `molecules.dat` falls through to `PFSAHA` (correct, every stage), and
+an element that IS in the table but lacks the requested stage got a silent
+`NUMBER(:, ION) = 0`.  `SELECTLINES` then discarded every line of that
+species on its zero-population test -- correct behaviour for a species that
+genuinely is not there, and therefore indistinguishable from it.  Partial
+coverage was worse than none, and the failure was silent at the lookup,
+silent at the discard, and reported as `0 lines from ...`, which reads as a
+physical result.  That is how 10.3M lines of Ca-Ni VI-IX stayed invisible
+from Kurucz's original through to 2026-08.
 
-| source | ATLAS12 (`SELECTLINES`) | SYNTHE |
-|--------|-------------------------|--------|
-| predicted atomic | `gfpred29dec2014.bin` (unit 11) | same file, via `lines.list` |
-| observed atomic  | `lowobsat12.bin` (unit 111) + `hilines.bin` (unit 21) | `gfallvac08oct17.dat` |
-| complex profiles | `nltelinobsat12.bin` (unit 19) | derived from `gfall` by `read_gfall`'s TYPE dispatch |
-| diatomics, TiO, H2O, polyatomics | already via `lines.list` | via `lines.list` |
+`MOLZERO_RECORD` now notes every species/stage that gets zeroed and
+`MOLZERO_REPORT`, called once at the end of `COMPUTE_ALL_POPS`, names them
+-- but only those whose population would not have been negligible, judged
+by a Saha estimate at the model's hottest layer against a 0.1% threshold,
+and in one line rather than a per-species block.  Cool models zero four
+stages per iron-group element on every run and stay silent, as they should;
+a 10000 K model prints a single line naming the count and the worst offender
+(12 stages, worst B IV at 223x the stage below), with the full list under
+IDEBUG.
 
-The molecular half was unified in 2026-08 (ATLAS12 calls
-`read_diatomics_for_atlas` in `mod_mklinelist`), so the pattern and the
-machinery both exist; the atomic half was left behind.
+**Known residual, deliberately left alone.**  In the Teff = 8000-10000 K
+band the deepest layers (41,000-52,000 K) sit at a ~7% flux error that does
+not iterate away -- the warning above now fires there, which is the honest
+outcome.  It is pre-existing (the code before the 2026-08 line list work
+gave 7.71% at 10,000 K where it now gives 6.52%) and sub-photospheric, with
+the photosphere itself converging to 0.06-0.19%.  Molecules-off cures it
+(7.05% -> 0.134% at 9000 K) but costs a real photospheric error there
+(rms 38.5 K at 9000 K, 692 K at 8000 K), so `TEFF_MOLEC_LIMIT` stays at
+10000 K.  If this is ever worth fixing properly the target is the
+temperature correction in the diffusion regime, not the line lists.
 
-**Why it matters, and it is not hypothetical.**  `lowobsat12.bin` +
-`hilines.bin` are a pre-split binary packaging of nominally the same Kurucz
-atomic data that `gfallvac08oct17.dat` carries, so the two codes can silently
-disagree about what lines exist and with what parameters -- structure built on
-one list, spectrum synthesised from another.  That exact failure has already
-happened once here with TiO (ATLAS12 on Schwenke 1997 while SYNTHE had moved to
-ExoMol Toto, the case hard-wired past the manifest), and it went unnoticed
-until someone went looking.  Nothing prevents a repeat on the atomic side.
-
-**What to do.**  Extend `mod_mklinelist` with an ATLAS12-facing atomic reader
-(the counterpart of `read_diatomics_for_atlas`), have `SELECTLINES` take its
-atomic lines from `lines.list`, and delete the three private binaries.  Any
-difference in the resulting structure is itself the interesting result: it is a
-direct measure of how far the two lists had drifted.
-
-**Watch for:** `SELECTLINES` applies its own `XNFDOPMAX`/`TABCONT` rejection
-before storing a line, which is not the same filter as SYNTHE's `LINE_CUTOFF`
-retention -- the goal is a shared line *source*, not identical selection.  The
-predicted list is also the one where `gfpred26apr2018.bin` was measured as not
-worth adopting (see CHANGELOG), so leave that choice alone while moving it.
+**Not to do: extending `molecules.dat` to stages VI-X.**  Settled by
+measurement, recorded here so it is not reopened.  It would only be worth
+it if some regime needed molecules and stage-VI ions at once, and none
+does.  Below the gate the hottest layer any model reaches is 52,156 K (a
+Teff = 10000 K, log g 4.5 model), where Fe VI is 5.5% of iron -- but that
+is the deepest layer, at log tau ~ 3, and at its tau = 1 layer the Fe VI
+fraction is 2e-31.  The direct test is stronger: at 25,000 K, where stage
+VI+ genuinely dominates the deep layers (131,000 K), switching those lines
+on moved the emergent flux by +0.002% and the photosphere by 0.16 K rms.
+Adding stages would also widen the window in which the zeroing branch can
+fire, rather than closing it.

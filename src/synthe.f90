@@ -55,6 +55,7 @@ PROGRAM SYNTHE
   USE mod_atlas_data, only: &
     JOSH, READIN, BLOCKJ, BLOCKH, set_bc_data_dir, &
     DATADIR, IFSYNTHE, IFMOLOUT, DUMP_CONTINUUM, TURBV_UNSET, &
+    IFMOL, TEFF_MOLEC_LIMIT, &
     ! Renamed to avoid collision with module-level names in synthe_module
     hkt_a => HKT, itemp_a => ITEMP, &
     nrhox_a => NRHOX, rhox_a => RHOX, &
@@ -340,6 +341,22 @@ PROGRAM SYNTHE
       'sigH sigHe sigEl sigH2 sigX SIGMAC'
   END IF
   CALL readin(20)
+
+  ! --- Select the equation-of-state path from Teff ---------------------
+  ! Must match ATLAS12's gate exactly (see TEFF_MOLEC_LIMIT in
+  ! mod_atlas_data): if the two codes chose different IFMOL they would
+  ! disagree about the ion stages that exist, which is the same class of
+  ! silent structure/spectrum divergence as the TiO and atomic line-list
+  ! splits.  readin(20) has set TEFF by this point.
+  IF (TEFF .GT. TEFF_MOLEC_LIMIT) IFMOL = 0
+  IF (IFMOL .EQ. 1) THEN
+    WRITE(6,'(A,I6,A)') '  molecules        =    on   (Teff <= ', &
+      INT(TEFF_MOLEC_LIMIT), ' K: NMOLEC network, ion stages I-V)'
+  ELSE
+    WRITE(6,'(A,I6,A)') '  molecules        =   off   (Teff > ', &
+      INT(TEFF_MOLEC_LIMIT), ' K: Saha/NELECT, ion stages to X)'
+  END IF
+
   ! Keep unit 5 open: MOLEC reads from INPUTDATA(=5) on first call below.
   CALL run_xnfpelsyn(turbv)
   CLOSE(UNIT=5)

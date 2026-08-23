@@ -33,7 +33,7 @@ Usage:
   python3 build_h2o_pokazatel.py --cache      # parse .super.bz2 -> npz
   python3 build_h2o_pokazatel.py --fit        # per-bin (gf, E) inversion
   python3 build_h2o_pokazatel.py --validate   # blind 2500 K + stats
-  python3 build_h2o_pokazatel.py --write      # emit data/h2opokazatel.bin
+  python3 build_h2o_pokazatel.py --write      # emit data/mol/h2opokazatel.bin
 """
 import argparse
 import bz2
@@ -46,7 +46,7 @@ RAW = os.path.expanduser("~/kurucz/upgrade/raw_data/h2o_super")
 CACHE = os.path.join(RAW, "cache")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PF_FILE = os.path.expanduser("~/kurucz/upgrade/raw_data/exomol_pf/H2O.pf")
-OUT_BIN = os.path.join(REPO, "data", "h2opokazatel.bin")
+OUT_BIN = os.path.join(REPO, "data", "mol", "h2opokazatel.bin")
 
 FIT_TEMPS = [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800,
              3000, 3200, 3400, 3600, 4000, 4400, 4500, 5000]

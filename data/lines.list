@@ -1,5 +1,6 @@
 gfall	gfallvac08oct17.dat
 predict	gfpred29dec2014.bin
+predict	hilines.bin
 mol 	mol/alhax.dat
 mol 	mol/alo_atp.dat
 mol 	mol/alhxx.dat
@@ -38,5 +39,5 @@ mol	mol/tiototo2024.bin
 mol	mol/voax.asc
 mol	mol/vobx.asc
 mol	mol/vocx.asc
-h2o 	h2opokazatel.bin
+h2o 	mol/h2opokazatel.bin
 polymol	mol/caoh_oyt6_super.bin
