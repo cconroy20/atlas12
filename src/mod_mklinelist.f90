@@ -2357,7 +2357,7 @@ CONTAINS
   !  and nltelinobsat12.bin (XLINOP's unit 19) -- with the same
   !  gfallvac08oct17.dat that SYNTHE reads, parsed by the same read_gfall.
   !  Both codes therefore see one atomic source and cannot silently drift,
-  !  which is the whole point (see atlas_to_do item 3).
+  !  which is the whole point.
   !
   !  Two outputs, split the way ATLAS12 splits its opacity routines:
   !
