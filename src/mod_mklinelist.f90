@@ -2513,6 +2513,17 @@ CONTAINS
         CYCLE
       END IF
 
+      ! TYPE is NOT a free-standing profile selector: it is coupled to what
+      ! read_gfall stored in the record.  itype = 1 (autoionizing) and
+      ! itype > 3 (continuum edges) carry RAW gf and UNDIVIDED damping
+      ! constants, everything else carries cgf and gamma/(4 pi nu).  So a
+      ! remap is only safe between types that agree on that convention.
+      ! The two below do: -2 and -3..-6 all store cgf, as do their targets
+      ! -1 and 0.  Remapping an itype = 1 line to 0 without also converting
+      ! gf -> cgf and dividing the damping would make it ~3e16 too strong
+      ! -- and it would still converge, just to a different star.  (Learned
+      ! the hard way building an A/B harness for the Ca I autoionizing
+      ! lines; 846 K of solar structure change was the tell.)
       itype = nlte_g(k)%itype
       SELECT CASE (itype)
       CASE (-2)
