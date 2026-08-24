@@ -136,22 +136,6 @@ sets the prefix for all output files (default `mystar`); keyword
 arguments may appear in any order, before or after the positionals.
 Pass `--help` (or `-h`, `help`) to print usage and exit.
 
-Output files:
-
-| File | Contents |
-|------|----------|
-| `<basename>.atm`   | Converged model atmosphere. The `READ DECK6` block has one line per depth with columns: `RHOX`, `T`, `P`, `XNE`, `ABROSS` (Rosseland mean opacity κ), `ACCRAD`, `VTURB`, `FLXCNV`, `VCONV`, `RHO` (mass density, g/cm³), `TAU5000` (continuum optical depth at 5000 Å — absorption + continuum scattering, no lines — the reference depth scale tabulated by MARCS/PHOENIX) |
-| `<basename>.flux`  | Emergent flux vs. wavelength |
-| `<basename>.iter`  | Per-iteration summary, including the temperature-correction diagnostics.  When the deep-CZ polish runs, its post-polish per-layer state is appended as a final block |
-
-ATLAS12 writes exactly these three files.  Earlier versions also emitted
-separate `.taunu` and `.tcorr` files; `.taunu` is no longer written, and the
-`.tcorr` temperature-correction diagnostics are now columns in `.iter`.
-
-Only the first seven DECK6 columns (`RHOX`…`VTURB`) are read back when a
-model is used as input; `FLXCNV`, `VCONV`, `RHO`, and `TAU5000` are
-write-only diagnostics for downstream use.
-
 Command-line options (keyword=value):
 
 | Option       | Default     | Description |
@@ -165,25 +149,6 @@ Command-line options (keyword=value):
 | `zscale=X`   | 1.0         | Metal abundance scale factor (multiplicative on Z≥3) |
 | `heabnd=X`   | from model  | He number fraction Y; H is recomputed as X = 1 − Y − Z |
 | `abund=file` | none        | Individual element overrides (see below) |
-
-Numerics and physics switches are deliberately not CLI options.  They
-live as developer flags at their declarations in `mod_atlas_data` (set
-the default value and recompile): `USE_CONDENSATION` (equilibrium
-condensation, default on), `USE_TOPBASE_MBF` (TOPbase metal continuum
-vs. legacy analytic fits, default on), `USE_CZ_CONSTRUCTOR` (deep-CZ
-temperature constructor, default on), `USE_CZC_POLISH` (terminal
-deep-CZ flux-closure polish, default on), `USE_FLXCNV_SMOOTH` (interior
-1-2-1 convective-flux smoothing, default on), `TFLOOR_ATM` (temperature-
-correction floor, 1200 K), `TEFF_MOLEC_LIMIT` (Teff above which molecular
-equilibrium is switched off and the Saha/`NELECT` path with ionization
-stages to X is used instead, 10000 K), `IROSSTAB` (Rosseland-table interpolation:
-1=bilinear, 2=Shepard, 3=moving least squares), and `IQUAD` (`INTEG`
-quadrature: 0=legacy blended-parabola, 1=Steffen monotone cubic).
-`USE_KP_HYDROGEN` (Kurucz–Peterson hydrogen Stark profiles instead of
-Stehlé–Hutcheon) lives in `synthe_module.f90`, and `CA4227_MODE`
-(Ca I 4227 resonance profile) and `NLTE_MODE` (departure coefficients
-for selected lines, see "Departure coefficients" below) live in
-`mod_parameters`.
 
 Abundance override file format: one element per line with two
 whitespace-separated columns, `Z  log10(number_fraction)`.  Lines
@@ -205,6 +170,41 @@ When any of these is used, ATLAS12 renormalizes so that X + Y + Z = 1
 recomputes all abundance-dependent quantities before the iteration
 loop.  If both `teff=` and `logg=` are given, the model is regridded
 via `SCALE_MODEL` before iteration begins.
+
+Output files:
+
+| File | Contents |
+|------|----------|
+| `<basename>.atm`   | Converged model atmosphere. The `READ DECK6` block has one line per depth with columns: `RHOX`, `T`, `P`, `XNE`, `ABROSS` (Rosseland mean opacity κ), `ACCRAD`, `VTURB`, `FLXCNV`, `VCONV`, `RHO` (mass density, g/cm³), `TAU5000` (continuum optical depth at 5000 Å — absorption + continuum scattering, no lines — the reference depth scale tabulated by MARCS/PHOENIX) |
+| `<basename>.flux`  | Emergent flux vs. wavelength |
+| `<basename>.iter`  | Per-iteration summary, including the temperature-correction diagnostics.  When the deep-CZ polish runs, its post-polish per-layer state is appended as a final block |
+
+ATLAS12 writes exactly these three files.  Earlier versions also emitted
+separate `.taunu` and `.tcorr` files; `.taunu` is no longer written, and the
+`.tcorr` temperature-correction diagnostics are now columns in `.iter`.
+
+Only the first seven DECK6 columns (`RHOX`…`VTURB`) are read back when a
+model is used as input; `FLXCNV`, `VCONV`, `RHO`, and `TAU5000` are
+write-only diagnostics for downstream use.
+
+Numerics and physics switches are deliberately not CLI options.  They
+live as developer flags at their declarations in `mod_atlas_data` (set
+the default value and recompile): `USE_CONDENSATION` (equilibrium
+condensation, default on), `USE_TOPBASE_MBF` (TOPbase metal continuum
+vs. legacy analytic fits, default on), `USE_CZ_CONSTRUCTOR` (deep-CZ
+temperature constructor, default on), `USE_CZC_POLISH` (terminal
+deep-CZ flux-closure polish, default on), `USE_FLXCNV_SMOOTH` (interior
+1-2-1 convective-flux smoothing, default on), `TFLOOR_ATM` (temperature-
+correction floor, 1200 K), `TEFF_MOLEC_LIMIT` (Teff above which molecular
+equilibrium is switched off and the Saha/`NELECT` path with ionization
+stages to X is used instead, 10000 K), `IROSSTAB` (Rosseland-table interpolation:
+1=bilinear, 2=Shepard, 3=moving least squares), and `IQUAD` (`INTEG`
+quadrature: 0=legacy blended-parabola, 1=Steffen monotone cubic).
+`USE_KP_HYDROGEN` (Kurucz–Peterson hydrogen Stark profiles instead of
+Stehlé–Hutcheon) lives in `synthe_module.f90`, and `CA4227_MODE`
+(Ca I 4227 resonance profile) and `NLTE_MODE` (departure coefficients
+for selected lines, see "Departure coefficients" below) live in
+`mod_parameters`.
 
 ### Teff-dependent switches
 
@@ -246,28 +246,6 @@ read.  Line lists are built in memory by `run_mklinelist`, which reads
 `lines.list` from `$ATLAS12/data/` and dispatches internally to the
 appropriate readers (gfall, predict, mol, h2o).
 
-### NLTE departure coefficients (default off)
-
-`NLTE_MODE` in `mod_parameters` is **0 = off** (pure LTE; nothing allocated,
-no NLTE code runs) or **1 = on**.  When on, departure coefficients `b_l` and
-`b_u` rescale the line opacity and replace the source function for a set of
-named transitions — currently 22, in Na I, Mg I, Ca I/II and Fe I.  They are
-matched on species plus both level energies, so every hyperfine component of
-a multiplet is tagged together.
-
-SYNTHE reads one self-contained file per element from `data/nlte/`
-(`$NLTE_GRID` overrides the path) and interpolates `b` over Teff, log g,
-[Fe/H], v_turb and the element's abundance, onto this model's own layers.
-The files are derived, not authored — see `data/nlte/README.txt` for
-provenance and the rebuild, and CHANGELOG for the physics, the grid's
-constraints and the measured effect on line profiles.
-
-The electron density (with its consistent `XNATOM` and `RHO`) is
-recomputed self-consistently from the model structure rather than taken
-from the `.atm` file (compile-time toggle `RECOMPUTE_XNE` in
-`run_xnfpelsyn`); for atmospheres converged with the current ATLAS12 the
-stored and recomputed values agree to solver tolerance.
-
 Arguments:
 
 | Argument              | Required | Description |
@@ -299,6 +277,28 @@ Wavelengths are handled internally in nanometers on a logarithmic grid
 with spacing `ratio = 1 + 1/resolu`; vacuum wavelengths are used
 throughout.  The `.spec` file reports wavelengths in Angstroms for
 compatibility with legacy post-processing.
+
+The electron density (with its consistent `XNATOM` and `RHO`) is
+recomputed self-consistently from the model structure rather than taken
+from the `.atm` file (compile-time toggle `RECOMPUTE_XNE` in
+`run_xnfpelsyn`); for atmospheres converged with the current ATLAS12 the
+stored and recomputed values agree to solver tolerance.
+
+### NLTE departure coefficients (default off)
+
+`NLTE_MODE` in `mod_parameters` is **0 = off** (pure LTE; nothing allocated,
+no NLTE code runs) or **1 = on**.  When on, departure coefficients `b_l` and
+`b_u` rescale the line opacity and replace the source function for a set of
+named transitions — currently 22, in Na I, Mg I, Ca I/II and Fe I.  They are
+matched on species plus both level energies, so every hyperfine component of
+a multiplet is tagged together.
+
+SYNTHE reads one self-contained file per element from `data/nlte/`
+(`$NLTE_GRID` overrides the path) and interpolates `b` over Teff, log g,
+[Fe/H], v_turb and the element's abundance, onto this model's own layers.
+The files are derived, not authored — see `data/nlte/README.txt` for
+provenance and the rebuild, and CHANGELOG for the physics, the grid's
+constraints and the measured effect on line profiles.
 
 ## Input Data
 
