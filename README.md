@@ -10,6 +10,23 @@ Companion documents: [CHANGELOG.md](CHANGELOG.md) — the full modernization
 ledger, with design rationale and validation numbers for every change —
 and [atlas_to_do.md](atlas_to_do.md) — open items.
 
+## Contents
+
+- [Programs](#programs)
+  - [ATLAS12 — Opacity-Sampling Stellar Atmosphere Code](#atlas12--opacity-sampling-stellar-atmosphere-code)
+  - [SYNTHE — Spectral Synthesis](#synthe--spectral-synthesis)
+- [Quick Start](#quick-start)
+- [Source Files](#source-files)
+- [Building](#building)
+- [Running ATLAS12](#running-atlas12)
+  - [Teff-dependent switches](#teff-dependent-switches)
+- [Running SYNTHE](#running-synthe)
+  - [NLTE departure coefficients (default off)](#nlte-departure-coefficients-default-off)
+- [Input Data](#input-data)
+- [Tools](#tools)
+- [Translation from Fortran 77](#translation-from-fortran-77)
+- [References](#references)
+
 ## Programs
 
 ### ATLAS12 — Opacity-Sampling Stellar Atmosphere Code
@@ -168,46 +185,6 @@ Stehlé–Hutcheon) lives in `synthe_module.f90`, and `CA4227_MODE`
 for selected lines, see "Departure coefficients" below) live in
 `mod_parameters`.
 
-### Teff-dependent switches
-
-Several behaviours are selected automatically from the model's effective
-temperature, so that a single command line gives a sensible configuration
-across the whole HR diagram.  All of them key off the **final** Teff, after
-any `teff=` override has been applied.  They are collected here because
-nothing else announces them except a line in the run banner.
-
-| Threshold | Above it | Below it | Constant / location |
-|-----------|----------|----------|---------------------|
-| **10000 K** | molecular equilibrium **off**: `NELECT`/`PFSAHA` solve pure Saha, reaching ionization stage X for the iron group | molecular equilibrium **on**: `NMOLEC` solves the coupled network in `molecules.dat`, ion stages I–V for Ca–Ni | `TEFF_MOLEC_LIMIT` (`mod_atlas_data`), applied in both `atlas12c.f90` and `synthe.f90` |
-| **8000 K** | TiO and H₂O line lists skipped — both are dissociated, so reading them is wasted work | TiO and H₂O read from `lines.list` | `TEFF_COOL_LIMIT` (`mod_mklinelist`), shared by `SELECTLINES` |
-| **3500 K** | polyatomic (`polymol`) lists skipped — CaOH and its kin need late-M densities | polyatomic lists read | `TEFF_POLYMOL_LIMIT` (`mod_mklinelist`) |
-| **30000 K** | wavelength grid starts at index 1 (full extent) | grid starts at the He II edge, 22.8 nm | `NUSTART` in `atlas12c.f90` |
-| **13000 K** | — | grid starts at the He I edge, 50.4 nm | `NUSTART` |
-| **7250 K** | — | grid starts at the H Lyman limit, 91.2 nm | `NUSTART` |
-| **4500 K** | — | grid starts at the C I edge | `NUSTART` |
-| **4250 K** | — | E₃ suppressed for 0.005 < Δτ < 0.02 (cool-star stability patch in the Feautrier diagonal) | `atlas12_modules.f90` |
-
-The banner reports the molecular switch explicitly, e.g.
-
-```
-  molecules        =   off   (Teff > 10000 K: Saha/NELECT, ion stages to X)
-```
-
-and skipped line lists appear as zero-count rows in the line-list summary.
-
-Two caveats on the 10000 K boundary.  It is measured, not chosen: at
-9000 K molecules still set the structure (turning them off costs 38.5 K rms
-in the photosphere) while at 10000 K they are irrelevant (0.1 K rms), a
-sharp transition across one grid step.  And between roughly 8000 and
-10000 K the deepest layers reach 41000–52000 K, hot enough for ionization
-stages `molecules.dat` does not carry; their lines are discarded, the model
-carries a few per cent flux error well below the photosphere, and
-`MOLZERO_REPORT` prints a one-line warning saying so.  The photosphere and
-emergent spectrum are unaffected.  See `atlas_to_do.md` item 3.
-
-Equilibrium **condensation** is gated on the local temperature
-(`COND_TMAX`), not on Teff, so it does not appear in this table.
-
 Abundance override file format: one element per line with two
 whitespace-separated columns, `Z  log10(number_fraction)`.  Lines
 starting with `#` or `!` are treated as comments.  Example:
@@ -229,6 +206,31 @@ recomputes all abundance-dependent quantities before the iteration
 loop.  If both `teff=` and `logg=` are given, the model is regridded
 via `SCALE_MODEL` before iteration begins.
 
+### Teff-dependent switches
+
+Several behaviours are selected automatically from the model's effective
+temperature, so that a single command line gives a sensible configuration
+across the whole HR diagram.  All of them key off the **final** Teff, after
+any `teff=` override has been applied.  They are collected here because
+nothing else announces them except a line in the run banner.
+
+| Threshold | Above it | Below it | Constant / location |
+|-----------|----------|----------|---------------------|
+| **10000 K** | molecular equilibrium **off**: `NELECT`/`PFSAHA` solve pure Saha, reaching ionization stage X for the iron group | molecular equilibrium **on**: `NMOLEC` solves the coupled network in `molecules.dat`, ion stages I–V for Ca–Ni | `TEFF_MOLEC_LIMIT` (`mod_atlas_data`), applied in both `atlas12c.f90` and `synthe.f90` |
+| **8000 K** | TiO and H₂O line lists skipped — both are dissociated, so reading them is wasted work | TiO and H₂O read from `lines.list` | `TEFF_COOL_LIMIT` (`mod_mklinelist`), shared by `SELECTLINES` |
+| **3500 K** | polyatomic (`polymol`) lists skipped — CaOH and its kin need late-M densities | polyatomic lists read | `TEFF_POLYMOL_LIMIT` (`mod_mklinelist`) |
+
+The banner reports the molecular switch explicitly, e.g.
+
+```
+  molecules        =   off   (Teff > 10000 K: Saha/NELECT, ion stages to X)
+```
+
+and skipped line lists appear as zero-count rows in the line-list summary.
+
+Equilibrium **condensation** is gated on the local temperature
+(`COND_TMAX`), not on Teff, so it does not appear in this table.
+
 ## Running SYNTHE
 
 ```
@@ -247,34 +249,18 @@ appropriate readers (gfall, predict, mol, h2o).
 ### NLTE departure coefficients (default off)
 
 `NLTE_MODE` in `mod_parameters` is **0 = off** (pure LTE; nothing allocated,
-no NLTE code runs) or **1 = on**.  When on, `b_l` and `b_u` for named
-transitions rescale the line opacity and replace `SLINE`:
+no NLTE code runs) or **1 = on**.  When on, departure coefficients `b_l` and
+`b_u` rescale the line opacity and replace the source function for a set of
+named transitions — currently 22, in Na I, Mg I, Ca I/II and Fe I.  They are
+matched on species plus both level energies, so every hyperfine component of
+a multiplet is tagged together.
 
-```
-kappa = kappa_LTE * b_l * [1 - (b_u/b_l) e^-x] / [1 - e^-x]
-S_l   = (2h nu^3/c^2) / [ (b_l/b_u) e^x - 1 ]        x = h nu / kT
-```
-
-These multiply to `kappa*S = b_u * kappa_LTE * B_nu * (1-e^-x)`, so only one
-extra accumulator is needed, carrying the opacity-weighted *deviation* of the
-emissivity from LTE; it stays identically zero for every LTE line.  Eligible
-transitions are declared in `mod_mklinelist` and matched on species plus both
-level energies, so every hyperfine component is tagged at once — currently the
-Na I D doublet.
-
-SYNTHE reads one self-contained file from `data/nlte/` (`$NLTE_GRID`
-overrides) and interpolates `b` over Teff, log g, [Fe/H], v_turb and Na
-abundance, reading only the interpolation corners.  Each corner carries its own
-τ₅₀₀₀ grid, so corners are placed on this model's τ₅₀₀₀ before being combined;
-missing corners have their weight dropped and the remainder renormalised, with
-the surviving fraction reported.  Two constraints the grid imposes: `[α/Fe]` is
-not an axis (MARCS `_st_` models tie it to `[Fe/H]`), and MARCS is
-plane-parallel only at log g ≥ 3, so giants use spherical models at 1 M⊙.
-
-The file is derived — `tools/nlte_extract_grid.py`, `nlte_build_index.py`,
-`nlte_build_runtime.py` — from a published grid whose master copy lives outside
-the repository.  See `data/nlte/README.txt` for provenance and the rebuild, and
-CHANGELOG for the physics and its caveats.
+SYNTHE reads one self-contained file per element from `data/nlte/`
+(`$NLTE_GRID` overrides the path) and interpolates `b` over Teff, log g,
+[Fe/H], v_turb and the element's abundance, onto this model's own layers.
+The files are derived, not authored — see `data/nlte/README.txt` for
+provenance and the rebuild, and CHANGELOG for the physics, the grid's
+constraints and the measured effect on line profiles.
 
 The electron density (with its consistent `XNATOM` and `RHO`) is
 recomputed self-consistently from the model structure rather than taken
@@ -386,7 +372,7 @@ The full contents of the data directory, organized by purpose:
 | `mol.tar.gz` †           | —                | Archive of molecular sub-lists referenced from `lines.list`; unpack in place |
 | `mol/h2opokazatel.bin` ‡ | ATLAS12 / SYNTHE | H₂O pseudo-line list (51.3M records) built from ExoMol POKAZATEL; replaces `h2ofastfix.bin` (P&S 1997).  Rebuild with `tools/build_h2o_pokazatel.py --raw --write-raw` |
 | `mol/tiototo2024.bin` ‡  | ATLAS12 / SYNTHE | TiO line list (131.6M records, ⁴⁶Ti–⁵⁰Ti) from ExoMol Toto; replaces `schwenke.bin` (Schwenke 1997).  Both codes resolve it through `lines.list`, so they cannot diverge |
-| `nlte/*.nlte` ‡          | SYNTHE           | NLTE departure-coefficient grids, one self-contained file per element, for `NLTE_MODE = 3`.  Ships with Na I (789 MB).  Derived — see `data/nlte/README.txt` for provenance and the three-stage rebuild |
+| `nlte/*.nlte` ‡          | SYNTHE           | NLTE departure-coefficient grids, one self-contained file per element, for `NLTE_MODE = 1`.  Ships with Na I (789 MB).  Derived — see `data/nlte/README.txt` for provenance and the three-stage rebuild |
 | `mol/alo_atp.dat` ‡      | ATLAS12 / SYNTHE | AlO line list (4.93M records) from ExoMol ATP.  The B–X bands at 4842 and 4648 Å reach 60% of the local extinction at the τ(4500 Å) = 1 layer of a 2900 K dwarf; on by default.  Rebuild with `tools/exomol_to_kurucz.py --gns 6 --icode 813 --iso 16` |
 
 † Not tracked in the repository; download from the Google Drive folder above.
