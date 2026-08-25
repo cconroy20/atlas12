@@ -149,7 +149,7 @@ Command-line options (keyword=value):
 | `zscale=X`   | 1.0         | Metal abundance scale factor (multiplicative on Z≥3) |
 | `heabnd=X`   | from model  | He number fraction Y; H is recomputed as X = 1 − Y − Z |
 | `abund=file` | none        | Individual element overrides (see below) |
-| `czc_polish=MODE` | `legacy` | Terminal deep-convection-zone flux-closure policy: `off`, `legacy`, or `transactional` |
+| `czc_polish=MODE` | `legacy` | Terminal deep-convection-zone flux-closure policy: `off`, `legacy`, or `transactional`; transactional mode evaluates guarded, backtracked full-RT trials and restores the evaluated baseline if none improves it |
 | `czc_nheal=N` | 8 | Number of terminal healing calls in `legacy` mode |
 
 Abundance override file format: one element per line with two

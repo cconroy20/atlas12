@@ -203,16 +203,16 @@ PROGRAM ATLAS12
     END BLOCK
   END DO
 
-  IF (CZC_POL_NHEAL .LT. 1 .OR. CZC_POL_NHEAL .GT. NUMITS) THEN
-    WRITE(6, '(A,I0,A,I0)') ' ERROR: czc_nheal must lie in 1..numit; got ', &
+  IF (CZC_POL_NHEAL .LT. 1 .OR. CZC_POL_NHEAL .GT. 60) THEN
+    WRITE(6, '(A,I0)') ' ERROR: czc_nheal must lie in 1..60; got ', CZC_POL_NHEAL
+    CALL EXIT(1)
+  END IF
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_LEGACY .AND. &
+      CZC_POL_NHEAL .GT. NUMITS) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: legacy czc_nheal cannot exceed numit; got ', &
       CZC_POL_NHEAL, ' with numit=', NUMITS
     CALL EXIT(1)
   END IF
-  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL) THEN
-    WRITE(6, '(A)') ' ERROR: czc_polish=transactional is reserved but not yet implemented'
-    CALL EXIT(1)
-  END IF
-
   ! Validate: input atmosphere file is required
   IF (LEN_TRIM(INPUT_MODEL_FILE) .EQ. 0) THEN
     WRITE(6, '(A)') ' ERROR: missing required argument <input_atm>'
@@ -242,7 +242,13 @@ PROGRAM ATLAS12
     IFPNCH(I) = 0
     IFPRNT(I) = 1
   END DO
-  IFPNCH(NUMITS) = 2
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL) THEN
+    ! Suppress the ordinary final RT flux: the selected transactional state
+    ! receives its own full verification/output pass below.
+    IFPNCH(NUMITS) = 0
+  ELSE
+    IFPNCH(NUMITS) = 2
+  END IF
   IFPRNT(NUMITS) = 3
 
   OPEN(UNIT=7,  FILE=TRIM(OUTBASE)//'.atm',   STATUS='REPLACE')
@@ -629,6 +635,13 @@ PROGRAM ATLAS12
         CALL COMPUTE_HEIGHT
         IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC(.FALSE.)
         IF (IFCORR .EQ. 1)  CALL TCORR(3, 0.0D0)
+        IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL .AND. &
+            ITERAT .EQ. NUMITS) THEN
+          CALL CZC_TRY_TRANSACTION
+          IFPNCH(ITER) = 2
+          CALL CZC_EVALUATE_CURRENT(.TRUE.)
+          CALL CZC_WRITE_VERIFICATION_BLOCK('final_verification')
+        END IF
         IF (NLTEON .EQ. 1)  CALL STATEQ(3, 0.0D0)
         IF (IFTURB .EQ. 1)  CALL COMPUTE_PTURB
         CALL PUTOUT(5)
@@ -707,7 +720,7 @@ CONTAINS
     WRITE(6, '(A)') '  heabnd=X     He number fraction Y; H = 1 - Y - Z (default: from model)'
     WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'
     WRITE(6, '(A)') '  czc_polish=M Deep-CZ polish mode: off, legacy, transactional'
-    WRITE(6, '(A)') '               (default legacy; transactional is reserved in this build)'
+    WRITE(6, '(A)') '               (default legacy; transactional uses full-RT trial/rollback)'
     WRITE(6, '(A)') '  czc_nheal=N  Legacy terminal polish calls (default 8; 1..numit)'
     WRITE(6, '(A)') ''
     WRITE(6, '(A)') 'Help:'

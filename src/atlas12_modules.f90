@@ -1615,6 +1615,12 @@ MODULE mod_atlas_data
   REAL(8), PARAMETER :: CZC_POL_DTTOL  = 5.0D-3
   INTEGER, PARAMETER :: CZC_POL_MAXSWP = 100
   INTEGER, PARAMETER :: CZC_POL_MAXCYC = 30
+  INTEGER, PARAMETER :: CZC_TRIAL_MAX_BACKTRACK = 6
+  REAL(8), PARAMETER :: CZC_TRIAL_DT_MAX = 25.0D0
+  REAL(8), PARAMETER :: CZC_TRIAL_MIN_IMPROVE = 1.0D-3
+  REAL(8), PARAMETER :: CZC_CONV_FLUX_MAX = 1.0D0
+  REAL(8), PARAMETER :: CZC_CONV_FLUX_P95 = 0.5D0
+  REAL(8), PARAMETER :: CZC_CONV_PHOTO_MAX = 1.0D0
   ! Polish authority ramp in CONV/TOT.  The polish closes the raw MLT
   ! flux relation at frozen F_rad; that raw flux equals the model's actual
   ! (1-2-1 smoothed, gap-filled) convective flux only where convection is
@@ -1805,11 +1811,11 @@ MODULE mod_atlas_data
   REAL(8) :: NEWT_XNFP(kw, mion), NEWT_XNF(kw, mion), NEWT_XNH2(kw)
   REAL(8) :: NEWT_DOPPLE(kw, mion), NEWT_XNFDOP(kw, mion)
   REAL(8) :: NEWT_BHYD(kw, 6), NEWT_BMIN(kw)
-  REAL(8) :: NEWT_FLXRAD(kw), NEWT_FLXCNV(kw)
+  REAL(8) :: NEWT_FLXRAD(kw), NEWT_FLXCNV(kw), NEWT_FLXERR(kw)
   REAL(8) :: NEWT_RJMINS(kw), NEWT_ABROSS(kw)
   REAL(8) :: NEWT_TAUROS(kw)
   REAL(8) :: NEWT_FLXCNV0(kw), NEWT_FLXCNV1(kw)
-  REAL(8) :: NEWT_PRAD(kw)
+  REAL(8) :: NEWT_PRAD(kw), NEWT_ACCRAD(kw)
   REAL(8) :: NEWT_VCONV(kw)
   REAL(8) :: NEWT_DLTDLP(kw), NEWT_GRDADB(kw)
   REAL(8) :: NEWT_HEATCP(kw), NEWT_HSCALE(kw), NEWT_DLRDLT(kw)
@@ -3469,9 +3475,12 @@ END SUBROUTINE CZC_DELREQ_LAYER
 ! the block's FLXERR so the final .atm deck is consistent with the
 ! polished structure.
 !=========================================================================
-SUBROUTINE CZC_POLISH
+SUBROUTINE CZC_POLISH(EMIT_RECORD, APPLIED)
 
   IMPLICIT NONE
+
+  LOGICAL, INTENT(IN), OPTIONAL :: EMIT_RECORD
+  LOGICAL, INTENT(OUT), OPTIONAL :: APPLIED
 
   REAL(8) :: HRAT_L(kw)     ! convective flux fraction
   REAL(8) :: DELREQ(kw)     ! MLT-inverted required superadiabatic excess
@@ -3488,9 +3497,12 @@ SUBROUTINE CZC_POLISH
   REAL(8) :: LNPR, SLOPIN, GTARG, WINT, GBARI
   REAL(8) :: DTMAX, DTTOT, ERR0, ERR1, GRES
   INTEGER :: J, JC, K, CYC, PINFO
-  LOGICAL :: SWEEP_CONV
+  LOGICAL :: SWEEP_CONV, EMIT
 
-  IF (CZC_POLISH_MODE .NE. CZC_POLISH_LEGACY) RETURN
+  EMIT = .TRUE.
+  IF (PRESENT(EMIT_RECORD)) EMIT = EMIT_RECORD
+  IF (PRESENT(APPLIED)) APPLIED = .FALSE.
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_OFF) RETURN
   IF (.NOT. CZC_RUN_ENGAGED) RETURN
   IF (IFCONV .NE. 1 .OR. IFPRES .NE. 1 .OR. MIXLTH .LE. 0.0D0) RETURN
   JC = max(CZC_RUN_JC, CZC_J_MIN)
@@ -3654,6 +3666,7 @@ SUBROUTINE CZC_POLISH
     HRAT_L(J) = FLXCNV(J) / (FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
   END DO
   ERR1 = MAXVAL(ABS(FLXERR(JC:NRHOX)))
+  IF (PRESENT(APPLIED)) APPLIED = DTTOT .GT. 0.0D0
 
   WRITE(6, '(A,I3,A,I3,A,I2,A,F8.3,A)') &
     ' CZC polish: J=', JC, '..', NRHOX, '  cycles=', &
@@ -3684,7 +3697,7 @@ SUBROUTINE CZC_POLISH
   !     the T1 column carries the polish's total applied dT; ERROR and
   !     R_NEWT are both the post-polish flux residual; CONV/TOT is
   !     recomputed from the polished fluxes.
-  IF (IFPRNT(ITER) .NE. 0 .AND. ITER .EQ. NUMITS) THEN
+  IF (EMIT .AND. IFPRNT(ITER) .NE. 0 .AND. ITER .EQ. NUMITS) THEN
     WRITE(66, 110) &
          (J, log10(max(TAUROS(J),1.0D-30)), T(J), 0.0D0, 0.0D0, &
           0.0D0, T(J) - TPRE(J), FLXERR(J), 0.0D0, &
@@ -3705,6 +3718,247 @@ SUBROUTINE CZC_POLISH
   END IF
 
 END SUBROUTINE CZC_POLISH
+
+!=========================================================================
+! Transactional deep-CZ polish support.
+!
+! The legacy polish constructs a useful candidate but evaluates it against
+! the radiative flux from the preceding RT pass.  The routines below treat
+! that result only as a proposal: save a fully evaluated baseline, form dT,
+! restore, and accept a backtracked trial only after a new opacity-sampling
+! RT pass.  A rejected transaction restores the evaluated baseline exactly.
+!=========================================================================
+SUBROUTINE CZC_EVALUATE_CURRENT(EMIT_OUTPUT)
+
+  IMPLICIT NONE
+
+  LOGICAL, INTENT(IN) :: EMIT_OUTPUT
+  INTEGER :: J, NELION
+  REAL(8) :: EXCESS
+
+  ! Mirror the main iteration's hydrostatic/EOS preamble at the selected T.
+  ITEMP = ITEMP + 1
+  TK   = KBOL * T
+  HKT  = HPLANCK / TK
+  HCKT = HKT * CLIGHT
+  TKEV = KBOL_EV * T
+  TLOG = LOG(T)
+
+  IF (IFPRES .NE. 0) THEN
+    PZERO = PCON + PRADK0 + PTURB0
+    DO J = 1, NRHOX
+      P(J) = GRAV * RHOX(J) - PRAD(J) - PTURB(J) - PCON
+      IF (P(J) .LE. 0.0D0) P(J) = MAX(GRAV * RHOX(J) * 1.0D-4, 1.0D-10)
+      CHARGESQ(J) = XNE(J) * 2.0D0
+      EXCESS = 2.0D0 * XNE(J) - P(J) / TK(J)
+      IF (EXCESS .GT. 0.0D0) CHARGESQ(J) = CHARGESQ(J) + 2.0D0 * EXCESS
+      PTOTAL(J) = GRAV * RHOX(J) + PZERO
+    END DO
+    IFEDNS = 0
+    CALL COMPUTE_ONE_POP(0.0D0, 1, XNE)
+    CALL COMPUTE_ALL_POPS
+  END IF
+  IF (IFEDNS .EQ. 1) CALL ENERGY_DENSITY
+
+  DO J = 1, NRHOX
+    DO NELION = 1, MION - 1
+      IF (AMASSISO(1, NELION) .LE. 0.0D0) CYCLE
+      DOPPLE(J, NELION) = SQRT(2.0D0 * TK(J) / AMASSISO(1, NELION) / AMU &
+                              + VTURB(J)**2) / CLIGHT
+      XNFDOP(J, NELION) = XNFP(J, NELION) / DOPPLE(J, NELION) / RHO(J)
+    END DO
+  END DO
+
+  CALL RUN_RT_PASS(EMIT_OUTPUT)
+  IF (IFSURF .LE. 0) THEN
+    CALL ROSS(3, 0.0D0)
+    CALL RADIAP(3, 0.0D0)
+    CALL COMPUTE_HEIGHT
+    IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC(.FALSE.)
+  END IF
+  FLXERR = (FLXRAD + FLXCNV - FLUX) / MAX(FLUX, 1.0D-30) * 100.0D0
+
+END SUBROUTINE CZC_EVALUATE_CURRENT
+
+!=========================================================================
+REAL(8) FUNCTION CZC_PERCENTILE_ABS(VALUE, N, FRACTION) RESULT(PERCENTILE)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN) :: N
+  REAL(8), INTENT(IN) :: VALUE(N), FRACTION
+  REAL(8) :: WORK(kw), KEY, POSITION, WEIGHT
+  INTEGER :: I, J, LO, HI
+
+  IF (N .LE. 0) THEN
+    PERCENTILE = 0.0D0
+    RETURN
+  END IF
+  WORK(1:N) = ABS(VALUE(1:N))
+  DO I = 2, N
+    KEY = WORK(I)
+    J = I - 1
+    DO WHILE (J .GE. 1)
+      IF (WORK(J) .LE. KEY) EXIT
+      WORK(J + 1) = WORK(J)
+      J = J - 1
+    END DO
+    WORK(J + 1) = KEY
+  END DO
+  POSITION = 1.0D0 + MAX(0.0D0, MIN(1.0D0, FRACTION)) * DBLE(N - 1)
+  LO = INT(FLOOR(POSITION))
+  HI = INT(CEILING(POSITION))
+  WEIGHT = POSITION - DBLE(LO)
+  PERCENTILE = WORK(LO) * (1.0D0 - WEIGHT) + WORK(HI) * WEIGHT
+
+END FUNCTION CZC_PERCENTILE_ABS
+
+!=========================================================================
+SUBROUTINE CZC_GET_METRICS(JC, EMAX, EP95, EPHOTO, EDEEP)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN) :: JC
+  REAL(8), INTENT(OUT) :: EMAX, EP95, EPHOTO, EDEEP
+  REAL(8) :: PHOTO_ERROR(kw)
+  INTEGER :: J, NPHOTO, J0
+
+  EMAX = MAXVAL(ABS(FLXERR(1:NRHOX)))
+  EP95 = CZC_PERCENTILE_ABS(FLXERR(1:NRHOX), NRHOX, 0.95D0)
+  NPHOTO = 0
+  DO J = 1, NRHOX
+    IF (LOG10(MAX(TAUROS(J), 1.0D-30)) .GE. -4.0D0 .AND. &
+        LOG10(MAX(TAUROS(J), 1.0D-30)) .LE.  2.0D0) THEN
+      NPHOTO = NPHOTO + 1
+      PHOTO_ERROR(NPHOTO) = FLXERR(J)
+    END IF
+  END DO
+  IF (NPHOTO .GT. 0) THEN
+    EPHOTO = MAXVAL(ABS(PHOTO_ERROR(1:NPHOTO)))
+  ELSE
+    EPHOTO = EMAX
+  END IF
+  J0 = MAX(1, MIN(JC, NRHOX))
+  EDEEP = MAXVAL(ABS(FLXERR(J0:NRHOX)))
+
+END SUBROUTINE CZC_GET_METRICS
+
+!=========================================================================
+SUBROUTINE CZC_TRY_TRANSACTION
+
+  IMPLICIT NONE
+
+  REAL(8) :: TBASE(kw), DTPROP(kw)
+  REAL(8) :: BASE_MAX, BASE_P95, BASE_PHOTO, BASE_DEEP
+  REAL(8) :: TRY_MAX, TRY_P95, TRY_PHOTO, TRY_DEEP
+  REAL(8) :: ALPHA, PROPOSAL_MAX
+  INTEGER :: JC, ITRY
+  LOGICAL :: PROPOSED, ACCEPTED
+
+  IF (CZC_POLISH_MODE .NE. CZC_POLISH_TRANSACTIONAL) RETURN
+  IF (.NOT. CZC_RUN_ENGAGED) THEN
+    WRITE(6, '(A)') ' CZC_TRANSACTION action=skip reason=constructor_never_engaged'
+    RETURN
+  END IF
+
+  CALL CZC_EVALUATE_CURRENT(.FALSE.)
+  JC = MAX(CZC_RUN_JC, CZC_J_MIN)
+  CALL CZC_GET_METRICS(JC, BASE_MAX, BASE_P95, BASE_PHOTO, BASE_DEEP)
+  WRITE(6, '(A,4(A,F9.4))') ' CZC_TRANSACTION baseline', &
+    ' max=', BASE_MAX, ' p95=', BASE_P95, ' photo=', BASE_PHOTO, ' deep=', BASE_DEEP
+
+  IF (BASE_MAX .LE. CZC_CONV_FLUX_MAX .AND. &
+      BASE_P95 .LE. CZC_CONV_FLUX_P95 .AND. &
+      BASE_PHOTO .LE. CZC_CONV_PHOTO_MAX) THEN
+    WRITE(6, '(A)') ' CZC_TRANSACTION action=skip reason=baseline_flux_converged'
+    RETURN
+  END IF
+
+  CALL NEWTON_SAVE_STATE
+  TBASE(1:NRHOX) = NEWT_T(1:NRHOX)
+  CALL CZC_POLISH(.FALSE., PROPOSED)
+  DTPROP(1:NRHOX) = T(1:NRHOX) - TBASE(1:NRHOX)
+  CALL NEWTON_RESTORE_STATE
+
+  PROPOSAL_MAX = MAXVAL(ABS(DTPROP(1:NRHOX)))
+  IF (.NOT. PROPOSED .OR. PROPOSAL_MAX .LE. 0.0D0) THEN
+    WRITE(6, '(A)') ' CZC_TRANSACTION action=skip reason=no_proposal'
+    RETURN
+  END IF
+
+  ALPHA = MIN(1.0D0, CZC_TRIAL_DT_MAX / PROPOSAL_MAX)
+  ACCEPTED = .FALSE.
+  DO ITRY = 0, CZC_TRIAL_MAX_BACKTRACK
+    CALL NEWTON_RESTORE_STATE
+    T(1:NRHOX) = TBASE(1:NRHOX) + ALPHA * DTPROP(1:NRHOX)
+    TK(1:NRHOX)   = KBOL * T(1:NRHOX)
+    HKT(1:NRHOX)  = HPLANCK / TK(1:NRHOX)
+    HCKT(1:NRHOX) = HKT(1:NRHOX) * CLIGHT
+    TKEV(1:NRHOX) = KBOL_EV * T(1:NRHOX)
+    TLOG(1:NRHOX) = LOG(T(1:NRHOX))
+    ITEMP = ITEMP + 1
+
+    IF (MINVAL(T(1:NRHOX)) .LT. TFLOOR_ATM .OR. &
+        ANY(T(2:NRHOX) .LT. T(1:NRHOX-1))) THEN
+      WRITE(6, '(A,I0,A,F9.6,A)') ' CZC_TRANSACTION trial=', ITRY, &
+        ' alpha=', ALPHA, ' action=reject reason=temperature_guard'
+      ALPHA = ALPHA * 0.5D0
+      CYCLE
+    END IF
+
+    CALL CZC_EVALUATE_CURRENT(.FALSE.)
+    CALL CZC_GET_METRICS(JC, TRY_MAX, TRY_P95, TRY_PHOTO, TRY_DEEP)
+    ACCEPTED = TRY_MAX .LT. BASE_MAX * (1.0D0 - CZC_TRIAL_MIN_IMPROVE) .AND. &
+               TRY_P95 .LE. MAX(CZC_CONV_FLUX_P95, BASE_P95) .AND. &
+               TRY_PHOTO .LE. MAX(CZC_CONV_PHOTO_MAX, BASE_PHOTO)
+    WRITE(6, '(A,I0,A,F9.6,A,L1,4(A,F9.4))') &
+      ' CZC_TRANSACTION trial=', ITRY, ' alpha=', ALPHA, ' accepted=', ACCEPTED, &
+      ' max=', TRY_MAX, ' p95=', TRY_P95, ' photo=', TRY_PHOTO, ' deep=', TRY_DEEP
+    IF (ACCEPTED) EXIT
+    ALPHA = ALPHA * 0.5D0
+  END DO
+
+  IF (ACCEPTED) THEN
+    WRITE(6, '(A,F9.6,A,F9.4,A,F9.4)') &
+      ' CZC_TRANSACTION action=accept alpha=', ALPHA, &
+      ' baseline_max=', BASE_MAX, ' selected_max=', TRY_MAX
+  ELSE
+    CALL NEWTON_RESTORE_STATE
+    WRITE(6, '(A,F9.4)') &
+      ' CZC_TRANSACTION action=restore reason=line_search_exhausted baseline_max=', BASE_MAX
+  END IF
+
+END SUBROUTINE CZC_TRY_TRANSACTION
+
+!=========================================================================
+SUBROUTINE CZC_WRITE_VERIFICATION_BLOCK(TAG)
+
+  IMPLICIT NONE
+
+  CHARACTER(*), INTENT(IN) :: TAG
+  INTEGER :: J
+
+  IF (IFPRNT(ITER) .EQ. 0) RETURN
+  WRITE(66, '(A,A)') '# ATLAS_PHASE ', TRIM(TAG)
+  WRITE(66, 110) &
+       (J, LOG10(MAX(TAUROS(J),1.0D-30)), T(J), 0.0D0, 0.0D0, &
+        0.0D0, 0.0D0, FLXERR(J), 0.0D0, FLXERR(J), &
+        DLTDLP(J), GRDADB(J), &
+        FLXCNV(J) / (FLXCNV(J) + MAX(FLXRAD(J),1.0D-30)), &
+        P(J), XNE(J), HEIGHT(J), ACCRAD(J), J=1,NRHOX)
+110 FORMAT(&
+    '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
+    '      ERROR       DERIV    R_NEWT   NABLA NABLA_AD     CONV/TOT', &
+    '        P           XNE       HEIGHT     ACCRAD' / &
+    '                  K        K       K       K       K', &
+    '          %           %         %                            ', &
+    '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
+    (I3, F8.3, F10.1, 4F8.1, &
+     1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+     1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
+  FLUSH(66)
+
+END SUBROUTINE CZC_WRITE_VERIFICATION_BLOCK
 
 !=========================================================================
 ! SUBROUTINE CZC_NODE_RESID(JC, GT, TW, R)
@@ -4098,12 +4352,14 @@ SUBROUTINE NEWTON_SAVE_STATE
   NEWT_BMIN     = BMIN
   NEWT_FLXRAD   = FLXRAD
   NEWT_FLXCNV   = FLXCNV
+  NEWT_FLXERR   = FLXERR
   NEWT_RJMINS   = RJMINS
   NEWT_ABROSS   = ABROSS
   NEWT_TAUROS   = TAUROS
   NEWT_FLXCNV0  = FLXCNV0
   NEWT_FLXCNV1  = FLXCNV1
   NEWT_PRAD     = PRAD
+  NEWT_ACCRAD   = ACCRAD
   NEWT_VCONV    = VCONV
   NEWT_DLTDLP   = DLTDLP
   NEWT_GRDADB   = GRDADB
@@ -4159,12 +4415,14 @@ SUBROUTINE NEWTON_RESTORE_STATE
   BMIN     = NEWT_BMIN
   FLXRAD   = NEWT_FLXRAD
   FLXCNV   = NEWT_FLXCNV
+  FLXERR   = NEWT_FLXERR
   RJMINS   = NEWT_RJMINS
   ABROSS   = NEWT_ABROSS
   TAUROS   = NEWT_TAUROS
   FLXCNV0  = NEWT_FLXCNV0
   FLXCNV1  = NEWT_FLXCNV1
   PRAD     = NEWT_PRAD
+  ACCRAD   = NEWT_ACCRAD
   VCONV    = NEWT_VCONV
   DLTDLP   = NEWT_DLTDLP
   GRDADB   = NEWT_GRDADB
