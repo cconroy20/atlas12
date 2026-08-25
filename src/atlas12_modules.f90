@@ -1568,10 +1568,13 @@ MODULE mod_atlas_data
   !     solar/hot models never trip it and are untouched.
   ! Developer option, set here; no CLI.
   LOGICAL :: USE_CZ_CONSTRUCTOR = .TRUE.
-  ! Terminal deep-CZ polish: after the final iteration, close the MLT
-  ! flux relation in the constructor's block against the frozen
-  ! radiative flux (see CZC_POLISH).  Developer option, set here.
-  LOGICAL :: USE_CZC_POLISH = .TRUE.
+  ! Terminal deep-CZ polish runtime modes.  LEGACY preserves the historical
+  ! final-N-iteration frozen-F_rad placement exactly; OFF is a true no-op.
+  ! TRANSACTIONAL is implemented by the guarded full-RT trial path below.
+  INTEGER, PARAMETER :: CZC_POLISH_OFF           = 0
+  INTEGER, PARAMETER :: CZC_POLISH_LEGACY        = 1
+  INTEGER, PARAMETER :: CZC_POLISH_TRANSACTIONAL = 2
+  INTEGER :: CZC_POLISH_MODE = CZC_POLISH_LEGACY
   ! Constructor run-state consumed by the polish: whether the
   ! constructor engaged at least once this run, and the block top at
   ! the last engaged call.
@@ -1635,7 +1638,7 @@ MODULE mod_atlas_data
   ! Boehm-Vitense target, only exact) re-closes the deep block each time.
   ! The final iteration's polish sets the mK-precise closure that the
   ! output carries; the earlier ones only steer the relaxation.
-  INTEGER, PARAMETER :: CZC_POL_NHEAL  = 8
+  INTEGER :: CZC_POL_NHEAL  = 8
   ! Re-engagement hysteresis: after a dT-release, the block's flux
   ! metric keeps fluttering on the code's gradient-noise floor (the
   ! amplification 1.5/DEL makes tens of percent normal in the coolest
@@ -3042,7 +3045,12 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! relation in the constructor's block and appends a labeled POLISH
   ! block to the .iter file (no-op unless the constructor engaged this
   ! run; see CZC_POLISH).
-  IF (ITER .GT. NUMITS - CZC_POL_NHEAL) CALL CZC_POLISH
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_LEGACY .AND. &
+      ITER .GT. NUMITS - CZC_POL_NHEAL) THEN
+    WRITE(6, '(A,I0,A,I0,A)') ' CZC_CONTROL iteration=', ITER, &
+      ' mode=legacy nheal=', CZC_POL_NHEAL, ' action=attempt'
+    CALL CZC_POLISH
+  END IF
 
   RETURN
 
@@ -3482,7 +3490,7 @@ SUBROUTINE CZC_POLISH
   INTEGER :: J, JC, K, CYC, PINFO
   LOGICAL :: SWEEP_CONV
 
-  IF (.NOT. USE_CZC_POLISH) RETURN
+  IF (CZC_POLISH_MODE .NE. CZC_POLISH_LEGACY) RETURN
   IF (.NOT. CZC_RUN_ENGAGED) RETURN
   IF (IFCONV .NE. 1 .OR. IFPRES .NE. 1 .OR. MIXLTH .LE. 0.0D0) RETURN
   JC = max(CZC_RUN_JC, CZC_J_MIN)
@@ -22849,4 +22857,3 @@ END FUNCTION occupation_prob
 
 
 END MODULE mod_atlas_data
-

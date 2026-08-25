@@ -50,6 +50,7 @@ PROGRAM ATLAS12
   CHARACTER(256) :: ABUND_FILE
   CHARACTER(256) :: ABUND_LINE
   CHARACTER(32)  :: CMD_SOLAR
+  CHARACTER(16)  :: CMD_CZC_POLISH
   INTEGER        :: NARGS, IEQPOS, ISTAT, IPOSARG
   REAL(8)        :: VTURB_KMS
   REAL(8)        :: CMD_TEFF, CMD_LOGG
@@ -95,6 +96,7 @@ PROGRAM ATLAS12
   OUTBASE    = 'mystar'
   ABUND_FILE = ''
   CMD_SOLAR  = ''
+  CMD_CZC_POLISH = 'legacy'
   INPUT_MODEL_FILE = ''
   NUMITS     = 30
   VTURB_KMS  = -1.0D0    ! sentinel: not set
@@ -155,6 +157,25 @@ PROGRAM ATLAS12
       CASE ('logg');   READ(val, *, IOSTAT=ISTAT) CMD_LOGG
       CASE ('zscale'); READ(val, *, IOSTAT=ISTAT) CMD_ZSCALE
       CASE ('heabnd'); READ(val, *, IOSTAT=ISTAT) CMD_HEABND
+      CASE ('czc_polish')
+        DO J = 1, LEN_TRIM(val)
+          IF (val(J:J) .GE. 'A' .AND. val(J:J) .LE. 'Z') &
+            val(J:J) = CHAR(ICHAR(val(J:J)) + 32)
+        END DO
+        CMD_CZC_POLISH = TRIM(val)
+        SELECT CASE (TRIM(CMD_CZC_POLISH))
+        CASE ('off')
+          CZC_POLISH_MODE = CZC_POLISH_OFF
+        CASE ('legacy')
+          CZC_POLISH_MODE = CZC_POLISH_LEGACY
+        CASE ('transactional')
+          CZC_POLISH_MODE = CZC_POLISH_TRANSACTIONAL
+        CASE DEFAULT
+          WRITE(6, '(A,A)') ' ERROR: unknown czc_polish mode: ', TRIM(val)
+          WRITE(6, '(A)') '   valid modes: off legacy transactional'
+          CALL EXIT(1)
+        END SELECT
+      CASE ('czc_nheal'); READ(val, *, IOSTAT=ISTAT) CZC_POL_NHEAL
       CASE ('solar')
         ! Normalize to lowercase, then validate the name now (fail fast).
         ! This also pre-loads ABUND, but READIN may overwrite it from the
@@ -181,6 +202,16 @@ PROGRAM ATLAS12
       END IF
     END BLOCK
   END DO
+
+  IF (CZC_POL_NHEAL .LT. 1 .OR. CZC_POL_NHEAL .GT. NUMITS) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: czc_nheal must lie in 1..numit; got ', &
+      CZC_POL_NHEAL, ' with numit=', NUMITS
+    CALL EXIT(1)
+  END IF
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL) THEN
+    WRITE(6, '(A)') ' ERROR: czc_polish=transactional is reserved but not yet implemented'
+    CALL EXIT(1)
+  END IF
 
   ! Validate: input atmosphere file is required
   IF (LEN_TRIM(INPUT_MODEL_FILE) .EQ. 0) THEN
@@ -400,6 +431,8 @@ PROGRAM ATLAS12
     WRITE(6,'(A,A)')     '  Input model      = ', TRIM(INPUT_MODEL_FILE)
     WRITE(6,'(A,A)')     '  Output basename  = ', TRIM(OUTBASE)
     WRITE(6,'(A,I5)')    '  numit            = ', NUMITS
+    WRITE(6,'(A,A)')     '  CZC polish       = ', TRIM(CMD_CZC_POLISH)
+    WRITE(6,'(A,I5)')    '  CZC heal calls   = ', CZC_POL_NHEAL
     WRITE(6,'(A,F5.2)')  '  mlt              = ', MIXLTH
     WRITE(6,'(A,F5.2)')  '  vturb (km/s)     = ', VTURB(1) * 1.0D-5
     WRITE(6,'(A,I5)')    '  teff (K)         = ', INT(TEFF)
@@ -673,6 +706,9 @@ CONTAINS
     WRITE(6, '(A)') '  zscale=X     Metal abundance scale factor (default: no scaling)'
     WRITE(6, '(A)') '  heabnd=X     He number fraction Y; H = 1 - Y - Z (default: from model)'
     WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'
+    WRITE(6, '(A)') '  czc_polish=M Deep-CZ polish mode: off, legacy, transactional'
+    WRITE(6, '(A)') '               (default legacy; transactional is reserved in this build)'
+    WRITE(6, '(A)') '  czc_nheal=N  Legacy terminal polish calls (default 8; 1..numit)'
     WRITE(6, '(A)') ''
     WRITE(6, '(A)') 'Help:'
     WRITE(6, '(A)') '  --help, -h, help    Print this message and exit'
