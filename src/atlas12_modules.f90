@@ -1444,6 +1444,24 @@ MODULE mod_atlas_data
   ! --- Iteration control ---
   INTEGER :: ITER, ifprnt(60) = 2, ifpnch(60) = 0, NUMITS = 0
 
+  ! Phase-aware early stopping.  Only ordinary TCORR mode-3 evaluations
+  ! contribute to the streak; polish trials and final verification passes do
+  ! not.  The solver stops before applying the next temperature correction,
+  ! then the driver performs one fresh full-RT verification/output pass.
+  LOGICAL :: EARLY_STOP_ENABLED   = .FALSE.
+  LOGICAL :: EARLY_STOP_REQUESTED = .FALSE.
+  INTEGER :: EARLY_STOP_MIN_ITER  = 10
+  INTEGER :: EARLY_STOP_REQUIRED  = 3
+  INTEGER :: EARLY_STOP_STREAK    = 0
+  REAL(8), PARAMETER :: EARLY_FLUX_MAX_LIMIT = 1.0D0
+  REAL(8), PARAMETER :: EARLY_FLUX_P95_LIMIT = 0.5D0
+  REAL(8), PARAMETER :: EARLY_DT_MAX_LIMIT   = 2.0D0
+  REAL(8), PARAMETER :: EARLY_DT_P95_LIMIT   = 1.0D0
+  REAL(8) :: EARLY_LATEST_FLUX_MAX = HUGE(1.0D0)
+  REAL(8) :: EARLY_LATEST_FLUX_P95 = HUGE(1.0D0)
+  REAL(8) :: EARLY_LATEST_DT_MAX   = HUGE(1.0D0)
+  REAL(8) :: EARLY_LATEST_DT_P95   = HUGE(1.0D0)
+
   ! Threshold for printing convergence-failure warnings inside iterative
   ! routines (TTAUP, CONVEC, etc.).  On the first few ATLAS iterations the
   ! ROSSTAB opacity table is sparse and inner fixed-point iterations
@@ -2831,10 +2849,12 @@ SUBROUTINE TCORR(MODE, RCOWT)
     OLDT1(J) = T1(J)
   END DO
 
-  ! Diagnostic output (after damping, so T1 reflects what is actually applied).
-  ! One unified per-iteration table merging the former *.tcorr correction
-  ! diagnostics with the *.iter atmospheric structure columns.
-  IF (IFPRNT(ITER) .NE. 0) THEN
+  ! Preserve the legacy .iter contract when early stopping is disabled:
+  ! historically the T1 diagnostic was emitted after ordinary damping but
+  ! before the optional Newton/CZ constructors modified the applied step.
+  ! Adaptive runs emit below, after all constructors, because their stop
+  ! decision must measure the step that would actually be applied.
+  IF (.NOT. EARLY_STOP_ENABLED .AND. IFPRNT(ITER) .NE. 0) THEN
     CALL GET_TCORR_RESIDUALS(R_NEWT_DIAG)
     WRITE(66, 100) &
          (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), DTSURF(J), &
@@ -2842,17 +2862,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
           1.0D2 * R_NEWT_DIAG(J), &
           DLTDLP(J), GRDADB(J), HRATIO(J), P(J), XNE(J), HEIGHT(J), &
           ACCRAD(J), J=1,NRHOX)
-100 FORMAT(&
-      '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
-      '      ERROR       DERIV    R_NEWT   NABLA NABLA_AD     CONV/TOT', &
-      '        P           XNE       HEIGHT     ACCRAD' / &
-      '                  K        K       K       K       K', &
-      '          %           %         %                            ', &
-      '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-      (I3, F8.3, F10.1, 4F8.1, &
-       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
-       1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
-    flush(66)
+    FLUSH(66)
   END IF
 
   !---------------------------------------------------------------------
@@ -2895,6 +2905,58 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !      (untested interaction; USE_DTGRAD is off in production).
   !---------------------------------------------------------------------
   IF (.NOT. NEWTON_APPLIED) CALL CZ_CONSTRUCT(T1)
+
+  ! Diagnostic output is deliberately after every correction constructor, so
+  ! T1 is the step that would actually be applied.  The early-stop decision is
+  ! made on this ordinary evaluated state and returns before section (H),
+  ! leaving T, RHOX, and the associated RT solution unchanged.
+  IF (EARLY_STOP_ENABLED .AND. IFPRNT(ITER) .NE. 0) THEN
+    CALL GET_TCORR_RESIDUALS(R_NEWT_DIAG)
+    WRITE(66, 100) &
+         (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), DTSURF(J), &
+          DTFLUX(J), T1(J), FLXERR(J), FLXDRV(J), &
+          1.0D2 * R_NEWT_DIAG(J), &
+          DLTDLP(J), GRDADB(J), HRATIO(J), P(J), XNE(J), HEIGHT(J), &
+          ACCRAD(J), J=1,NRHOX)
+100 FORMAT(&
+      '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
+      '      ERROR       DERIV    R_NEWT   NABLA NABLA_AD     CONV/TOT', &
+      '        P           XNE       HEIGHT     ACCRAD' / &
+      '                  K        K       K       K       K', &
+      '          %           %         %                            ', &
+      '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
+      (I3, F8.3, F10.1, 4F8.1, &
+       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+       1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
+    FLUSH(66)
+  END IF
+
+  IF (EARLY_STOP_ENABLED) THEN
+    EARLY_LATEST_FLUX_MAX = MAXVAL(ABS(FLXERR(1:NRHOX)))
+    EARLY_LATEST_FLUX_P95 = CZC_PERCENTILE_ABS(FLXERR(1:NRHOX), NRHOX, 0.95D0)
+    EARLY_LATEST_DT_MAX   = MAXVAL(ABS(T1(1:NRHOX)))
+    EARLY_LATEST_DT_P95   = CZC_PERCENTILE_ABS(T1(1:NRHOX), NRHOX, 0.95D0)
+
+    IF (ITER .GE. EARLY_STOP_MIN_ITER .AND. &
+        EARLY_LATEST_FLUX_MAX .LE. EARLY_FLUX_MAX_LIMIT .AND. &
+        EARLY_LATEST_FLUX_P95 .LE. EARLY_FLUX_P95_LIMIT .AND. &
+        EARLY_LATEST_DT_MAX   .LE. EARLY_DT_MAX_LIMIT .AND. &
+        EARLY_LATEST_DT_P95   .LE. EARLY_DT_P95_LIMIT) THEN
+      EARLY_STOP_STREAK = EARLY_STOP_STREAK + 1
+    ELSE
+      EARLY_STOP_STREAK = 0
+    END IF
+    EARLY_STOP_REQUESTED = EARLY_STOP_STREAK .GE. EARLY_STOP_REQUIRED
+
+    WRITE(6, '(A,I0,A,L1,A,I0,A,I0,4(A,F9.4),A,A)') &
+      ' EARLY_STOP iteration=', ITER, ' eligible=', ITER .GE. EARLY_STOP_MIN_ITER, &
+      ' streak=', EARLY_STOP_STREAK, '/', EARLY_STOP_REQUIRED, &
+      ' max_flux=', EARLY_LATEST_FLUX_MAX, ' p95_flux=', EARLY_LATEST_FLUX_P95, &
+      ' max_dt=', EARLY_LATEST_DT_MAX, ' p95_dt=', EARLY_LATEST_DT_P95, &
+      ' action=', MERGE('stop    ', 'continue', EARLY_STOP_REQUESTED)
+    FLUSH(6)
+    IF (EARLY_STOP_REQUESTED) RETURN
+  END IF
 
   !---------------------------------------------------------------------
   ! (H) Compute RHOX correction to maintain constant TAUROS grid

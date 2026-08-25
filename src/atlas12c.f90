@@ -50,7 +50,7 @@ PROGRAM ATLAS12
   CHARACTER(256) :: ABUND_FILE
   CHARACTER(256) :: ABUND_LINE
   CHARACTER(32)  :: CMD_SOLAR
-  CHARACTER(16)  :: CMD_CZC_POLISH
+  CHARACTER(16)  :: CMD_CZC_POLISH, CMD_EARLY_STOP
   INTEGER        :: NARGS, IEQPOS, ISTAT, IPOSARG
   REAL(8)        :: VTURB_KMS
   REAL(8)        :: CMD_TEFF, CMD_LOGG
@@ -97,6 +97,7 @@ PROGRAM ATLAS12
   ABUND_FILE = ''
   CMD_SOLAR  = ''
   CMD_CZC_POLISH = 'legacy'
+  CMD_EARLY_STOP = 'off'
   INPUT_MODEL_FILE = ''
   NUMITS     = 30
   VTURB_KMS  = -1.0D0    ! sentinel: not set
@@ -176,6 +177,24 @@ PROGRAM ATLAS12
           CALL EXIT(1)
         END SELECT
       CASE ('czc_nheal'); READ(val, *, IOSTAT=ISTAT) CZC_POL_NHEAL
+      CASE ('early_stop')
+        DO J = 1, LEN_TRIM(val)
+          IF (val(J:J) .GE. 'A' .AND. val(J:J) .LE. 'Z') &
+            val(J:J) = CHAR(ICHAR(val(J:J)) + 32)
+        END DO
+        CMD_EARLY_STOP = TRIM(val)
+        SELECT CASE (TRIM(CMD_EARLY_STOP))
+        CASE ('off')
+          EARLY_STOP_ENABLED = .FALSE.
+        CASE ('on')
+          EARLY_STOP_ENABLED = .TRUE.
+        CASE DEFAULT
+          WRITE(6, '(A,A)') ' ERROR: unknown early_stop mode: ', TRIM(val)
+          WRITE(6, '(A)') '   valid modes: off on'
+          CALL EXIT(1)
+        END SELECT
+      CASE ('minit');       READ(val, *, IOSTAT=ISTAT) EARLY_STOP_MIN_ITER
+      CASE ('conv_streak'); READ(val, *, IOSTAT=ISTAT) EARLY_STOP_REQUIRED
       CASE ('solar')
         ! Normalize to lowercase, then validate the name now (fail fast).
         ! This also pre-loads ABUND, but READIN may overwrite it from the
@@ -203,6 +222,10 @@ PROGRAM ATLAS12
     END BLOCK
   END DO
 
+  IF (NUMITS .LT. 1 .OR. NUMITS .GT. 60) THEN
+    WRITE(6, '(A,I0)') ' ERROR: numit must lie in 1..60; got ', NUMITS
+    CALL EXIT(1)
+  END IF
   IF (CZC_POL_NHEAL .LT. 1 .OR. CZC_POL_NHEAL .GT. 60) THEN
     WRITE(6, '(A,I0)') ' ERROR: czc_nheal must lie in 1..60; got ', CZC_POL_NHEAL
     CALL EXIT(1)
@@ -211,6 +234,26 @@ PROGRAM ATLAS12
       CZC_POL_NHEAL .GT. NUMITS) THEN
     WRITE(6, '(A,I0,A,I0)') ' ERROR: legacy czc_nheal cannot exceed numit; got ', &
       CZC_POL_NHEAL, ' with numit=', NUMITS
+    CALL EXIT(1)
+  END IF
+  IF (EARLY_STOP_MIN_ITER .LT. 1 .OR. EARLY_STOP_MIN_ITER .GT. 60) THEN
+    WRITE(6, '(A,I0)') ' ERROR: minit must lie in 1..60; got ', EARLY_STOP_MIN_ITER
+    CALL EXIT(1)
+  END IF
+  IF (EARLY_STOP_REQUIRED .LT. 1 .OR. EARLY_STOP_REQUIRED .GT. 60) THEN
+    WRITE(6, '(A,I0)') ' ERROR: conv_streak must lie in 1..60; got ', EARLY_STOP_REQUIRED
+    CALL EXIT(1)
+  END IF
+  IF (EARLY_STOP_ENABLED .AND. EARLY_STOP_MIN_ITER .GT. NUMITS) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: minit cannot exceed numit when early_stop=on; got ', &
+      EARLY_STOP_MIN_ITER, ' with numit=', NUMITS
+    CALL EXIT(1)
+  END IF
+  IF (EARLY_STOP_ENABLED .AND. &
+      EARLY_STOP_REQUIRED .GT. NUMITS - EARLY_STOP_MIN_ITER + 1) THEN
+    WRITE(6, '(A,I0,A,I0,A,I0)') &
+      ' ERROR: conv_streak cannot fit between minit and numit; got ', &
+      EARLY_STOP_REQUIRED, ' with minit=', EARLY_STOP_MIN_ITER, ' numit=', NUMITS
     CALL EXIT(1)
   END IF
   ! Validate: input atmosphere file is required
@@ -242,9 +285,9 @@ PROGRAM ATLAS12
     IFPNCH(I) = 0
     IFPRNT(I) = 1
   END DO
-  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL) THEN
-    ! Suppress the ordinary final RT flux: the selected transactional state
-    ! receives its own full verification/output pass below.
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL .OR. EARLY_STOP_ENABLED) THEN
+    ! Suppress the ordinary final RT flux: transactional selection and
+    ! early-stop/max-iteration finalization each write a fresh verified state.
     IFPNCH(NUMITS) = 0
   ELSE
     IFPNCH(NUMITS) = 2
@@ -439,6 +482,13 @@ PROGRAM ATLAS12
     WRITE(6,'(A,I5)')    '  numit            = ', NUMITS
     WRITE(6,'(A,A)')     '  CZC polish       = ', TRIM(CMD_CZC_POLISH)
     WRITE(6,'(A,I5)')    '  CZC heal calls   = ', CZC_POL_NHEAL
+    WRITE(6,'(A,A)')     '  early stop       = ', TRIM(CMD_EARLY_STOP)
+    IF (EARLY_STOP_ENABLED) THEN
+      WRITE(6,'(A,I5)')  '  minimum iter     = ', EARLY_STOP_MIN_ITER
+      WRITE(6,'(A,I5)')  '  convergence run  = ', EARLY_STOP_REQUIRED
+      WRITE(6,'(A,4(F5.2,1X))') '  stop limits      = ', EARLY_FLUX_MAX_LIMIT, &
+        EARLY_FLUX_P95_LIMIT, EARLY_DT_MAX_LIMIT, EARLY_DT_P95_LIMIT
+    END IF
     WRITE(6,'(A,F5.2)')  '  mlt              = ', MIXLTH
     WRITE(6,'(A,F5.2)')  '  vturb (km/s)     = ', VTURB(1) * 1.0D-5
     WRITE(6,'(A,I5)')    '  teff (K)         = ', INT(TEFF)
@@ -542,6 +592,10 @@ PROGRAM ATLAS12
 
     iteration_loop: DO ITERAT = 1, NUMITS
       ITER = ITERAT
+      IF (ITERAT .EQ. 1) THEN
+        EARLY_STOP_REQUESTED = .FALSE.
+        EARLY_STOP_STREAK = 0
+      END IF
       CALL SYSTEM_CLOCK(CLOCK_START, CLOCK_RATE)
 
       ! ITEMP tracks temperature changes — incrementing tells subroutines
@@ -635,12 +689,25 @@ PROGRAM ATLAS12
         CALL COMPUTE_HEIGHT
         IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC(.FALSE.)
         IF (IFCORR .EQ. 1)  CALL TCORR(3, 0.0D0)
-        IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL .AND. &
+        IF (EARLY_STOP_REQUESTED) THEN
+          WRITE(6, '(A,I0,A)') ' EARLY_STOP iteration=', ITERAT, &
+            ' action=verify_and_finish'
+          IFPNCH(ITER) = 2
+          CALL CZC_EVALUATE_CURRENT(.TRUE.)
+          CALL CZC_WRITE_VERIFICATION_BLOCK('early_stop_verification')
+        ELSE IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL .AND. &
             ITERAT .EQ. NUMITS) THEN
           CALL CZC_TRY_TRANSACTION
           IFPNCH(ITER) = 2
           CALL CZC_EVALUATE_CURRENT(.TRUE.)
           CALL CZC_WRITE_VERIFICATION_BLOCK('final_verification')
+        ELSE IF (EARLY_STOP_ENABLED .AND. ITERAT .EQ. NUMITS) THEN
+          ! The last ordinary correction was applied because convergence was
+          ! not reached.  Reevaluate it so all three output products describe
+          ! the same final state.
+          IFPNCH(ITER) = 2
+          CALL CZC_EVALUATE_CURRENT(.TRUE.)
+          CALL CZC_WRITE_VERIFICATION_BLOCK('max_iteration_verification')
         END IF
         IF (NLTEON .EQ. 1)  CALL STATEQ(3, 0.0D0)
         IF (IFTURB .EQ. 1)  CALL COMPUTE_PTURB
@@ -654,6 +721,8 @@ PROGRAM ATLAS12
         ! Developer probe: fine-T scan of the nabla_ad / EOS machinery
         ! (no-op unless ATLAS_GRDADB_SCAN is set; stops after writing)
         IF (ITERAT .EQ. 1) CALL GRDADB_SCAN_MAYBE
+
+        IF (EARLY_STOP_REQUESTED) EXIT iteration_loop
 
       END IF
 
@@ -722,6 +791,10 @@ CONTAINS
     WRITE(6, '(A)') '  czc_polish=M Deep-CZ polish mode: off, legacy, transactional'
     WRITE(6, '(A)') '               (default legacy; transactional uses full-RT trial/rollback)'
     WRITE(6, '(A)') '  czc_nheal=N  Legacy terminal polish calls (default 8; 1..numit)'
+    WRITE(6, '(A)') '  early_stop=M Stop on a stable ordinary-iteration streak: off, on'
+    WRITE(6, '(A)') '               (default off; final state receives a full-RT verification)'
+    WRITE(6, '(A)') '  minit=N      First iteration eligible for early stop (default 10)'
+    WRITE(6, '(A)') '  conv_streak=N Consecutive passing iterations required (default 3)'
     WRITE(6, '(A)') ''
     WRITE(6, '(A)') 'Help:'
     WRITE(6, '(A)') '  --help, -h, help    Print this message and exit'

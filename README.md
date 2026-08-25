@@ -151,6 +151,21 @@ Command-line options (keyword=value):
 | `abund=file` | none        | Individual element overrides (see below) |
 | `czc_polish=MODE` | `legacy` | Terminal deep-convection-zone flux-closure policy: `off`, `legacy`, or `transactional`; transactional mode evaluates guarded, backtracked full-RT trials and restores the evaluated baseline if none improves it |
 | `czc_nheal=N` | 8 | Number of terminal healing calls in `legacy` mode |
+| `early_stop=MODE` | `off` | Stop after a stable ordinary-iteration convergence streak: `off` or `on` |
+| `minit=N` | 10 | First iteration eligible for early stopping |
+| `conv_streak=N` | 3 | Consecutive passing ordinary iterations required |
+
+`early_stop=on` treats `numit`
+as a hard maximum and stops before applying another correction after
+`conv_streak` consecutive ordinary iterations at or beyond `minit` satisfy
+max/p95 absolute flux errors of 1.0/0.5 percent and max/p95 absolute proposed
+temperature corrections of 2/1 K.  Polish trials never count toward this
+streak.  A stopped model receives a fresh full-RT verification pass, and the
+`.atm`, `.flux`, and tagged final `.iter` block are written from that same
+state.  Early stopping defaults off for reproducibility.  The intended pilot
+configuration is `czc_polish=transactional early_stop=on`; retain `numit` as a
+conservative hard ceiling while the pilot establishes region-dependent
+iteration budgets.
 
 Abundance override file format: one element per line with two
 whitespace-separated columns, `Z  log10(number_fraction)`.  Lines
