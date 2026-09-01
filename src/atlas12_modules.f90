@@ -1128,6 +1128,20 @@ MODULE mod_atlas_data
   REAL(8)  :: EDENS(kw)
   INTEGER :: IFEDNS
 
+  ! --- EOS diagnostic capture (eos_dump) --------------------------------
+  ! CONVEC builds HEATCP, DLRDLT and GRDADB from four finite differences of
+  ! EDENS and RHO taken at T +/- 0.1% and P +/- 0.1%.  Those differences are
+  ! loop-local scalars, so a wrong nabla_ad cannot be attributed to a term
+  ! without recomputing them by hand.  Capture them per depth; the stores are
+  ! unconditional so the dump measures exactly what the model ran on.
+  CHARACTER(len=256) :: EOS_DUMP_FILE = ''
+  REAL(8) :: EOSD_DEDT(kw)  = 0.0D0   ! (dE/dT)_P
+  REAL(8) :: EOSD_DRDT(kw)  = 0.0D0   ! (drho/dT)_P
+  REAL(8) :: EOSD_DEDPG(kw) = 0.0D0   ! (dE/dP)_T
+  REAL(8) :: EOSD_DRDPG(kw) = 0.0D0   ! (drho/dP)_T
+  REAL(8) :: EOSD_ETP(kw)   = 0.0D0   ! E at T*1.001
+  REAL(8) :: EOSD_ETM(kw)   = 0.0D0   ! E at T*0.999
+
   ! --- Element abundances, atomic masses, labels ---
   REAL(8)       :: YABUND(99)
   ! --- Named solar reference abundance scales ---------------------------
@@ -8063,7 +8077,21 @@ SUBROUTINE COMPUTE_ONE_POP(CODE, MODE, NUMBER)
 
     ! --- Atomic-only path (no molecules) ---
     ! NELECT solves for electron density from Saha ionization alone.
-    IF (IFPRES .EQ. 1 .AND. ITEMP .NE. ITEMP_PREV) CALL NELECT
+    !
+    ! ENERGY_DENSITY must follow it whenever IFEDNS is armed.  NMOLEC carries
+    ! its EDENS assembly inline, so the IFMOL=1 path refreshes EDENS on every
+    ! populations call; NELECT does not, and the only two CALL ENERGY_DENSITY
+    ! sites sit outside this path.  CONVEC arms IFEDNS and takes four
+    ! finite differences of EDENS at T +/- 0.1% and P +/- 0.1% through this
+    ! routine, so without this call all four saw one stale EDENS and DEDT
+    ! collapsed to the radiation term CONVEC adds by hand -- 250x low at
+    ! logtau -1.75, driving HEATCP down and nabla_ad to 0.99 where the ideal
+    ! gas requires 0.4.  Measured with eos_dump; see
+    ! docs/HOT_BAND_DEEP_FLUX_DIAGNOSIS_V1.md in the grid suite.
+    IF (IFPRES .EQ. 1 .AND. ITEMP .NE. ITEMP_PREV) THEN
+      CALL NELECT
+      IF (IFEDNS .EQ. 1) CALL ENERGY_DENSITY
+    END IF
     ITEMP_PREV = ITEMP
 
     IF (CODE .EQ. 0.0D0) RETURN
@@ -8231,6 +8259,49 @@ CONTAINS
   END SUBROUTINE compute_partfcns
 
 END SUBROUTINE ENERGY_DENSITY
+
+!=========================================================================
+! SUBROUTINE WRITE_EOS_DUMP
+!
+! Diagnostic (eos_dump=FILE).  Writes the equation-of-state derivative
+! chain CONVEC used to build nabla_ad, one row per depth, then the caller
+! exits without iterating.  Run twice with molecules=on and molecules=off
+! from the same deck to compare the two EOS paths on one (T, P) structure.
+!
+! The chain being audited is, per depth:
+!
+!   HEATCP = DEDT - DEDPG*DPDT/DPDPG - PTOTAL/RHO^2*(DRDT - DRDPG*DPDT/DPDPG)
+!   DLRDLT = T/RHO*(DRDT - DRDPG*DPDT/DPDPG)
+!   GRDADB = -PTOTAL/RHO/T * DLRDLT / HEATCP
+!
+! so a wrong GRDADB is attributable to DEDT, DRDT, DEDPG or DRDPG, all of
+! which are printed alongside it.  For an ideal gas away from ionisation
+! GRDADB must be 0.4.
+!=========================================================================
+
+SUBROUTINE WRITE_EOS_DUMP
+
+  IMPLICIT NONE
+
+  INTEGER :: J, U
+
+  OPEN(NEWUNIT=U, FILE=TRIM(EOS_DUMP_FILE), STATUS='REPLACE', ACTION='WRITE')
+  WRITE(U,'(A,I0,A,F9.1,A,F6.3,A,I0)') '# ifmol=', IFMOL, ' teff=', TEFF, &
+    ' logg=', GLOG, ' nrhox=', NRHOX
+  WRITE(U,'(A)') '# J logtau T P PTOTAL RHO XNE XNATOM E_Tplus E_Tminus '// &
+    'DEDT DRDT DEDPG DRDPG HEATCP DLRDLT GRDADB DLTDLP'
+  DO J = 1, NRHOX
+    WRITE(U,'(I4,1X,F9.4,1X,17(1PE16.8,1X))') J, &
+      log10(max(TAUROS(J), 1.0D-30)), T(J), P(J), PTOTAL(J), RHO(J), &
+      XNE(J), XNATOM(J), EOSD_ETP(J), EOSD_ETM(J), &
+      EOSD_DEDT(J), EOSD_DRDT(J), EOSD_DEDPG(J), EOSD_DRDPG(J), &
+      HEATCP(J), DLRDLT(J), GRDADB(J), DLTDLP(J)
+  END DO
+  CLOSE(U)
+  WRITE(6,'(A,A)') ' EOS_DUMP written: ', TRIM(EOS_DUMP_FILE)
+  FLUSH(6)
+
+END SUBROUTINE WRITE_EOS_DUMP
 
 !=========================================================================
 ! SUBROUTINE NELECT
@@ -11086,6 +11157,14 @@ SUBROUTINE CONVEC(MLT_ONLY)
     DRDT  = (RHO1(J) - RHO2(J)) / T(J) * 500.0D0
     DEDPG = (EDENS3(J) - EDENS4(J)) / P(J) * 500.0D0
     DRDPG = (RHO3(J) - RHO4(J)) / P(J) * 500.0D0
+
+    ! Capture for eos_dump; see EOSD_* in mod_atlas_data.
+    EOSD_DEDT(J)  = DEDT
+    EOSD_DRDT(J)  = DRDT
+    EOSD_DEDPG(J) = DEDPG
+    EOSD_DRDPG(J) = DRDPG
+    EOSD_ETP(J)   = EDENS1(J)
+    EOSD_ETM(J)   = EDENS2(J)
 
     ! Thermodynamic quantities, ignoring P_turb and assuming P_rad ∝ T⁴
     DPDPG = 1.0D0

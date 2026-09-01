@@ -177,6 +177,11 @@ PROGRAM ATLAS12
           WRITE(6, '(A)') '   valid modes: off legacy transactional'
           CALL EXIT(1)
         END SELECT
+      CASE ('eos_dump')
+        ! Diagnostic: after the first CONVEC, write the equation-of-state
+        ! derivative chain per depth and exit without iterating.  Paired with
+        ! molecules=on/off it compares the two EOS paths on one structure.
+        EOS_DUMP_FILE = TRIM(val)
       CASE ('molecules')
         ! Override the Teff gate that selects the equation-of-state path.
         ! 'auto' keeps the TEFF_MOLEC_LIMIT rule; 'on'/'off' pin IFMOL so
@@ -720,6 +725,10 @@ PROGRAM ATLAS12
         CALL RADIAP(3, 0.0D0)
         CALL COMPUTE_HEIGHT
         IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC(.FALSE.)
+        IF (LEN_TRIM(EOS_DUMP_FILE) .GT. 0) THEN
+          CALL WRITE_EOS_DUMP
+          CALL EXIT(0)
+        END IF
         IF (IFCORR .EQ. 1)  CALL TCORR(3, 0.0D0)
         IF (EARLY_STOP_REQUESTED) THEN
           WRITE(6, '(A,I0,A)') ' EARLY_STOP iteration=', ITERAT, &
@@ -820,6 +829,7 @@ CONTAINS
     WRITE(6, '(A)') '  zscale=X     Metal abundance scale factor (default: no scaling)'
     WRITE(6, '(A)') '  heabnd=X     He number fraction Y; H = 1 - Y - Z (default: from model)'
     WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'
+    WRITE(6, '(A)') '  eos_dump=F   Write the EOS derivative chain to F after CONVEC, then exit'
     WRITE(6, '(A)') '  molecules=M  EOS path: auto, on, off (default auto = Teff gate)'
     WRITE(6, '(A)') '               (on = NMOLEC network; off = Saha/NELECT to stage X)'
     WRITE(6, '(A)') '  czc_polish=M Deep-CZ polish mode: off, legacy, transactional'
