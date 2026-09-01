@@ -1338,6 +1338,16 @@ MODULE mod_atlas_data
   ! before this change gave 7.71% at 10000 K where it now gives 6.52%).
   REAL(8), PARAMETER :: TEFF_MOLEC_LIMIT = 10000.0D0
 
+  ! CLI override for the gate above (molecules=auto|on|off).  AUTO keeps the
+  ! TEFF_MOLEC_LIMIT rule and is the default, so compiled-in behaviour is
+  ! unchanged.  ON/OFF pin IFMOL so the two regimes can be compared at a
+  ! single Teff -- the measurement that produced the table above was made by
+  ! rebuilding the executable, and so could not be reproduced afterwards.
+  INTEGER, PARAMETER :: MOLEC_MODE_AUTO = 0
+  INTEGER, PARAMETER :: MOLEC_MODE_ON   = 1
+  INTEGER, PARAMETER :: MOLEC_MODE_OFF  = 2
+  INTEGER :: MOLEC_MODE = MOLEC_MODE_AUTO
+
   ! --- Bookkeeping for ion stages molecules.dat does not list -----------
   ! MOLEC's atomic lookup has three outcomes: an exact code match uses the
   ! NMOLEC population, an element absent from the table falls through to
@@ -9243,12 +9253,14 @@ SUBROUTINE MOLZERO_REPORT
       WORST = RATIO
       NAME  = TRIM(ELSYM(MOLZERO_Z(K))) // ' ' // TRIM(ROMAN(MOLZERO_ION(K)))
     END IF
-    ! Full list only when asked for: one line is enough to act on, and this
-    ! condition is expected (and accepted) through the 8000-10000 K band.
-    IF (IDEBUG .EQ. 1) &
-      WRITE(6,'(A,A8,A,1PE9.2)') '          molecules.dat missing ', &
-        TRIM(ELSYM(MOLZERO_Z(K))) // ' ' // TRIM(ROMAN(MOLZERO_ION(K))), &
-        '   n(this)/n(below) = ', RATIO
+    ! List every offending stage, not just the worst.  The summary line
+    ! alone cannot tell a trace element with a large ratio (B IV) from an
+    ! abundant one with a small ratio, and only the latter can move the
+    ! opacity; deciding that needs the whole list.  It is at most a few
+    ! lines, and printed only when the run has already tripped the warning.
+    WRITE(6,'(A,A8,A,1PE9.2)') '          molecules.dat missing ', &
+      TRIM(ELSYM(MOLZERO_Z(K))) // ' ' // TRIM(ROMAN(MOLZERO_ION(K))), &
+      '   n(this)/n(below) = ', RATIO
   END DO
 
   IF (NBAD .GT. 0) &

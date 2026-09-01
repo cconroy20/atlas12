@@ -50,7 +50,7 @@ PROGRAM ATLAS12
   CHARACTER(256) :: ABUND_FILE
   CHARACTER(256) :: ABUND_LINE
   CHARACTER(32)  :: CMD_SOLAR
-  CHARACTER(16)  :: CMD_CZC_POLISH, CMD_EARLY_STOP
+  CHARACTER(16)  :: CMD_CZC_POLISH, CMD_EARLY_STOP, CMD_MOLECULES
   INTEGER        :: NARGS, IEQPOS, ISTAT, IPOSARG
   REAL(8)        :: VTURB_KMS
   REAL(8)        :: CMD_TEFF, CMD_LOGG
@@ -98,6 +98,7 @@ PROGRAM ATLAS12
   CMD_SOLAR  = ''
   CMD_CZC_POLISH = 'legacy'
   CMD_EARLY_STOP = 'off'
+  CMD_MOLECULES  = 'auto'
   INPUT_MODEL_FILE = ''
   NUMITS     = 30
   VTURB_KMS  = -1.0D0    ! sentinel: not set
@@ -174,6 +175,27 @@ PROGRAM ATLAS12
         CASE DEFAULT
           WRITE(6, '(A,A)') ' ERROR: unknown czc_polish mode: ', TRIM(val)
           WRITE(6, '(A)') '   valid modes: off legacy transactional'
+          CALL EXIT(1)
+        END SELECT
+      CASE ('molecules')
+        ! Override the Teff gate that selects the equation-of-state path.
+        ! 'auto' keeps the TEFF_MOLEC_LIMIT rule; 'on'/'off' pin IFMOL so
+        ! the two regimes can be A/B'd at one Teff.  See TEFF_MOLEC_LIMIT.
+        DO J = 1, LEN_TRIM(val)
+          IF (val(J:J) .GE. 'A' .AND. val(J:J) .LE. 'Z') &
+            val(J:J) = CHAR(ICHAR(val(J:J)) + 32)
+        END DO
+        CMD_MOLECULES = TRIM(val)
+        SELECT CASE (TRIM(CMD_MOLECULES))
+        CASE ('auto')
+          MOLEC_MODE = MOLEC_MODE_AUTO
+        CASE ('on')
+          MOLEC_MODE = MOLEC_MODE_ON
+        CASE ('off')
+          MOLEC_MODE = MOLEC_MODE_OFF
+        CASE DEFAULT
+          WRITE(6, '(A,A)') ' ERROR: unknown molecules mode: ', TRIM(val)
+          WRITE(6, '(A)') '   valid modes: auto on off'
           CALL EXIT(1)
         END SELECT
       CASE ('czc_nheal'); READ(val, *, IOSTAT=ISTAT) CZC_POL_NHEAL
@@ -470,7 +492,14 @@ PROGRAM ATLAS12
     ! See TEFF_MOLEC_LIMIT in mod_atlas_data for why these are two regimes
     ! rather than a feature toggle.  Must follow SCALE_MODEL, so that a
     ! teff= override picks the path for the Teff actually being computed.
-    IF (TEFF .GT. TEFF_MOLEC_LIMIT) IFMOL = 0
+    SELECT CASE (MOLEC_MODE)
+    CASE (MOLEC_MODE_ON)
+      IFMOL = 1
+    CASE (MOLEC_MODE_OFF)
+      IFMOL = 0
+    CASE DEFAULT
+      IF (TEFF .GT. TEFF_MOLEC_LIMIT) IFMOL = 0
+    END SELECT
 
     ! --- Echo run parameters (resolved values after CLI/model merge) ---
     ! Mirrors SYNTHE's input-echo style.  All values are final at this
@@ -500,6 +529,9 @@ PROGRAM ATLAS12
       WRITE(6,'(A,I6,A)') '  molecules        =   off   (Teff > ', &
         INT(TEFF_MOLEC_LIMIT), ' K: Saha/NELECT, ion stages to X)'
     END IF
+    IF (MOLEC_MODE .NE. MOLEC_MODE_AUTO) &
+      WRITE(6,'(A,A,A)')  '  molecules mode   = ', TRIM(CMD_MOLECULES), &
+        '   (CLI override; Teff gate bypassed)'
     IF (LEN_TRIM(CMD_SOLAR) .GT. 0) &
       WRITE(6,'(A,A,A)')    '  solar scale      = ', TRIM(CMD_SOLAR), '   (CLI override)'
     IF (IQUAD .NE. 0) &
@@ -788,6 +820,8 @@ CONTAINS
     WRITE(6, '(A)') '  zscale=X     Metal abundance scale factor (default: no scaling)'
     WRITE(6, '(A)') '  heabnd=X     He number fraction Y; H = 1 - Y - Z (default: from model)'
     WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'
+    WRITE(6, '(A)') '  molecules=M  EOS path: auto, on, off (default auto = Teff gate)'
+    WRITE(6, '(A)') '               (on = NMOLEC network; off = Saha/NELECT to stage X)'
     WRITE(6, '(A)') '  czc_polish=M Deep-CZ polish mode: off, legacy, transactional'
     WRITE(6, '(A)') '               (default legacy; transactional uses full-RT trial/rollback)'
     WRITE(6, '(A)') '  czc_nheal=N  Legacy terminal polish calls (default 8; 1..numit)'
