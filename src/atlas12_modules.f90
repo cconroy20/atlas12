@@ -1119,6 +1119,7 @@ MODULE mod_atlas_data
   REAL(8)  :: MIXLTH = 2.0d0, OVERWT = 0.0d0
   REAL(8)  :: FLXCNV0(kw), FLXCNV1(kw)
   INTEGER :: IFCONV = 1, NCONV = 30
+  LOGICAL :: CNVGAP_LOG = .FALSE.   ! cnvgap_log=on: trace CONVEC's gap fill
 
   ! --- NLTE departure coefficients ---
   REAL(8)  :: BHYD(kw, 6) = 1.0d0, BMIN(kw) = 1.0d0
@@ -11468,6 +11469,18 @@ SUBROUTINE CONVEC(MLT_ONLY)
         IF (FLXCNV(JA) .GT. 0.0D0 .AND. FLXCNV(JB) .GT. 0.0D0) THEN
           WGHT = dble(J - JA) / dble(JB - JA)
           FLXCNV(J) = FLXCNV(JA) * (1.0D0 - WGHT) + FLXCNV(JB) * WGHT
+          ! Diagnostic (cnvgap_log=on): record the topology of every gap the
+          ! fill bridges, so the interior-pocket and two-zone-bridge cases can
+          ! be told apart from data rather than by assertion.  One line per
+          ! filled layer per iteration.
+          IF (CNVGAP_LOG) WRITE(6, &
+            '(A,I4,A,I4,A,I4,A,I4,A,I4,A,F8.4,A,1PE10.3,A,1PE10.3,A,1PE10.3)') &
+            ' CNVGAP iter=', ITER, ' J=', J, ' JA=', JA, ' JB=', JB, &
+            ' width=', JB - JA - 1, &
+            ' del=', DLTDLP(J) - GRDADB(J), &
+            ' hrA=', FLXCNV(JA)/(FLXCNV(JA) + max(FLXRAD(JA), 1.0D-30)), &
+            ' hrB=', FLXCNV(JB)/(FLXCNV(JB) + max(FLXRAD(JB), 1.0D-30)), &
+            ' hrfill=', FLXCNV(J)/(FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
         END IF
       END IF
     END DO

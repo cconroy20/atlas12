@@ -177,6 +177,8 @@ PROGRAM ATLAS12
           WRITE(6, '(A)') '   valid modes: off legacy transactional'
           CALL EXIT(1)
         END SELECT
+      CASE ('cnvgap_log')
+        CNVGAP_LOG = (TRIM(val) .EQ. 'on')
       CASE ('eos_dump')
         ! Diagnostic: after the first CONVEC, write the equation-of-state
         ! derivative chain per depth and exit without iterating.  Paired with
