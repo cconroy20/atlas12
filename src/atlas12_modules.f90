@@ -1119,6 +1119,14 @@ MODULE mod_atlas_data
   REAL(8)  :: MIXLTH = 2.0d0, OVERWT = 0.0d0
   REAL(8)  :: FLXCNV0(kw), FLXCNV1(kw)
   INTEGER :: IFCONV = 1, NCONV = 30
+  ! Superadiabatic excess above which TCORR's sign-flip damping is applied
+  ! inside a convection zone.  Negative disables it (compiled-in default,
+  ! reproducing the historical skip exactly).  Set by cz_damp_del=X.
+  REAL(8) :: CZ_DAMP_DEL = -1.0D0
+  ! Least convective the bounding layers of a radiative gap may be for
+  ! CONVEC's fill to treat it as an interior pocket of one convection zone
+  ! rather than a bridge between two.  Measured, not chosen: see the fill.
+  REAL(8), PARAMETER :: CNV_GAP_HR_MIN = 0.1D0
   LOGICAL :: CNVGAP_LOG = .FALSE.   ! cnvgap_log=on: trace CONVEC's gap fill
 
   ! --- NLTE departure coefficients ---
@@ -2858,7 +2866,22 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! they made the deep CZ susceptible to bistable fixed points.
   DO J = 1, NRHOX
     IF (IFCONV .EQ. 1 .AND. HRATIO(J) .GT. 0.0D0) THEN
-      ! Convective layer: skip damping
+      ! Convective layer: skip damping.
+      !
+      ! Experiment (cz_damp_del=X, default off).  The skip above is written
+      ! for the deep EFFICIENT convection zone, where nabla approaches
+      ! nabla_ad and accelerating a layer can move it to a different fixed
+      ! point than its neighbours.  Inefficient convection near the top of a
+      ! zone is a different regime: there nabla greatly exceeds nabla_ad, and
+      ! the undamped step supports a period-2 limit cycle (measured at the top
+      ! of the He II zone of an A star: T alternating over 4.6 K, flux error
+      ! +1.4/-1.8 percent about a mean of -0.19 percent).  When X > 0, re-enable
+      ! the sign-flip damping ONLY, and only where the superadiabatic excess
+      ! exceeds X, which excludes the efficient regime the skip protects.
+      ! Acceleration is never re-enabled here.
+      IF (CZ_DAMP_DEL .GT. 0.0D0 .AND. ITER .GT. 1 .AND. &
+          DLTDLP(J) - GRDADB(J) .GT. CZ_DAMP_DEL .AND. &
+          OLDT1(J) * T1(J) .LT. 0.0D0) T1(J) = T1(J) * 0.5D0
     ELSE IF (IFCONV .EQ. 1 .AND. J .GE. NRHOX/3) THEN
       ! Deep enough that damping shouldn't be applied
     ELSE IF (ITER .EQ. 1) THEN
@@ -10960,6 +10983,8 @@ SUBROUTINE CONVEC(MLT_ONLY)
   REAL(8) :: SAVXNH2(kw)
   REAL(8) :: SAVXNMOL(kw, maxmol), SAVXNFPMOL(kw, maxmol)
   REAL(8) :: DILUT(kw)                 ! dilution factor 1 - exp(-τ_Ross)
+  REAL(8) :: FLXPRE(kw)                ! F_conv before the gap fill
+  REAL(8) :: HRGA, HRGB                ! bounding-layer convective fractions
 
   REAL(8) :: DTDRHX(kw)    ! dT/d(RHOX) from DERIV
   REAL(8) :: ABCONV(kw)    ! convective opacity (harmonic mean at T±ΔT)
@@ -11055,7 +11080,7 @@ SUBROUTINE CONVEC(MLT_ONLY)
 
   ! --- Other locals ---
   INTEGER :: J
-  INTEGER :: JTOP, JBOT, JA, JB  ! gap-filling indices
+  INTEGER :: JTOP, JBOT, JA, JB, K  ! gap-filling indices
   REAL(8)  :: WGHT                 ! interpolation weight
 
   ! --- External functions ---
@@ -11455,34 +11480,55 @@ SUBROUTINE CONVEC(MLT_ONLY)
     END IF
   END DO
   IF (JTOP .GT. 0 .AND. JBOT .GT. JTOP + 1) THEN
-    DO J = JTOP + 1, JBOT - 1
-      IF (FLXCNV(J) .EQ. 0.0D0) THEN
-        ! Linear interpolation between nearest convective neighbours.
-        JA = J - 1
-        DO WHILE (JA .GT. JTOP .AND. FLXCNV(JA) .EQ. 0.0D0)
-          JA = JA - 1
-        END DO
-        JB = J + 1
-        DO WHILE (JB .LT. JBOT .AND. FLXCNV(JB) .EQ. 0.0D0)
-          JB = JB + 1
-        END DO
-        IF (FLXCNV(JA) .GT. 0.0D0 .AND. FLXCNV(JB) .GT. 0.0D0) THEN
-          WGHT = dble(J - JA) / dble(JB - JA)
-          FLXCNV(J) = FLXCNV(JA) * (1.0D0 - WGHT) + FLXCNV(JB) * WGHT
-          ! Diagnostic (cnvgap_log=on): record the topology of every gap the
-          ! fill bridges, so the interior-pocket and two-zone-bridge cases can
-          ! be told apart from data rather than by assertion.  One line per
-          ! filled layer per iteration.
-          IF (CNVGAP_LOG) WRITE(6, &
-            '(A,I4,A,I4,A,I4,A,I4,A,I4,A,F8.4,A,1PE10.3,A,1PE10.3,A,1PE10.3)') &
-            ' CNVGAP iter=', ITER, ' J=', J, ' JA=', JA, ' JB=', JB, &
-            ' width=', JB - JA - 1, &
-            ' del=', DLTDLP(J) - GRDADB(J), &
-            ' hrA=', FLXCNV(JA)/(FLXCNV(JA) + max(FLXRAD(JA), 1.0D-30)), &
-            ' hrB=', FLXCNV(JB)/(FLXCNV(JB) + max(FLXRAD(JB), 1.0D-30)), &
-            ' hrfill=', FLXCNV(J)/(FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
-        END IF
+    ! Decide per GAP, not per layer, and decide it from the pre-fill profile.
+    ! Two reasons.  The fill is a statement about one convection zone, so the
+    ! unit of decision is the gap.  And the original loop let JA walk onto
+    ! layers it had just written, so after the first filled layer it was
+    ! reading its own output -- which also made the trace hard to interpret.
+    !
+    ! The gate is the convective fraction of the two bounding layers.  A gap
+    ! inside a real zone is bounded by strongly convective layers; a gap that
+    ! bridges two disjoint zones is bounded by layers that are barely
+    ! convective at all.  Measured over 28 models, 12 iterations each
+    ! (cnvgap_log; see docs/HOT_BAND_DEEP_FLUX_DIAGNOSIS_V1.md), the two
+    ! populations are separated by a factor of 58 in this quantity:
+    !
+    !   load-bearing  2500/5.00 0.999, 2800/5.00 0.998, 3000/4.50 0.845
+    !   negligible    every other model, <= 0.0147 (hot band, both controls,
+    !                 2800/3.50, 3500/5.00, the metal-rich sentinel)
+    !
+    ! CNV_GAP_HR_MIN sits between them with ~7x margin either way.  Models
+    ! from 4000 K to 6250 K never enter this code at all -- they produce no
+    ! gaps -- so the gate cannot affect them.
+    FLXPRE(1:NRHOX) = FLXCNV(1:NRHOX)
+    J = JTOP + 1
+    DO WHILE (J .LE. JBOT - 1)
+      IF (FLXPRE(J) .GT. 0.0D0) THEN
+        J = J + 1
+        CYCLE
       END IF
+      JA = J - 1
+      JB = J
+      DO WHILE (JB .LE. JBOT - 1 .AND. FLXPRE(JB) .EQ. 0.0D0)
+        JB = JB + 1
+      END DO
+      IF (FLXPRE(JA) .GT. 0.0D0 .AND. FLXPRE(JB) .GT. 0.0D0) THEN
+        HRGA = FLXPRE(JA) / (FLXPRE(JA) + max(FLXRAD(JA), 1.0D-30))
+        HRGB = FLXPRE(JB) / (FLXPRE(JB) + max(FLXRAD(JB), 1.0D-30))
+        IF (max(HRGA, HRGB) .GT. CNV_GAP_HR_MIN) THEN
+          DO K = JA + 1, JB - 1
+            WGHT = dble(K - JA) / dble(JB - JA)
+            FLXCNV(K) = FLXPRE(JA) * (1.0D0 - WGHT) + FLXPRE(JB) * WGHT
+          END DO
+        END IF
+        IF (CNVGAP_LOG) WRITE(6, &
+          '(A,I4,A,I4,A,I4,A,I4,A,L2,A,1PE10.3,A,1PE10.3)') &
+          ' CNVGAP iter=', ITER, ' JA=', JA, ' JB=', JB, &
+          ' width=', JB - JA - 1, &
+          ' filled=', max(HRGA, HRGB) .GT. CNV_GAP_HR_MIN, &
+          ' hrA=', HRGA, ' hrB=', HRGB
+      END IF
+      J = JB
     END DO
   END IF
 

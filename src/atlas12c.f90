@@ -177,6 +177,7 @@ PROGRAM ATLAS12
           WRITE(6, '(A)') '   valid modes: off legacy transactional'
           CALL EXIT(1)
         END SELECT
+      CASE ('cz_damp_del'); READ(val, *, IOSTAT=ISTAT) CZ_DAMP_DEL
       CASE ('cnvgap_log')
         CNVGAP_LOG = (TRIM(val) .EQ. 'on')
       CASE ('eos_dump')
