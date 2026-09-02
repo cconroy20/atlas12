@@ -307,7 +307,7 @@ python3 scripts/run_atlas12_model.py --teff 3500 --logg 1.0 --feh 0 --afe 0 \
 
 ```
 export ATLAS12=/path/to/atlas12/
-synthe.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>] [more_output=<yes|no>]
+synthe.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>] [more_output=<yes|no>] [dump_lines=<yes|no>]
 ```
 
 The merged executable performs line-list construction, continuum opacity
@@ -327,7 +327,8 @@ Arguments:
 | `wlend=<nm>`          | yes      | End wavelength in nanometers (> wlbeg) |
 | `resolu=<R>`          | no       | Resolving power λ/Δλ (default 300 000) |
 | `turbv=<kms>`         | no       | Microturbulence in km/s. If > 0, **replaces** the model atmosphere's microturbulence at all depths; if omitted or ≤ 0 (default 0.0), the per-layer value from the input model is used |
-| `more_output=<yes\|no>` | no     | If yes, also write `.linform` and `.mol` diagnostic files (default no).  Accepted truthy values: `yes`, `true`, `1`, `on`, `y` (case-insensitive); falsy: `no`, `false`, `0`, `off`, `n`. |
+| `more_output=<yes\|no>` | no     | If yes, also write `.linform`, `.mol` and `.lines` diagnostic files (default no).  Accepted truthy values: `yes`, `true`, `1`, `on`, `y` (case-insensitive); falsy: `no`, `false`, `0`, `off`, `n`. |
+| `dump_lines=<yes\|no>` | yes    | Only consulted when `more_output` is on.  Set no to suppress `.lines` while keeping `.linform` and `.mol`: the used-line dump is ~1 GB for a 25 nm window with the full list, against ~13 MB for the `.linform`, so it dominates the cost whenever the optical depths are what is wanted. |
 | `falcorr=<file>`      | no       | Apply FAL per-line corrections to wavelength, log gf and vdW width from this catalog (default none).  See "FAL line corrections" below |
 | `falcorr_strict=<yes\|no>` | no  | `yes` (default): stop if an atomic catalog line in the window is not found in the line list; `no`: warn and continue |
 
@@ -345,7 +346,7 @@ Output files:
 | `<base>.linform`  | only if `more_output=yes` | Per-wavelength diagnostic: wavelength, emergent H, surface H, monochromatic optical depth at each atmospheric layer |
 | `<base>.mol`      | only if `more_output=yes` | Molecular number-density diagnostics vs. depth for all species tracked by the equation of state |
 | `<base>.nlte`       | only if `NLTE_MODE` /= 0   | Per-(transition, depth) departure coefficients and the opacity/source-function factors derived from them; see "Departure coefficients" above |
-| `<base>.lines`      | only if `more_output=yes` | Line list for all lines used in synthesis. Columns are: LTE/NLTE, vacuum wavelengths (Å), species code, nelion (internal species identifier), ELO, cgf (strength indicator), gamma_rad, gamma_stark, gamma_vdW |
+| `<base>.lines`      | only if `more_output=yes` and `dump_lines=yes` | Line list for all lines used in synthesis. Columns are: LTE/NLTE, vacuum wavelengths (Å), species code, nelion (internal species identifier), ELO, cgf (strength indicator), gamma_rad, gamma_stark, gamma_vdW |
 
 Wavelengths are handled internally in nanometers on a logarithmic grid
 with spacing `ratio = 1 + 1/resolu`; vacuum wavelengths are used

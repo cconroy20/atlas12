@@ -104,8 +104,8 @@ PROGRAM SYNTHE
 
   CHARACTER(LEN=*), PARAMETER :: USAGE = &
     ' Usage: synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> ' // &
-    '[resolu=<R>] [turbv=<kms>] [more_output=yes|no] [falcorr=<file>] ' // &
-    '[falcorr_strict=yes|no]'
+    '[resolu=<R>] [turbv=<kms>] [more_output=yes|no] [dump_lines=yes|no] ' // &
+    '[falcorr=<file>] [falcorr_strict=yes|no]'
 
   ! --- Fixed run parameters (formerly read from fort.93 / SYNBEG) -------
   !   ifvac = 1 : vacuum wavelengths throughout
@@ -117,6 +117,9 @@ PROGRAM SYNTHE
   ! --- Run parameters set from CLI --------------------------------------
   REAL(4)   :: turbv
   LOGICAL   :: more_output   ! print .mol (molecular densities) and .linform (tau tables)
+  LOGICAL   :: dump_lines    ! part of more_output; separable because the used-line
+                             ! dump is ~1 GB for a 25 nm window with the full list,
+                             ! while .linform for the same window is a few MB
   CHARACTER(LEN=512) :: falcorr_file   ! FAL line-correction catalog, '' = none
 
   ! --- Model atmosphere header ------------------------------------------
@@ -222,6 +225,7 @@ PROGRAM SYNTHE
   wlbeg       = 0.0D0    ! sentinel
   wlend       = 0.0D0    ! sentinel
   more_output = .FALSE.
+  dump_lines  = .TRUE.    ! so more_output=yes alone behaves exactly as before
   falcorr_file = ''
 
   DO i = 2, COMMAND_ARGUMENT_COUNT()
@@ -256,6 +260,17 @@ PROGRAM SYNTHE
             more_output = .FALSE.
           CASE DEFAULT
             WRITE(6,'(A,A)') ' ERROR: more_output expects yes/no, got: ', &
+              TRIM(tmparg(eqpos+1:))
+            CALL EXIT(1)
+        END SELECT
+      CASE ('dump_lines')
+        SELECT CASE (TRIM(ADJUSTL(tmparg(eqpos+1:))))
+          CASE ('yes', 'YES', 'true', 'TRUE', '1', 'on', 'ON', 'y', 'Y')
+            dump_lines = .TRUE.
+          CASE ('no', 'NO', 'false', 'FALSE', '0', 'off', 'OFF', 'n', 'N')
+            dump_lines = .FALSE.
+          CASE DEFAULT
+            WRITE(6,'(A,A)') ' ERROR: dump_lines expects yes/no, got: ', &
               TRIM(tmparg(eqpos+1:))
             CALL EXIT(1)
         END SELECT
@@ -408,7 +423,7 @@ PROGRAM SYNTHE
 
   ! Optional: dump the assembled "used lines" to an ASCII file for external
   ! linelist validation (e.g., cross-checking the Korg master linelist).
-  IF (more_output) CALL dump_used_lines()
+  IF (more_output .AND. dump_lines) CALL dump_used_lines()
 
   ! --- Copy module state into local working arrays ---------------------
   nrhox = nrhox_a
