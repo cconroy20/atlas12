@@ -1123,10 +1123,25 @@ MODULE mod_atlas_data
   ! inside a convection zone.  Negative disables it (compiled-in default,
   ! reproducing the historical skip exactly).  Set by cz_damp_del=X.
   REAL(8) :: CZ_DAMP_DEL = -1.0D0
-  ! Least convective the bounding layers of a radiative gap may be for
-  ! CONVEC's fill to treat it as an interior pocket of one convection zone
-  ! rather than a bridge between two.  Measured, not chosen: see the fill.
-  REAL(8), PARAMETER :: CNV_GAP_HR_MIN = 0.1D0
+  ! Rejected gate, retained for A/B work only.  Gating on how convective the
+  ! layers bounding the gap are separates load-bearing zones from bridges by
+  ! 58x across models, but not within one model: 2800/5.00's own gaps span
+  ! 0.007 to 0.998, so any threshold gates it partially and start-dependently.
+  ! Paired against historical across four starting decks, 0.1 degraded it
+  ! (deltas 0.00, +0.12, +6.41, +6.65 percent) and 0.05 was mixed.  Default 0
+  ! fills every gap, leaving the gate below as the only criterion.  Settable
+  ! as cnv_gap_hr=X; any value above 1 refuses every gap.
+  REAL(8) :: CNV_GAP_HR_MIN = 0.0D0
+  ! The shipped gate: the most stable layer inside the gap.  A gap is bridged
+  ! only if every layer in it is less subadiabatic than this, so a fill cannot
+  ! reach across a genuinely stable interior.  Measured from gap-topology
+  ! traces spanning 2500-10250 K: hot-band bridges are refused 93-100 percent
+  ! of the time, while 2800/5.00 is bit-identical to historical from three of
+  ! four starting decks and improves 4.7x from the fourth.  -0.02 and -0.03
+  ! give identical output on every case tested, so the threshold is not a
+  ! knife edge; -0.03 is shipped for margin above 2800/5.00's -0.0191.
+  ! Settable as cnv_gap_del=X; -1D30 fills every gap.
+  REAL(8) :: CNV_GAP_DEL_MIN = -3.0D-2
   LOGICAL :: CNVGAP_LOG = .FALSE.   ! cnvgap_log=on: trace CONVEC's gap fill
 
   ! --- NLTE departure coefficients ---
@@ -10985,6 +11000,8 @@ SUBROUTINE CONVEC(MLT_ONLY)
   REAL(8) :: DILUT(kw)                 ! dilution factor 1 - exp(-τ_Ross)
   REAL(8) :: FLXPRE(kw)                ! F_conv before the gap fill
   REAL(8) :: HRGA, HRGB                ! bounding-layer convective fractions
+  REAL(8) :: DELMIN                    ! most stable layer inside the gap
+  LOGICAL :: FILLIT                    ! gate verdict for the current gap
 
   REAL(8) :: DTDRHX(kw)    ! dT/d(RHOX) from DERIV
   REAL(8) :: ABCONV(kw)    ! convective opacity (harmonic mean at T±ΔT)
@@ -11486,20 +11503,26 @@ SUBROUTINE CONVEC(MLT_ONLY)
     ! layers it had just written, so after the first filled layer it was
     ! reading its own output -- which also made the trace hard to interpret.
     !
-    ! The gate is the convective fraction of the two bounding layers.  A gap
-    ! inside a real zone is bounded by strongly convective layers; a gap that
-    ! bridges two disjoint zones is bounded by layers that are barely
-    ! convective at all.  Measured over 28 models, 12 iterations each
-    ! (cnvgap_log; see docs/HOT_BAND_DEEP_FLUX_DIAGNOSIS_V1.md), the two
-    ! populations are separated by a factor of 58 in this quantity:
+    ! The gate is the most stable layer inside the gap.  Interpolating
+    ! convective flux across a layer that is genuinely stable is what breaks
+    ! the hot band: A-type atmospheres carry two disjoint zones (He II near
+    ! log tau 0.4-1.1 and one at the base near 2.9-3.0), the fill bridges up
+    ! to 44 stable layers between them, and TCORR then treats those layers as
+    ! convective, forms a negative superadiabatic excess, and clamps on
+    ! DEL_FLOOR -- suppressing the flux-constancy correction by ~1e6.
     !
-    !   load-bearing  2500/5.00 0.999, 2800/5.00 0.998, 3000/4.50 0.845
-    !   negligible    every other model, <= 0.0147 (hot band, both controls,
-    !                 2800/3.50, 3500/5.00, the metal-rich sentinel)
+    ! Measured over 28 models, 12 iterations each (cnvgap_log; see
+    ! docs/HOT_BAND_DEEP_FLUX_DIAGNOSIS_V1.md), then confirmed by paired runs
+    ! against the unmodified build: hot-band bridges are refused 93-100
+    ! percent of the time and 8750/4.00 and 9500/4.00 converge where they
+    ! previously ran out of iterations at ~7 percent flux error.  Cool dwarfs
+    ! are untouched -- 2800/5.00 is bit-identical from three of four starting
+    ! decks, and improves 4.7x from the fourth.
     !
-    ! CNV_GAP_HR_MIN sits between them with ~7x margin either way.  Models
-    ! from 4000 K to 6250 K never enter this code at all -- they produce no
-    ! gaps -- so the gate cannot affect them.
+    ! Note this is a gate on the gap, not on the fill's own output: a pocket
+    ! that is genuinely inside one zone stays only mildly subadiabatic, so it
+    ! is still bridged.  Models from 4000 K to 6250 K never enter this code
+    ! at all -- they produce no gaps -- so the gate cannot affect them.
     FLXPRE(1:NRHOX) = FLXCNV(1:NRHOX)
     J = JTOP + 1
     DO WHILE (J .LE. JBOT - 1)
@@ -11515,18 +11538,24 @@ SUBROUTINE CONVEC(MLT_ONLY)
       IF (FLXPRE(JA) .GT. 0.0D0 .AND. FLXPRE(JB) .GT. 0.0D0) THEN
         HRGA = FLXPRE(JA) / (FLXPRE(JA) + max(FLXRAD(JA), 1.0D-30))
         HRGB = FLXPRE(JB) / (FLXPRE(JB) + max(FLXRAD(JB), 1.0D-30))
-        IF (max(HRGA, HRGB) .GT. CNV_GAP_HR_MIN) THEN
+        DELMIN = 0.0D0
+        DO K = JA + 1, JB - 1
+          DELMIN = min(DELMIN, DLTDLP(K) - GRDADB(K))
+        END DO
+        FILLIT = max(HRGA, HRGB) .GT. CNV_GAP_HR_MIN .AND. &
+                 DELMIN .GT. CNV_GAP_DEL_MIN
+        IF (FILLIT) THEN
           DO K = JA + 1, JB - 1
             WGHT = dble(K - JA) / dble(JB - JA)
             FLXCNV(K) = FLXPRE(JA) * (1.0D0 - WGHT) + FLXPRE(JB) * WGHT
           END DO
         END IF
         IF (CNVGAP_LOG) WRITE(6, &
-          '(A,I4,A,I4,A,I4,A,I4,A,L2,A,1PE10.3,A,1PE10.3)') &
+          '(A,I4,A,I4,A,I4,A,I4,A,L2,A,1PE10.3,A,1PE10.3,A,1PE11.3)') &
           ' CNVGAP iter=', ITER, ' JA=', JA, ' JB=', JB, &
           ' width=', JB - JA - 1, &
-          ' filled=', max(HRGA, HRGB) .GT. CNV_GAP_HR_MIN, &
-          ' hrA=', HRGA, ' hrB=', HRGB
+          ' filled=', FILLIT, &
+          ' hrA=', HRGA, ' hrB=', HRGB, ' delmin=', DELMIN
       END IF
       J = JB
     END DO

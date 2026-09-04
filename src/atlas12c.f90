@@ -177,6 +177,8 @@ PROGRAM ATLAS12
           WRITE(6, '(A)') '   valid modes: off legacy transactional'
           CALL EXIT(1)
         END SELECT
+      CASE ('cnv_gap_del'); READ(val, *, IOSTAT=ISTAT) CNV_GAP_DEL_MIN
+      CASE ('cnv_gap_hr'); READ(val, *, IOSTAT=ISTAT) CNV_GAP_HR_MIN
       CASE ('cz_damp_del'); READ(val, *, IOSTAT=ISTAT) CZ_DAMP_DEL
       CASE ('cnvgap_log')
         CNVGAP_LOG = (TRIM(val) .EQ. 'on')
@@ -835,6 +837,13 @@ CONTAINS
     WRITE(6, '(A)') '  eos_dump=F   Write the EOS derivative chain to F after CONVEC, then exit'
     WRITE(6, '(A)') '  molecules=M  EOS path: auto, on, off (default auto = Teff gate)'
     WRITE(6, '(A)') '               (on = NMOLEC network; off = Saha/NELECT to stage X)'
+    WRITE(6, '(A)') '  cnv_gap_del=X CONVEC gap fill: bridge only if every layer in the gap'
+    WRITE(6, '(A)') '               has (grad - grad_ad) > X (default -0.03; -1D30 fills all)'
+    WRITE(6, '(A)') '  cnv_gap_hr=X Rejected gap gate on bounding-layer F_conv fraction'
+    WRITE(6, '(A)') '               (default 0 = inert; retained for A/B work only)'
+    WRITE(6, '(A)') '  cz_damp_del=X Re-enable TCORR sign-flip damping where the superadiabatic'
+    WRITE(6, '(A)') '               excess exceeds X (default -1 = off, historical skip)'
+    WRITE(6, '(A)') '  cnvgap_log=on Trace every gap CONVEC considers filling'
     WRITE(6, '(A)') '  czc_polish=M Deep-CZ polish mode: off, legacy, transactional'
     WRITE(6, '(A)') '               (default legacy; transactional uses full-RT trial/rollback)'
     WRITE(6, '(A)') '  czc_nheal=N  Legacy terminal polish calls (default 8; 1..numit)'
