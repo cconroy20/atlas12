@@ -530,6 +530,22 @@ PROGRAM ATLAS12
     END IF
     WRITE(6,'(A,F5.2)')  '  mlt              = ', MIXLTH
     WRITE(6,'(A,F5.2)')  '  vturb (km/s)     = ', VTURB(1) * 1.0D-5
+    ! Always reported.  These select which physics a run used, so a log that
+    ! omits them cannot be audited afterwards -- and an A/B whose arms differ
+    ! only in these values would leave no record of which arm produced what.
+    IF (CNV_GAP_DEL_MIN .LE. -1.0D29) THEN
+      WRITE(6,'(A)')     '  cnv gap gate     =  off   (fill every radiative gap)'
+    ELSE
+      WRITE(6,'(A,1PE10.3)') '  cnv gap gate     = ', CNV_GAP_DEL_MIN
+    END IF
+    IF (CNV_GAP_HR_MIN .GT. 0.0D0) &
+      WRITE(6,'(A,F6.3,A)') '  cnv gap hr min   = ', CNV_GAP_HR_MIN, &
+        '   (rejected gate; normally 0)'
+    IF (CZ_DAMP_DEL .GT. 0.0D0) THEN
+      WRITE(6,'(A,F6.3)')   '  cz damping       = ', CZ_DAMP_DEL
+    ELSE
+      WRITE(6,'(A)')     '  cz damping       =  off   (historical CZ skip)'
+    END IF
     WRITE(6,'(A,I5)')    '  teff (K)         = ', INT(TEFF)
     WRITE(6,'(A,F5.2)')  '  logg             = ', GLOG
     IF (IFMOL .EQ. 1) THEN
