@@ -1360,20 +1360,39 @@ MODULE mod_atlas_data
   ! hilines contributes 87k selected lines at 15000 K, 1.03M at 25000 K and
   ! 5.34M at 45000 K, none of which had ever entered a model.
   !
-  ! The value is measured, not chosen for roundness.  Running each Teff both
-  ! ways (molecules off vs on, log g 4.5, 30 iterations) gives:
+  ! The value is measured, not chosen for roundness.  Re-measured after the
+  ! ENERGY_DENSITY defect on the IFMOL=0 path was fixed, because the original
+  ! table was taken with GRDADB ~ 0.99 on the off arm -- it was measuring
+  ! convection being suppressed, not the EOS path, and both its columns were
+  ! wrong by one to two orders of magnitude.  Log g 4.5, 30 iterations, early
+  ! stop off, molecules=on vs off via the CLI (no rebuild):
   !
-  !   Teff     photospheric cost of molecules=off      deep flux error on->off
-  !   8000     max |dT| 3749 K, rms 692 K, -0.66%      7.56% -> 1.46%
-  !   9000     max |dT|  157 K, rms 38.5 K, -0.148%    7.05% -> 0.134%
-  !  10000     max |dT|  0.4 K, rms  0.1 K, +0.002%    6.52% -> 0.060%
+  !   Teff    max|dT|   rms dT   max|dT| at tau<1   max|flux| on -> off
+  !   8000      58.7 K   10.6 K             7.5 K   5.38% -> 4.81%
+  !   9000      20.6 K    2.9 K             3.3 K   1.05% -> 0.92%
+  !   9250      29.7 K    3.4 K             0.7 K   0.54% -> 0.50%
+  !   9500      38.0 K    5.2 K             0.2 K   0.26% -> 0.14%
+  !   9750      42.8 K    5.1 K             0.3 K   0.07% -> 0.08%
+  !  10250      32.7 K    4.6 K             0.1 K   0.26% -> 0.22%
   !
-  ! The transition is sharp between 9000 and 10000 K: molecules still set
-  ! the structure at 9000 K and are irrelevant at 10000 K.  Lowering the
-  ! gate would cure the sub-photospheric convergence artifact in the
-  ! 8000-10000 K band at the price of a real photospheric error, which is
-  ! the wrong trade -- that artifact is pre-existing and mild (the code
-  ! before this change gave 7.71% at 10000 K where it now gives 6.52%).
+  ! GRDADB agrees between the two arms to three decimals at every Teff, which
+  ! is the check that both paths are now sound.  Peak FLXCNV/F_tot falls from
+  ! 0.933 at 8000 K to 0.022 at 10250 K, the expected weakening of convection
+  ! through the A stars.
+  !
+  ! Two conclusions differ from the original table.  There is no sharp
+  ! transition between 9000 and 10000 K: the whole-atmosphere max|dT| is flat
+  ! to rising across the range (20.6, 29.7, 38.0, 42.8 K), not collapsing to
+  ! 0.4 K.  What does fall monotonically is the photospheric cost, which is
+  ! the column that matters because that is where the lines form: 7.5 K at
+  ! 8000 K, 3.3 K at 9000 K, then 0.7 K and below from 9250 K up.
+  !
+  ! So the gate is not perched on a cliff; it sits well inside a region where
+  ! molecules are photospherically irrelevant.  It could move down to ~9250 K
+  ! on this evidence, affecting 315 grid models, but the gain would be small
+  ! -- stages VI and above are negligibly populated in a 9250 K photosphere,
+  ! so little of hilines.bin would actually contribute -- against a real if
+  ! minor photospheric cost.  Left at 10000 K, now on valid numbers.
   REAL(8), PARAMETER :: TEFF_MOLEC_LIMIT = 10000.0D0
 
   ! CLI override for the gate above (molecules=auto|on|off).  AUTO keeps the
