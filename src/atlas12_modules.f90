@@ -1509,7 +1509,14 @@ MODULE mod_atlas_data
   REAL(8)  :: ISOTOPE(10, 2, mion)
 
   ! --- Iteration control ---
-  INTEGER :: ITER, ifprnt(60) = 2, ifpnch(60) = 0, NUMITS = 0
+  ! IFPRNT and IFPNCH are indexed by iteration number and written across
+  ! 1..NUMITS, so their extent is the hard ceiling on numit.  Named rather than
+  ! repeated as a literal because atlas12c.f90 validates numit against the same
+  ! bound: if the two ever disagree, the DO I = 1, NUMITS loop that initialises
+  ! them writes past the end of both arrays with no diagnostic.
+  INTEGER, PARAMETER :: max_iterations = 200
+  INTEGER :: ITER, ifprnt(max_iterations) = 2, ifpnch(max_iterations) = 0, &
+             NUMITS = 0
 
   ! Phase-aware early stopping.  Only ordinary TCORR mode-3 evaluations
   ! contribute to the streak; polish trials and final verification passes do

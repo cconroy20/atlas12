@@ -254,12 +254,14 @@ PROGRAM ATLAS12
     END BLOCK
   END DO
 
-  IF (NUMITS .LT. 1 .OR. NUMITS .GT. 60) THEN
-    WRITE(6, '(A,I0)') ' ERROR: numit must lie in 1..60; got ', NUMITS
+  IF (NUMITS .LT. 1 .OR. NUMITS .GT. max_iterations) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: numit must lie in 1..', max_iterations, &
+      '; got ', NUMITS
     CALL EXIT(1)
   END IF
-  IF (CZC_POL_NHEAL .LT. 1 .OR. CZC_POL_NHEAL .GT. 60) THEN
-    WRITE(6, '(A,I0)') ' ERROR: czc_nheal must lie in 1..60; got ', CZC_POL_NHEAL
+  IF (CZC_POL_NHEAL .LT. 1 .OR. CZC_POL_NHEAL .GT. max_iterations) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: czc_nheal must lie in 1..', &
+      max_iterations, '; got ', CZC_POL_NHEAL
     CALL EXIT(1)
   END IF
   IF (CZC_POLISH_MODE .EQ. CZC_POLISH_LEGACY .AND. &
@@ -268,12 +270,17 @@ PROGRAM ATLAS12
       CZC_POL_NHEAL, ' with numit=', NUMITS
     CALL EXIT(1)
   END IF
-  IF (EARLY_STOP_MIN_ITER .LT. 1 .OR. EARLY_STOP_MIN_ITER .GT. 60) THEN
-    WRITE(6, '(A,I0)') ' ERROR: minit must lie in 1..60; got ', EARLY_STOP_MIN_ITER
+  ! Both are counters compared against ITER and EARLY_STOP_STREAK, never array
+  ! indices, so they bound on max_iterations for consistency with numit rather
+  ! than on a literal that would forbid minit > 60 at numit=100.
+  IF (EARLY_STOP_MIN_ITER .LT. 1 .OR. EARLY_STOP_MIN_ITER .GT. max_iterations) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: minit must lie in 1..', max_iterations, &
+      '; got ', EARLY_STOP_MIN_ITER
     CALL EXIT(1)
   END IF
-  IF (EARLY_STOP_REQUIRED .LT. 1 .OR. EARLY_STOP_REQUIRED .GT. 60) THEN
-    WRITE(6, '(A,I0)') ' ERROR: conv_streak must lie in 1..60; got ', EARLY_STOP_REQUIRED
+  IF (EARLY_STOP_REQUIRED .LT. 1 .OR. EARLY_STOP_REQUIRED .GT. max_iterations) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: conv_streak must lie in 1..', &
+      max_iterations, '; got ', EARLY_STOP_REQUIRED
     CALL EXIT(1)
   END IF
   IF (EARLY_STOP_ENABLED .AND. EARLY_STOP_MIN_ITER .GT. NUMITS) THEN
