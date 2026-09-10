@@ -3007,8 +3007,8 @@ SUBROUTINE TCORR(MODE, RCOWT)
       '                  K        K       K       K       K', &
       '          %           %         %                            ', &
       '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-      (I3, F8.3, F10.1, 4F8.1, &
-       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+      (I3, 1X,F8.3, 1X,F10.1, 4(1X,F9.1), &
+       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 1X,ES11.3, 1X,F8.3, 1X,ES11.2, &
        1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
     FLUSH(66)
   END IF
@@ -3855,8 +3855,8 @@ SUBROUTINE CZC_POLISH(EMIT_RECORD, APPLIED)
       '                  K        K       K       K       K', &
       '          %           %         %                            ', &
       '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-      (I3, F8.3, F10.1, 4F8.1, &
-       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+      (I3, 1X,F8.3, 1X,F10.1, 4(1X,F9.1), &
+       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 1X,ES11.3, 1X,F8.3, 1X,ES11.2, &
        1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
     flush(66)
   END IF
@@ -4097,8 +4097,8 @@ SUBROUTINE CZC_WRITE_VERIFICATION_BLOCK(TAG)
     '                  K        K       K       K       K', &
     '          %           %         %                            ', &
     '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-    (I3, F8.3, F10.1, 4F8.1, &
-     1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+    (I3, 1X,F8.3, 1X,F10.1, 4(1X,F9.1), &
+     1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 1X,ES11.3, 1X,F8.3, 1X,ES11.2, &
      1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
   FLUSH(66)
 
