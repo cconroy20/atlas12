@@ -1338,6 +1338,16 @@ MODULE mod_atlas_data
   ! before this change gave 7.71% at 10000 K where it now gives 6.52%).
   REAL(8), PARAMETER :: TEFF_MOLEC_LIMIT = 10000.0D0
 
+  ! CLI override for the gate above (molecules=auto|on|off).  AUTO keeps the
+  ! TEFF_MOLEC_LIMIT rule and is the default, so compiled-in behaviour is
+  ! unchanged.  ON/OFF pin IFMOL so the two regimes can be compared at a
+  ! single Teff -- the measurement that produced the table above was made by
+  ! rebuilding the executable, and so could not be reproduced afterwards.
+  INTEGER, PARAMETER :: MOLEC_MODE_AUTO = 0
+  INTEGER, PARAMETER :: MOLEC_MODE_ON   = 1
+  INTEGER, PARAMETER :: MOLEC_MODE_OFF  = 2
+  INTEGER :: MOLEC_MODE = MOLEC_MODE_AUTO
+
   ! --- Bookkeeping for ion stages molecules.dat does not list -----------
   ! MOLEC's atomic lookup has three outcomes: an exact code match uses the
   ! NMOLEC population, an element absent from the table falls through to
@@ -1443,6 +1453,24 @@ MODULE mod_atlas_data
 
   ! --- Iteration control ---
   INTEGER :: ITER, ifprnt(60) = 2, ifpnch(60) = 0, NUMITS = 0
+
+  ! Phase-aware early stopping.  Only ordinary TCORR mode-3 evaluations
+  ! contribute to the streak; polish trials and final verification passes do
+  ! not.  The solver stops before applying the next temperature correction,
+  ! then the driver performs one fresh full-RT verification/output pass.
+  LOGICAL :: EARLY_STOP_ENABLED   = .FALSE.
+  LOGICAL :: EARLY_STOP_REQUESTED = .FALSE.
+  INTEGER :: EARLY_STOP_MIN_ITER  = 10
+  INTEGER :: EARLY_STOP_REQUIRED  = 3
+  INTEGER :: EARLY_STOP_STREAK    = 0
+  REAL(8), PARAMETER :: EARLY_FLUX_MAX_LIMIT = 1.0D0
+  REAL(8), PARAMETER :: EARLY_FLUX_P95_LIMIT = 0.5D0
+  REAL(8), PARAMETER :: EARLY_DT_MAX_LIMIT   = 2.0D0
+  REAL(8), PARAMETER :: EARLY_DT_P95_LIMIT   = 1.0D0
+  REAL(8) :: EARLY_LATEST_FLUX_MAX = HUGE(1.0D0)
+  REAL(8) :: EARLY_LATEST_FLUX_P95 = HUGE(1.0D0)
+  REAL(8) :: EARLY_LATEST_DT_MAX   = HUGE(1.0D0)
+  REAL(8) :: EARLY_LATEST_DT_P95   = HUGE(1.0D0)
 
   ! Threshold for printing convergence-failure warnings inside iterative
   ! routines (TTAUP, CONVEC, etc.).  On the first few ATLAS iterations the
@@ -1568,10 +1596,13 @@ MODULE mod_atlas_data
   !     solar/hot models never trip it and are untouched.
   ! Developer option, set here; no CLI.
   LOGICAL :: USE_CZ_CONSTRUCTOR = .TRUE.
-  ! Terminal deep-CZ polish: after the final iteration, close the MLT
-  ! flux relation in the constructor's block against the frozen
-  ! radiative flux (see CZC_POLISH).  Developer option, set here.
-  LOGICAL :: USE_CZC_POLISH = .TRUE.
+  ! Terminal deep-CZ polish runtime modes.  LEGACY preserves the historical
+  ! final-N-iteration frozen-F_rad placement exactly; OFF is a true no-op.
+  ! TRANSACTIONAL is implemented by the guarded full-RT trial path below.
+  INTEGER, PARAMETER :: CZC_POLISH_OFF           = 0
+  INTEGER, PARAMETER :: CZC_POLISH_LEGACY        = 1
+  INTEGER, PARAMETER :: CZC_POLISH_TRANSACTIONAL = 2
+  INTEGER :: CZC_POLISH_MODE = CZC_POLISH_LEGACY
   ! Constructor run-state consumed by the polish: whether the
   ! constructor engaged at least once this run, and the block top at
   ! the last engaged call.
@@ -1612,6 +1643,12 @@ MODULE mod_atlas_data
   REAL(8), PARAMETER :: CZC_POL_DTTOL  = 5.0D-3
   INTEGER, PARAMETER :: CZC_POL_MAXSWP = 100
   INTEGER, PARAMETER :: CZC_POL_MAXCYC = 30
+  INTEGER, PARAMETER :: CZC_TRIAL_MAX_BACKTRACK = 6
+  REAL(8), PARAMETER :: CZC_TRIAL_DT_MAX = 25.0D0
+  REAL(8), PARAMETER :: CZC_TRIAL_MIN_IMPROVE = 1.0D-3
+  REAL(8), PARAMETER :: CZC_CONV_FLUX_MAX = 1.0D0
+  REAL(8), PARAMETER :: CZC_CONV_FLUX_P95 = 0.5D0
+  REAL(8), PARAMETER :: CZC_CONV_PHOTO_MAX = 1.0D0
   ! Polish authority ramp in CONV/TOT.  The polish closes the raw MLT
   ! flux relation at frozen F_rad; that raw flux equals the model's actual
   ! (1-2-1 smoothed, gap-filled) convective flux only where convection is
@@ -1635,7 +1672,7 @@ MODULE mod_atlas_data
   ! Boehm-Vitense target, only exact) re-closes the deep block each time.
   ! The final iteration's polish sets the mK-precise closure that the
   ! output carries; the earlier ones only steer the relaxation.
-  INTEGER, PARAMETER :: CZC_POL_NHEAL  = 8
+  INTEGER :: CZC_POL_NHEAL  = 8
   ! Re-engagement hysteresis: after a dT-release, the block's flux
   ! metric keeps fluttering on the code's gradient-noise floor (the
   ! amplification 1.5/DEL makes tens of percent normal in the coolest
@@ -1802,11 +1839,11 @@ MODULE mod_atlas_data
   REAL(8) :: NEWT_XNFP(kw, mion), NEWT_XNF(kw, mion), NEWT_XNH2(kw)
   REAL(8) :: NEWT_DOPPLE(kw, mion), NEWT_XNFDOP(kw, mion)
   REAL(8) :: NEWT_BHYD(kw, 6), NEWT_BMIN(kw)
-  REAL(8) :: NEWT_FLXRAD(kw), NEWT_FLXCNV(kw)
+  REAL(8) :: NEWT_FLXRAD(kw), NEWT_FLXCNV(kw), NEWT_FLXERR(kw)
   REAL(8) :: NEWT_RJMINS(kw), NEWT_ABROSS(kw)
   REAL(8) :: NEWT_TAUROS(kw)
   REAL(8) :: NEWT_FLXCNV0(kw), NEWT_FLXCNV1(kw)
-  REAL(8) :: NEWT_PRAD(kw)
+  REAL(8) :: NEWT_PRAD(kw), NEWT_ACCRAD(kw)
   REAL(8) :: NEWT_VCONV(kw)
   REAL(8) :: NEWT_DLTDLP(kw), NEWT_GRDADB(kw)
   REAL(8) :: NEWT_HEATCP(kw), NEWT_HSCALE(kw), NEWT_DLRDLT(kw)
@@ -2822,10 +2859,12 @@ SUBROUTINE TCORR(MODE, RCOWT)
     OLDT1(J) = T1(J)
   END DO
 
-  ! Diagnostic output (after damping, so T1 reflects what is actually applied).
-  ! One unified per-iteration table merging the former *.tcorr correction
-  ! diagnostics with the *.iter atmospheric structure columns.
-  IF (IFPRNT(ITER) .NE. 0) THEN
+  ! Preserve the legacy .iter contract when early stopping is disabled:
+  ! historically the T1 diagnostic was emitted after ordinary damping but
+  ! before the optional Newton/CZ constructors modified the applied step.
+  ! Adaptive runs emit below, after all constructors, because their stop
+  ! decision must measure the step that would actually be applied.
+  IF (.NOT. EARLY_STOP_ENABLED .AND. IFPRNT(ITER) .NE. 0) THEN
     CALL GET_TCORR_RESIDUALS(R_NEWT_DIAG)
     WRITE(66, 100) &
          (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), DTSURF(J), &
@@ -2833,17 +2872,7 @@ SUBROUTINE TCORR(MODE, RCOWT)
           1.0D2 * R_NEWT_DIAG(J), &
           DLTDLP(J), GRDADB(J), HRATIO(J), P(J), XNE(J), HEIGHT(J), &
           ACCRAD(J), J=1,NRHOX)
-100 FORMAT(&
-      '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
-      '      ERROR       DERIV    R_NEWT   NABLA NABLA_AD     CONV/TOT', &
-      '        P           XNE       HEIGHT     ACCRAD' / &
-      '                  K        K       K       K       K', &
-      '          %           %         %                            ', &
-      '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-      (I3, F8.3, F10.1, 4F8.1, &
-       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
-       1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
-    flush(66)
+    FLUSH(66)
   END IF
 
   !---------------------------------------------------------------------
@@ -2886,6 +2915,58 @@ SUBROUTINE TCORR(MODE, RCOWT)
   !      (untested interaction; USE_DTGRAD is off in production).
   !---------------------------------------------------------------------
   IF (.NOT. NEWTON_APPLIED) CALL CZ_CONSTRUCT(T1)
+
+  ! Diagnostic output is deliberately after every correction constructor, so
+  ! T1 is the step that would actually be applied.  The early-stop decision is
+  ! made on this ordinary evaluated state and returns before section (H),
+  ! leaving T, RHOX, and the associated RT solution unchanged.
+  IF (EARLY_STOP_ENABLED .AND. IFPRNT(ITER) .NE. 0) THEN
+    CALL GET_TCORR_RESIDUALS(R_NEWT_DIAG)
+    WRITE(66, 100) &
+         (J, log10(max(TAUROS(J),1.0D-30)), T(J), DTLAMB(J), DTSURF(J), &
+          DTFLUX(J), T1(J), FLXERR(J), FLXDRV(J), &
+          1.0D2 * R_NEWT_DIAG(J), &
+          DLTDLP(J), GRDADB(J), HRATIO(J), P(J), XNE(J), HEIGHT(J), &
+          ACCRAD(J), J=1,NRHOX)
+100 FORMAT(&
+      '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
+      '      ERROR       DERIV    R_NEWT   NABLA NABLA_AD     CONV/TOT', &
+      '        P           XNE       HEIGHT     ACCRAD' / &
+      '                  K        K       K       K       K', &
+      '          %           %         %                            ', &
+      '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
+      (I3, F8.3, F10.1, 4F8.1, &
+       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+       1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
+    FLUSH(66)
+  END IF
+
+  IF (EARLY_STOP_ENABLED) THEN
+    EARLY_LATEST_FLUX_MAX = MAXVAL(ABS(FLXERR(1:NRHOX)))
+    EARLY_LATEST_FLUX_P95 = CZC_PERCENTILE_ABS(FLXERR(1:NRHOX), NRHOX, 0.95D0)
+    EARLY_LATEST_DT_MAX   = MAXVAL(ABS(T1(1:NRHOX)))
+    EARLY_LATEST_DT_P95   = CZC_PERCENTILE_ABS(T1(1:NRHOX), NRHOX, 0.95D0)
+
+    IF (ITER .GE. EARLY_STOP_MIN_ITER .AND. &
+        EARLY_LATEST_FLUX_MAX .LE. EARLY_FLUX_MAX_LIMIT .AND. &
+        EARLY_LATEST_FLUX_P95 .LE. EARLY_FLUX_P95_LIMIT .AND. &
+        EARLY_LATEST_DT_MAX   .LE. EARLY_DT_MAX_LIMIT .AND. &
+        EARLY_LATEST_DT_P95   .LE. EARLY_DT_P95_LIMIT) THEN
+      EARLY_STOP_STREAK = EARLY_STOP_STREAK + 1
+    ELSE
+      EARLY_STOP_STREAK = 0
+    END IF
+    EARLY_STOP_REQUESTED = EARLY_STOP_STREAK .GE. EARLY_STOP_REQUIRED
+
+    WRITE(6, '(A,I0,A,L1,A,I0,A,I0,4(A,F9.4),A,A)') &
+      ' EARLY_STOP iteration=', ITER, ' eligible=', ITER .GE. EARLY_STOP_MIN_ITER, &
+      ' streak=', EARLY_STOP_STREAK, '/', EARLY_STOP_REQUIRED, &
+      ' max_flux=', EARLY_LATEST_FLUX_MAX, ' p95_flux=', EARLY_LATEST_FLUX_P95, &
+      ' max_dt=', EARLY_LATEST_DT_MAX, ' p95_dt=', EARLY_LATEST_DT_P95, &
+      ' action=', MERGE('stop    ', 'continue', EARLY_STOP_REQUESTED)
+    FLUSH(6)
+    IF (EARLY_STOP_REQUESTED) RETURN
+  END IF
 
   !---------------------------------------------------------------------
   ! (H) Compute RHOX correction to maintain constant TAUROS grid
@@ -3042,7 +3123,12 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! relation in the constructor's block and appends a labeled POLISH
   ! block to the .iter file (no-op unless the constructor engaged this
   ! run; see CZC_POLISH).
-  IF (ITER .GT. NUMITS - CZC_POL_NHEAL) CALL CZC_POLISH
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_LEGACY .AND. &
+      ITER .GT. NUMITS - CZC_POL_NHEAL) THEN
+    WRITE(6, '(A,I0,A,I0,A)') ' CZC_CONTROL iteration=', ITER, &
+      ' mode=legacy nheal=', CZC_POL_NHEAL, ' action=attempt'
+    CALL CZC_POLISH
+  END IF
 
   RETURN
 
@@ -3461,9 +3547,12 @@ END SUBROUTINE CZC_DELREQ_LAYER
 ! the block's FLXERR so the final .atm deck is consistent with the
 ! polished structure.
 !=========================================================================
-SUBROUTINE CZC_POLISH
+SUBROUTINE CZC_POLISH(EMIT_RECORD, APPLIED)
 
   IMPLICIT NONE
+
+  LOGICAL, INTENT(IN), OPTIONAL :: EMIT_RECORD
+  LOGICAL, INTENT(OUT), OPTIONAL :: APPLIED
 
   REAL(8) :: HRAT_L(kw)     ! convective flux fraction
   REAL(8) :: DELREQ(kw)     ! MLT-inverted required superadiabatic excess
@@ -3480,9 +3569,12 @@ SUBROUTINE CZC_POLISH
   REAL(8) :: LNPR, SLOPIN, GTARG, WINT, GBARI
   REAL(8) :: DTMAX, DTTOT, ERR0, ERR1, GRES
   INTEGER :: J, JC, K, CYC, PINFO
-  LOGICAL :: SWEEP_CONV
+  LOGICAL :: SWEEP_CONV, EMIT
 
-  IF (.NOT. USE_CZC_POLISH) RETURN
+  EMIT = .TRUE.
+  IF (PRESENT(EMIT_RECORD)) EMIT = EMIT_RECORD
+  IF (PRESENT(APPLIED)) APPLIED = .FALSE.
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_OFF) RETURN
   IF (.NOT. CZC_RUN_ENGAGED) RETURN
   IF (IFCONV .NE. 1 .OR. IFPRES .NE. 1 .OR. MIXLTH .LE. 0.0D0) RETURN
   JC = max(CZC_RUN_JC, CZC_J_MIN)
@@ -3646,6 +3738,7 @@ SUBROUTINE CZC_POLISH
     HRAT_L(J) = FLXCNV(J) / (FLXCNV(J) + max(FLXRAD(J), 1.0D-30))
   END DO
   ERR1 = MAXVAL(ABS(FLXERR(JC:NRHOX)))
+  IF (PRESENT(APPLIED)) APPLIED = DTTOT .GT. 0.0D0
 
   WRITE(6, '(A,I3,A,I3,A,I2,A,F8.3,A)') &
     ' CZC polish: J=', JC, '..', NRHOX, '  cycles=', &
@@ -3676,7 +3769,7 @@ SUBROUTINE CZC_POLISH
   !     the T1 column carries the polish's total applied dT; ERROR and
   !     R_NEWT are both the post-polish flux residual; CONV/TOT is
   !     recomputed from the polished fluxes.
-  IF (IFPRNT(ITER) .NE. 0 .AND. ITER .EQ. NUMITS) THEN
+  IF (EMIT .AND. IFPRNT(ITER) .NE. 0 .AND. ITER .EQ. NUMITS) THEN
     WRITE(66, 110) &
          (J, log10(max(TAUROS(J),1.0D-30)), T(J), 0.0D0, 0.0D0, &
           0.0D0, T(J) - TPRE(J), FLXERR(J), 0.0D0, &
@@ -3697,6 +3790,247 @@ SUBROUTINE CZC_POLISH
   END IF
 
 END SUBROUTINE CZC_POLISH
+
+!=========================================================================
+! Transactional deep-CZ polish support.
+!
+! The legacy polish constructs a useful candidate but evaluates it against
+! the radiative flux from the preceding RT pass.  The routines below treat
+! that result only as a proposal: save a fully evaluated baseline, form dT,
+! restore, and accept a backtracked trial only after a new opacity-sampling
+! RT pass.  A rejected transaction restores the evaluated baseline exactly.
+!=========================================================================
+SUBROUTINE CZC_EVALUATE_CURRENT(EMIT_OUTPUT)
+
+  IMPLICIT NONE
+
+  LOGICAL, INTENT(IN) :: EMIT_OUTPUT
+  INTEGER :: J, NELION
+  REAL(8) :: EXCESS
+
+  ! Mirror the main iteration's hydrostatic/EOS preamble at the selected T.
+  ITEMP = ITEMP + 1
+  TK   = KBOL * T
+  HKT  = HPLANCK / TK
+  HCKT = HKT * CLIGHT
+  TKEV = KBOL_EV * T
+  TLOG = LOG(T)
+
+  IF (IFPRES .NE. 0) THEN
+    PZERO = PCON + PRADK0 + PTURB0
+    DO J = 1, NRHOX
+      P(J) = GRAV * RHOX(J) - PRAD(J) - PTURB(J) - PCON
+      IF (P(J) .LE. 0.0D0) P(J) = MAX(GRAV * RHOX(J) * 1.0D-4, 1.0D-10)
+      CHARGESQ(J) = XNE(J) * 2.0D0
+      EXCESS = 2.0D0 * XNE(J) - P(J) / TK(J)
+      IF (EXCESS .GT. 0.0D0) CHARGESQ(J) = CHARGESQ(J) + 2.0D0 * EXCESS
+      PTOTAL(J) = GRAV * RHOX(J) + PZERO
+    END DO
+    IFEDNS = 0
+    CALL COMPUTE_ONE_POP(0.0D0, 1, XNE)
+    CALL COMPUTE_ALL_POPS
+  END IF
+  IF (IFEDNS .EQ. 1) CALL ENERGY_DENSITY
+
+  DO J = 1, NRHOX
+    DO NELION = 1, MION - 1
+      IF (AMASSISO(1, NELION) .LE. 0.0D0) CYCLE
+      DOPPLE(J, NELION) = SQRT(2.0D0 * TK(J) / AMASSISO(1, NELION) / AMU &
+                              + VTURB(J)**2) / CLIGHT
+      XNFDOP(J, NELION) = XNFP(J, NELION) / DOPPLE(J, NELION) / RHO(J)
+    END DO
+  END DO
+
+  CALL RUN_RT_PASS(EMIT_OUTPUT)
+  IF (IFSURF .LE. 0) THEN
+    CALL ROSS(3, 0.0D0)
+    CALL RADIAP(3, 0.0D0)
+    CALL COMPUTE_HEIGHT
+    IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC(.FALSE.)
+  END IF
+  FLXERR = (FLXRAD + FLXCNV - FLUX) / MAX(FLUX, 1.0D-30) * 100.0D0
+
+END SUBROUTINE CZC_EVALUATE_CURRENT
+
+!=========================================================================
+REAL(8) FUNCTION CZC_PERCENTILE_ABS(VALUE, N, FRACTION) RESULT(PERCENTILE)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN) :: N
+  REAL(8), INTENT(IN) :: VALUE(N), FRACTION
+  REAL(8) :: WORK(kw), KEY, POSITION, WEIGHT
+  INTEGER :: I, J, LO, HI
+
+  IF (N .LE. 0) THEN
+    PERCENTILE = 0.0D0
+    RETURN
+  END IF
+  WORK(1:N) = ABS(VALUE(1:N))
+  DO I = 2, N
+    KEY = WORK(I)
+    J = I - 1
+    DO WHILE (J .GE. 1)
+      IF (WORK(J) .LE. KEY) EXIT
+      WORK(J + 1) = WORK(J)
+      J = J - 1
+    END DO
+    WORK(J + 1) = KEY
+  END DO
+  POSITION = 1.0D0 + MAX(0.0D0, MIN(1.0D0, FRACTION)) * DBLE(N - 1)
+  LO = INT(FLOOR(POSITION))
+  HI = INT(CEILING(POSITION))
+  WEIGHT = POSITION - DBLE(LO)
+  PERCENTILE = WORK(LO) * (1.0D0 - WEIGHT) + WORK(HI) * WEIGHT
+
+END FUNCTION CZC_PERCENTILE_ABS
+
+!=========================================================================
+SUBROUTINE CZC_GET_METRICS(JC, EMAX, EP95, EPHOTO, EDEEP)
+
+  IMPLICIT NONE
+
+  INTEGER, INTENT(IN) :: JC
+  REAL(8), INTENT(OUT) :: EMAX, EP95, EPHOTO, EDEEP
+  REAL(8) :: PHOTO_ERROR(kw)
+  INTEGER :: J, NPHOTO, J0
+
+  EMAX = MAXVAL(ABS(FLXERR(1:NRHOX)))
+  EP95 = CZC_PERCENTILE_ABS(FLXERR(1:NRHOX), NRHOX, 0.95D0)
+  NPHOTO = 0
+  DO J = 1, NRHOX
+    IF (LOG10(MAX(TAUROS(J), 1.0D-30)) .GE. -4.0D0 .AND. &
+        LOG10(MAX(TAUROS(J), 1.0D-30)) .LE.  2.0D0) THEN
+      NPHOTO = NPHOTO + 1
+      PHOTO_ERROR(NPHOTO) = FLXERR(J)
+    END IF
+  END DO
+  IF (NPHOTO .GT. 0) THEN
+    EPHOTO = MAXVAL(ABS(PHOTO_ERROR(1:NPHOTO)))
+  ELSE
+    EPHOTO = EMAX
+  END IF
+  J0 = MAX(1, MIN(JC, NRHOX))
+  EDEEP = MAXVAL(ABS(FLXERR(J0:NRHOX)))
+
+END SUBROUTINE CZC_GET_METRICS
+
+!=========================================================================
+SUBROUTINE CZC_TRY_TRANSACTION
+
+  IMPLICIT NONE
+
+  REAL(8) :: TBASE(kw), DTPROP(kw)
+  REAL(8) :: BASE_MAX, BASE_P95, BASE_PHOTO, BASE_DEEP
+  REAL(8) :: TRY_MAX, TRY_P95, TRY_PHOTO, TRY_DEEP
+  REAL(8) :: ALPHA, PROPOSAL_MAX
+  INTEGER :: JC, ITRY
+  LOGICAL :: PROPOSED, ACCEPTED
+
+  IF (CZC_POLISH_MODE .NE. CZC_POLISH_TRANSACTIONAL) RETURN
+  IF (.NOT. CZC_RUN_ENGAGED) THEN
+    WRITE(6, '(A)') ' CZC_TRANSACTION action=skip reason=constructor_never_engaged'
+    RETURN
+  END IF
+
+  CALL CZC_EVALUATE_CURRENT(.FALSE.)
+  JC = MAX(CZC_RUN_JC, CZC_J_MIN)
+  CALL CZC_GET_METRICS(JC, BASE_MAX, BASE_P95, BASE_PHOTO, BASE_DEEP)
+  WRITE(6, '(A,4(A,F9.4))') ' CZC_TRANSACTION baseline', &
+    ' max=', BASE_MAX, ' p95=', BASE_P95, ' photo=', BASE_PHOTO, ' deep=', BASE_DEEP
+
+  IF (BASE_MAX .LE. CZC_CONV_FLUX_MAX .AND. &
+      BASE_P95 .LE. CZC_CONV_FLUX_P95 .AND. &
+      BASE_PHOTO .LE. CZC_CONV_PHOTO_MAX) THEN
+    WRITE(6, '(A)') ' CZC_TRANSACTION action=skip reason=baseline_flux_converged'
+    RETURN
+  END IF
+
+  CALL NEWTON_SAVE_STATE
+  TBASE(1:NRHOX) = NEWT_T(1:NRHOX)
+  CALL CZC_POLISH(.FALSE., PROPOSED)
+  DTPROP(1:NRHOX) = T(1:NRHOX) - TBASE(1:NRHOX)
+  CALL NEWTON_RESTORE_STATE
+
+  PROPOSAL_MAX = MAXVAL(ABS(DTPROP(1:NRHOX)))
+  IF (.NOT. PROPOSED .OR. PROPOSAL_MAX .LE. 0.0D0) THEN
+    WRITE(6, '(A)') ' CZC_TRANSACTION action=skip reason=no_proposal'
+    RETURN
+  END IF
+
+  ALPHA = MIN(1.0D0, CZC_TRIAL_DT_MAX / PROPOSAL_MAX)
+  ACCEPTED = .FALSE.
+  DO ITRY = 0, CZC_TRIAL_MAX_BACKTRACK
+    CALL NEWTON_RESTORE_STATE
+    T(1:NRHOX) = TBASE(1:NRHOX) + ALPHA * DTPROP(1:NRHOX)
+    TK(1:NRHOX)   = KBOL * T(1:NRHOX)
+    HKT(1:NRHOX)  = HPLANCK / TK(1:NRHOX)
+    HCKT(1:NRHOX) = HKT(1:NRHOX) * CLIGHT
+    TKEV(1:NRHOX) = KBOL_EV * T(1:NRHOX)
+    TLOG(1:NRHOX) = LOG(T(1:NRHOX))
+    ITEMP = ITEMP + 1
+
+    IF (MINVAL(T(1:NRHOX)) .LT. TFLOOR_ATM .OR. &
+        ANY(T(2:NRHOX) .LT. T(1:NRHOX-1))) THEN
+      WRITE(6, '(A,I0,A,F9.6,A)') ' CZC_TRANSACTION trial=', ITRY, &
+        ' alpha=', ALPHA, ' action=reject reason=temperature_guard'
+      ALPHA = ALPHA * 0.5D0
+      CYCLE
+    END IF
+
+    CALL CZC_EVALUATE_CURRENT(.FALSE.)
+    CALL CZC_GET_METRICS(JC, TRY_MAX, TRY_P95, TRY_PHOTO, TRY_DEEP)
+    ACCEPTED = TRY_MAX .LT. BASE_MAX * (1.0D0 - CZC_TRIAL_MIN_IMPROVE) .AND. &
+               TRY_P95 .LE. MAX(CZC_CONV_FLUX_P95, BASE_P95) .AND. &
+               TRY_PHOTO .LE. MAX(CZC_CONV_PHOTO_MAX, BASE_PHOTO)
+    WRITE(6, '(A,I0,A,F9.6,A,L1,4(A,F9.4))') &
+      ' CZC_TRANSACTION trial=', ITRY, ' alpha=', ALPHA, ' accepted=', ACCEPTED, &
+      ' max=', TRY_MAX, ' p95=', TRY_P95, ' photo=', TRY_PHOTO, ' deep=', TRY_DEEP
+    IF (ACCEPTED) EXIT
+    ALPHA = ALPHA * 0.5D0
+  END DO
+
+  IF (ACCEPTED) THEN
+    WRITE(6, '(A,F9.6,A,F9.4,A,F9.4)') &
+      ' CZC_TRANSACTION action=accept alpha=', ALPHA, &
+      ' baseline_max=', BASE_MAX, ' selected_max=', TRY_MAX
+  ELSE
+    CALL NEWTON_RESTORE_STATE
+    WRITE(6, '(A,F9.4)') &
+      ' CZC_TRANSACTION action=restore reason=line_search_exhausted baseline_max=', BASE_MAX
+  END IF
+
+END SUBROUTINE CZC_TRY_TRANSACTION
+
+!=========================================================================
+SUBROUTINE CZC_WRITE_VERIFICATION_BLOCK(TAG)
+
+  IMPLICIT NONE
+
+  CHARACTER(*), INTENT(IN) :: TAG
+  INTEGER :: J
+
+  IF (IFPRNT(ITER) .EQ. 0) RETURN
+  WRITE(66, '(A,A)') '# ATLAS_PHASE ', TRIM(TAG)
+  WRITE(66, 110) &
+       (J, LOG10(MAX(TAUROS(J),1.0D-30)), T(J), 0.0D0, 0.0D0, &
+        0.0D0, 0.0D0, FLXERR(J), 0.0D0, FLXERR(J), &
+        DLTDLP(J), GRDADB(J), &
+        FLXCNV(J) / (FLXCNV(J) + MAX(FLXRAD(J),1.0D-30)), &
+        P(J), XNE(J), HEIGHT(J), ACCRAD(J), J=1,NRHOX)
+110 FORMAT(&
+    '  J log10TAU      T     DTLAMB  DTSURF  DTFLUX     T1', &
+    '      ERROR       DERIV    R_NEWT   NABLA NABLA_AD     CONV/TOT', &
+    '        P           XNE       HEIGHT     ACCRAD' / &
+    '                  K        K       K       K       K', &
+    '          %           %         %                            ', &
+    '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
+    (I3, F8.3, F10.1, 4F8.1, &
+     1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+     1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
+  FLUSH(66)
+
+END SUBROUTINE CZC_WRITE_VERIFICATION_BLOCK
 
 !=========================================================================
 ! SUBROUTINE CZC_NODE_RESID(JC, GT, TW, R)
@@ -4090,12 +4424,14 @@ SUBROUTINE NEWTON_SAVE_STATE
   NEWT_BMIN     = BMIN
   NEWT_FLXRAD   = FLXRAD
   NEWT_FLXCNV   = FLXCNV
+  NEWT_FLXERR   = FLXERR
   NEWT_RJMINS   = RJMINS
   NEWT_ABROSS   = ABROSS
   NEWT_TAUROS   = TAUROS
   NEWT_FLXCNV0  = FLXCNV0
   NEWT_FLXCNV1  = FLXCNV1
   NEWT_PRAD     = PRAD
+  NEWT_ACCRAD   = ACCRAD
   NEWT_VCONV    = VCONV
   NEWT_DLTDLP   = DLTDLP
   NEWT_GRDADB   = GRDADB
@@ -4151,12 +4487,14 @@ SUBROUTINE NEWTON_RESTORE_STATE
   BMIN     = NEWT_BMIN
   FLXRAD   = NEWT_FLXRAD
   FLXCNV   = NEWT_FLXCNV
+  FLXERR   = NEWT_FLXERR
   RJMINS   = NEWT_RJMINS
   ABROSS   = NEWT_ABROSS
   TAUROS   = NEWT_TAUROS
   FLXCNV0  = NEWT_FLXCNV0
   FLXCNV1  = NEWT_FLXCNV1
   PRAD     = NEWT_PRAD
+  ACCRAD   = NEWT_ACCRAD
   VCONV    = NEWT_VCONV
   DLTDLP   = NEWT_DLTDLP
   GRDADB   = NEWT_GRDADB
@@ -8915,12 +9253,14 @@ SUBROUTINE MOLZERO_REPORT
       WORST = RATIO
       NAME  = TRIM(ELSYM(MOLZERO_Z(K))) // ' ' // TRIM(ROMAN(MOLZERO_ION(K)))
     END IF
-    ! Full list only when asked for: one line is enough to act on, and this
-    ! condition is expected (and accepted) through the 8000-10000 K band.
-    IF (IDEBUG .EQ. 1) &
-      WRITE(6,'(A,A8,A,1PE9.2)') '          molecules.dat missing ', &
-        TRIM(ELSYM(MOLZERO_Z(K))) // ' ' // TRIM(ROMAN(MOLZERO_ION(K))), &
-        '   n(this)/n(below) = ', RATIO
+    ! List every offending stage, not just the worst.  The summary line
+    ! alone cannot tell a trace element with a large ratio (B IV) from an
+    ! abundant one with a small ratio, and only the latter can move the
+    ! opacity; deciding that needs the whole list.  It is at most a few
+    ! lines, and printed only when the run has already tripped the warning.
+    WRITE(6,'(A,A8,A,1PE9.2)') '          molecules.dat missing ', &
+      TRIM(ELSYM(MOLZERO_Z(K))) // ' ' // TRIM(ROMAN(MOLZERO_ION(K))), &
+      '   n(this)/n(below) = ', RATIO
   END DO
 
   IF (NBAD .GT. 0) &
@@ -22849,4 +23189,3 @@ END FUNCTION occupation_prob
 
 
 END MODULE mod_atlas_data
-

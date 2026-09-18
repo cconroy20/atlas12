@@ -50,6 +50,7 @@ PROGRAM ATLAS12
   CHARACTER(256) :: ABUND_FILE
   CHARACTER(256) :: ABUND_LINE
   CHARACTER(32)  :: CMD_SOLAR
+  CHARACTER(16)  :: CMD_CZC_POLISH, CMD_EARLY_STOP, CMD_MOLECULES
   INTEGER        :: NARGS, IEQPOS, ISTAT, IPOSARG
   REAL(8)        :: VTURB_KMS
   REAL(8)        :: CMD_TEFF, CMD_LOGG
@@ -95,6 +96,9 @@ PROGRAM ATLAS12
   OUTBASE    = 'mystar'
   ABUND_FILE = ''
   CMD_SOLAR  = ''
+  CMD_CZC_POLISH = 'legacy'
+  CMD_EARLY_STOP = 'off'
+  CMD_MOLECULES  = 'auto'
   INPUT_MODEL_FILE = ''
   NUMITS     = 30
   VTURB_KMS  = -1.0D0    ! sentinel: not set
@@ -155,6 +159,64 @@ PROGRAM ATLAS12
       CASE ('logg');   READ(val, *, IOSTAT=ISTAT) CMD_LOGG
       CASE ('zscale'); READ(val, *, IOSTAT=ISTAT) CMD_ZSCALE
       CASE ('heabnd'); READ(val, *, IOSTAT=ISTAT) CMD_HEABND
+      CASE ('czc_polish')
+        DO J = 1, LEN_TRIM(val)
+          IF (val(J:J) .GE. 'A' .AND. val(J:J) .LE. 'Z') &
+            val(J:J) = CHAR(ICHAR(val(J:J)) + 32)
+        END DO
+        CMD_CZC_POLISH = TRIM(val)
+        SELECT CASE (TRIM(CMD_CZC_POLISH))
+        CASE ('off')
+          CZC_POLISH_MODE = CZC_POLISH_OFF
+        CASE ('legacy')
+          CZC_POLISH_MODE = CZC_POLISH_LEGACY
+        CASE ('transactional')
+          CZC_POLISH_MODE = CZC_POLISH_TRANSACTIONAL
+        CASE DEFAULT
+          WRITE(6, '(A,A)') ' ERROR: unknown czc_polish mode: ', TRIM(val)
+          WRITE(6, '(A)') '   valid modes: off legacy transactional'
+          CALL EXIT(1)
+        END SELECT
+      CASE ('molecules')
+        ! Override the Teff gate that selects the equation-of-state path.
+        ! 'auto' keeps the TEFF_MOLEC_LIMIT rule; 'on'/'off' pin IFMOL so
+        ! the two regimes can be A/B'd at one Teff.  See TEFF_MOLEC_LIMIT.
+        DO J = 1, LEN_TRIM(val)
+          IF (val(J:J) .GE. 'A' .AND. val(J:J) .LE. 'Z') &
+            val(J:J) = CHAR(ICHAR(val(J:J)) + 32)
+        END DO
+        CMD_MOLECULES = TRIM(val)
+        SELECT CASE (TRIM(CMD_MOLECULES))
+        CASE ('auto')
+          MOLEC_MODE = MOLEC_MODE_AUTO
+        CASE ('on')
+          MOLEC_MODE = MOLEC_MODE_ON
+        CASE ('off')
+          MOLEC_MODE = MOLEC_MODE_OFF
+        CASE DEFAULT
+          WRITE(6, '(A,A)') ' ERROR: unknown molecules mode: ', TRIM(val)
+          WRITE(6, '(A)') '   valid modes: auto on off'
+          CALL EXIT(1)
+        END SELECT
+      CASE ('czc_nheal'); READ(val, *, IOSTAT=ISTAT) CZC_POL_NHEAL
+      CASE ('early_stop')
+        DO J = 1, LEN_TRIM(val)
+          IF (val(J:J) .GE. 'A' .AND. val(J:J) .LE. 'Z') &
+            val(J:J) = CHAR(ICHAR(val(J:J)) + 32)
+        END DO
+        CMD_EARLY_STOP = TRIM(val)
+        SELECT CASE (TRIM(CMD_EARLY_STOP))
+        CASE ('off')
+          EARLY_STOP_ENABLED = .FALSE.
+        CASE ('on')
+          EARLY_STOP_ENABLED = .TRUE.
+        CASE DEFAULT
+          WRITE(6, '(A,A)') ' ERROR: unknown early_stop mode: ', TRIM(val)
+          WRITE(6, '(A)') '   valid modes: off on'
+          CALL EXIT(1)
+        END SELECT
+      CASE ('minit');       READ(val, *, IOSTAT=ISTAT) EARLY_STOP_MIN_ITER
+      CASE ('conv_streak'); READ(val, *, IOSTAT=ISTAT) EARLY_STOP_REQUIRED
       CASE ('solar')
         ! Normalize to lowercase, then validate the name now (fail fast).
         ! This also pre-loads ABUND, but READIN may overwrite it from the
@@ -182,6 +244,40 @@ PROGRAM ATLAS12
     END BLOCK
   END DO
 
+  IF (NUMITS .LT. 1 .OR. NUMITS .GT. 60) THEN
+    WRITE(6, '(A,I0)') ' ERROR: numit must lie in 1..60; got ', NUMITS
+    CALL EXIT(1)
+  END IF
+  IF (CZC_POL_NHEAL .LT. 1 .OR. CZC_POL_NHEAL .GT. 60) THEN
+    WRITE(6, '(A,I0)') ' ERROR: czc_nheal must lie in 1..60; got ', CZC_POL_NHEAL
+    CALL EXIT(1)
+  END IF
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_LEGACY .AND. &
+      CZC_POL_NHEAL .GT. NUMITS) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: legacy czc_nheal cannot exceed numit; got ', &
+      CZC_POL_NHEAL, ' with numit=', NUMITS
+    CALL EXIT(1)
+  END IF
+  IF (EARLY_STOP_MIN_ITER .LT. 1 .OR. EARLY_STOP_MIN_ITER .GT. 60) THEN
+    WRITE(6, '(A,I0)') ' ERROR: minit must lie in 1..60; got ', EARLY_STOP_MIN_ITER
+    CALL EXIT(1)
+  END IF
+  IF (EARLY_STOP_REQUIRED .LT. 1 .OR. EARLY_STOP_REQUIRED .GT. 60) THEN
+    WRITE(6, '(A,I0)') ' ERROR: conv_streak must lie in 1..60; got ', EARLY_STOP_REQUIRED
+    CALL EXIT(1)
+  END IF
+  IF (EARLY_STOP_ENABLED .AND. EARLY_STOP_MIN_ITER .GT. NUMITS) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: minit cannot exceed numit when early_stop=on; got ', &
+      EARLY_STOP_MIN_ITER, ' with numit=', NUMITS
+    CALL EXIT(1)
+  END IF
+  IF (EARLY_STOP_ENABLED .AND. &
+      EARLY_STOP_REQUIRED .GT. NUMITS - EARLY_STOP_MIN_ITER + 1) THEN
+    WRITE(6, '(A,I0,A,I0,A,I0)') &
+      ' ERROR: conv_streak cannot fit between minit and numit; got ', &
+      EARLY_STOP_REQUIRED, ' with minit=', EARLY_STOP_MIN_ITER, ' numit=', NUMITS
+    CALL EXIT(1)
+  END IF
   ! Validate: input atmosphere file is required
   IF (LEN_TRIM(INPUT_MODEL_FILE) .EQ. 0) THEN
     WRITE(6, '(A)') ' ERROR: missing required argument <input_atm>'
@@ -211,7 +307,13 @@ PROGRAM ATLAS12
     IFPNCH(I) = 0
     IFPRNT(I) = 1
   END DO
-  IFPNCH(NUMITS) = 2
+  IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL .OR. EARLY_STOP_ENABLED) THEN
+    ! Suppress the ordinary final RT flux: transactional selection and
+    ! early-stop/max-iteration finalization each write a fresh verified state.
+    IFPNCH(NUMITS) = 0
+  ELSE
+    IFPNCH(NUMITS) = 2
+  END IF
   IFPRNT(NUMITS) = 3
 
   OPEN(UNIT=7,  FILE=TRIM(OUTBASE)//'.atm',   STATUS='REPLACE')
@@ -390,7 +492,14 @@ PROGRAM ATLAS12
     ! See TEFF_MOLEC_LIMIT in mod_atlas_data for why these are two regimes
     ! rather than a feature toggle.  Must follow SCALE_MODEL, so that a
     ! teff= override picks the path for the Teff actually being computed.
-    IF (TEFF .GT. TEFF_MOLEC_LIMIT) IFMOL = 0
+    SELECT CASE (MOLEC_MODE)
+    CASE (MOLEC_MODE_ON)
+      IFMOL = 1
+    CASE (MOLEC_MODE_OFF)
+      IFMOL = 0
+    CASE DEFAULT
+      IF (TEFF .GT. TEFF_MOLEC_LIMIT) IFMOL = 0
+    END SELECT
 
     ! --- Echo run parameters (resolved values after CLI/model merge) ---
     ! Mirrors SYNTHE's input-echo style.  All values are final at this
@@ -400,6 +509,15 @@ PROGRAM ATLAS12
     WRITE(6,'(A,A)')     '  Input model      = ', TRIM(INPUT_MODEL_FILE)
     WRITE(6,'(A,A)')     '  Output basename  = ', TRIM(OUTBASE)
     WRITE(6,'(A,I5)')    '  numit            = ', NUMITS
+    WRITE(6,'(A,A)')     '  CZC polish       = ', TRIM(CMD_CZC_POLISH)
+    WRITE(6,'(A,I5)')    '  CZC heal calls   = ', CZC_POL_NHEAL
+    WRITE(6,'(A,A)')     '  early stop       = ', TRIM(CMD_EARLY_STOP)
+    IF (EARLY_STOP_ENABLED) THEN
+      WRITE(6,'(A,I5)')  '  minimum iter     = ', EARLY_STOP_MIN_ITER
+      WRITE(6,'(A,I5)')  '  convergence run  = ', EARLY_STOP_REQUIRED
+      WRITE(6,'(A,4(F5.2,1X))') '  stop limits      = ', EARLY_FLUX_MAX_LIMIT, &
+        EARLY_FLUX_P95_LIMIT, EARLY_DT_MAX_LIMIT, EARLY_DT_P95_LIMIT
+    END IF
     WRITE(6,'(A,F5.2)')  '  mlt              = ', MIXLTH
     WRITE(6,'(A,F5.2)')  '  vturb (km/s)     = ', VTURB(1) * 1.0D-5
     WRITE(6,'(A,I5)')    '  teff (K)         = ', INT(TEFF)
@@ -411,6 +529,9 @@ PROGRAM ATLAS12
       WRITE(6,'(A,I6,A)') '  molecules        =   off   (Teff > ', &
         INT(TEFF_MOLEC_LIMIT), ' K: Saha/NELECT, ion stages to X)'
     END IF
+    IF (MOLEC_MODE .NE. MOLEC_MODE_AUTO) &
+      WRITE(6,'(A,A,A)')  '  molecules mode   = ', TRIM(CMD_MOLECULES), &
+        '   (CLI override; Teff gate bypassed)'
     IF (LEN_TRIM(CMD_SOLAR) .GT. 0) &
       WRITE(6,'(A,A,A)')    '  solar scale      = ', TRIM(CMD_SOLAR), '   (CLI override)'
     IF (IQUAD .NE. 0) &
@@ -503,6 +624,10 @@ PROGRAM ATLAS12
 
     iteration_loop: DO ITERAT = 1, NUMITS
       ITER = ITERAT
+      IF (ITERAT .EQ. 1) THEN
+        EARLY_STOP_REQUESTED = .FALSE.
+        EARLY_STOP_STREAK = 0
+      END IF
       CALL SYSTEM_CLOCK(CLOCK_START, CLOCK_RATE)
 
       ! ITEMP tracks temperature changes — incrementing tells subroutines
@@ -596,6 +721,26 @@ PROGRAM ATLAS12
         CALL COMPUTE_HEIGHT
         IF (IFPRES .EQ. 1 .AND. IFCONV .EQ. 1) CALL CONVEC(.FALSE.)
         IF (IFCORR .EQ. 1)  CALL TCORR(3, 0.0D0)
+        IF (EARLY_STOP_REQUESTED) THEN
+          WRITE(6, '(A,I0,A)') ' EARLY_STOP iteration=', ITERAT, &
+            ' action=verify_and_finish'
+          IFPNCH(ITER) = 2
+          CALL CZC_EVALUATE_CURRENT(.TRUE.)
+          CALL CZC_WRITE_VERIFICATION_BLOCK('early_stop_verification')
+        ELSE IF (CZC_POLISH_MODE .EQ. CZC_POLISH_TRANSACTIONAL .AND. &
+            ITERAT .EQ. NUMITS) THEN
+          CALL CZC_TRY_TRANSACTION
+          IFPNCH(ITER) = 2
+          CALL CZC_EVALUATE_CURRENT(.TRUE.)
+          CALL CZC_WRITE_VERIFICATION_BLOCK('final_verification')
+        ELSE IF (EARLY_STOP_ENABLED .AND. ITERAT .EQ. NUMITS) THEN
+          ! The last ordinary correction was applied because convergence was
+          ! not reached.  Reevaluate it so all three output products describe
+          ! the same final state.
+          IFPNCH(ITER) = 2
+          CALL CZC_EVALUATE_CURRENT(.TRUE.)
+          CALL CZC_WRITE_VERIFICATION_BLOCK('max_iteration_verification')
+        END IF
         IF (NLTEON .EQ. 1)  CALL STATEQ(3, 0.0D0)
         IF (IFTURB .EQ. 1)  CALL COMPUTE_PTURB
         CALL PUTOUT(5)
@@ -608,6 +753,8 @@ PROGRAM ATLAS12
         ! Developer probe: fine-T scan of the nabla_ad / EOS machinery
         ! (no-op unless ATLAS_GRDADB_SCAN is set; stops after writing)
         IF (ITERAT .EQ. 1) CALL GRDADB_SCAN_MAYBE
+
+        IF (EARLY_STOP_REQUESTED) EXIT iteration_loop
 
       END IF
 
@@ -673,6 +820,15 @@ CONTAINS
     WRITE(6, '(A)') '  zscale=X     Metal abundance scale factor (default: no scaling)'
     WRITE(6, '(A)') '  heabnd=X     He number fraction Y; H = 1 - Y - Z (default: from model)'
     WRITE(6, '(A)') '  abund=file   File with individual element overrides (Z log_abund)'
+    WRITE(6, '(A)') '  molecules=M  EOS path: auto, on, off (default auto = Teff gate)'
+    WRITE(6, '(A)') '               (on = NMOLEC network; off = Saha/NELECT to stage X)'
+    WRITE(6, '(A)') '  czc_polish=M Deep-CZ polish mode: off, legacy, transactional'
+    WRITE(6, '(A)') '               (default legacy; transactional uses full-RT trial/rollback)'
+    WRITE(6, '(A)') '  czc_nheal=N  Legacy terminal polish calls (default 8; 1..numit)'
+    WRITE(6, '(A)') '  early_stop=M Stop on a stable ordinary-iteration streak: off, on'
+    WRITE(6, '(A)') '               (default off; final state receives a full-RT verification)'
+    WRITE(6, '(A)') '  minit=N      First iteration eligible for early stop (default 10)'
+    WRITE(6, '(A)') '  conv_streak=N Consecutive passing iterations required (default 3)'
     WRITE(6, '(A)') ''
     WRITE(6, '(A)') 'Help:'
     WRITE(6, '(A)') '  --help, -h, help    Print this message and exit'
