@@ -154,6 +154,29 @@ Command-line options (keyword=value):
 | `early_stop=MODE` | `off` | Stop after a stable ordinary-iteration convergence streak: `off` or `on` |
 | `minit=N` | 10 | First iteration eligible for early stopping |
 | `conv_streak=N` | 3 | Consecutive passing ordinary iterations required |
+| `molecules=MODE` | `auto` | EOS path: `auto` keeps the `TEFF_MOLEC_LIMIT` rule, `on` pins the NMOLEC network, `off` pins Saha/NELECT |
+| `cnv_gap_del=X` | -0.03 | CONVEC bridges a radiative gap inside a convection zone only if every layer in it has (grad - grad_ad) > X. `-1D30` fills every gap, reproducing the historical behaviour |
+| `cz_damp_del=X` | -1.0 | Apply TCORR's sign-flip damping inside a convection zone where (grad - grad_ad) exceeds X. Negative disables it, reproducing the historical unconditional skip |
+| `cnvgap_log=MODE` | `off` | `on` traces every CONVEC gap-fill decision to stdout |
+| `eos_dump=FILE` | none | Diagnostic: write the EOS derivative chain per depth after the first CONVEC, then exit without iterating |
+
+`cnv_gap_del` and `cz_damp_del` are the two convection knobs.  The gap gate is
+shipped **on** at -0.03: CONVEC's radiative-gap fill could previously bridge a
+genuinely stable interior, and the gate refuses hot-band bridges 93-100 percent
+of the time while leaving 2800/5.00 bit-identical to historical from three of
+four starting decks.  -0.02 and -0.03 give identical output on every case
+tested, so the threshold is not a knife edge.
+
+`cz_damp_del` is shipped **off**.  Enabling it is measured to help only at
+log g > 2; at log g <= 1.5 it took a converged 7000/1.00 model from 0.891 to
+6.691 percent flux error.  Set it per-regime or not at all.
+
+`cnvgap_log=on` reports, for each gap, the bounding layer indices, the gap
+width, the fill verdict, the bounding layers' convective fractions (`hrA`,
+`hrB`), and the most stable layer inside the gap (`delmin`).  The `hr` values
+are reported but do not gate the fill -- see the note in
+`src/atlas12_modules.f90` on why a bounding-fraction gate was tried and
+rejected.
 
 `early_stop=on` treats `numit`
 as a hard maximum and stops before applying another correction after

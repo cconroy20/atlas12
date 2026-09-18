@@ -1119,6 +1119,30 @@ MODULE mod_atlas_data
   REAL(8)  :: MIXLTH = 2.0d0, OVERWT = 0.0d0
   REAL(8)  :: FLXCNV0(kw), FLXCNV1(kw)
   INTEGER :: IFCONV = 1, NCONV = 30
+  ! Superadiabatic excess above which TCORR's sign-flip damping is applied
+  ! inside a convection zone.  Negative disables it (compiled-in default,
+  ! reproducing the historical skip exactly).  Set by cz_damp_del=X.
+  REAL(8) :: CZ_DAMP_DEL = -1.0D0
+  ! The gap-fill gate: the most stable layer inside the gap.  A gap is bridged
+  ! only if every layer in it is less subadiabatic than this, so a fill cannot
+  ! reach across a genuinely stable interior.  Measured from gap-topology
+  ! traces spanning 2500-10250 K: hot-band bridges are refused 93-100 percent
+  ! of the time, while 2800/5.00 is bit-identical to historical from three of
+  ! four starting decks and improves 4.7x from the fourth.  -0.02 and -0.03
+  ! give identical output on every case tested, so the threshold is not a
+  ! knife edge; -0.03 is shipped for margin above 2800/5.00's -0.0191.
+  ! Settable as cnv_gap_del=X; -1D30 fills every gap.
+  !
+  ! An alternative gate on the bounding layers' convective fraction was tried
+  ! and rejected; the trace below still reports those fractions as hrA/hrB.
+  ! It separates load-bearing zones from bridges by 58x ACROSS models but not
+  ! WITHIN one: 2800/5.00's own gaps span 0.007 to 0.998, so any threshold
+  ! gates that model partially and start-dependently.  Paired against
+  ! historical across four starting decks, a 0.1 threshold degraded it (deltas
+  ! 0.00, +0.12, +6.41, +6.65 percent) and 0.05 was mixed.  Do not reintroduce
+  ! it without a within-model discriminant.
+  REAL(8) :: CNV_GAP_DEL_MIN = -3.0D-2
+  LOGICAL :: CNVGAP_LOG = .FALSE.   ! cnvgap_log=on: trace CONVEC's gap fill
 
   ! --- NLTE departure coefficients ---
   REAL(8)  :: BHYD(kw, 6) = 1.0d0, BMIN(kw) = 1.0d0
@@ -1127,6 +1151,20 @@ MODULE mod_atlas_data
   ! --- Electron density ---
   REAL(8)  :: EDENS(kw)
   INTEGER :: IFEDNS
+
+  ! --- EOS diagnostic capture (eos_dump) --------------------------------
+  ! CONVEC builds HEATCP, DLRDLT and GRDADB from four finite differences of
+  ! EDENS and RHO taken at T +/- 0.1% and P +/- 0.1%.  Those differences are
+  ! loop-local scalars, so a wrong nabla_ad cannot be attributed to a term
+  ! without recomputing them by hand.  Capture them per depth; the stores are
+  ! unconditional so the dump measures exactly what the model ran on.
+  CHARACTER(len=256) :: EOS_DUMP_FILE = ''
+  REAL(8) :: EOSD_DEDT(kw)  = 0.0D0   ! (dE/dT)_P
+  REAL(8) :: EOSD_DRDT(kw)  = 0.0D0   ! (drho/dT)_P
+  REAL(8) :: EOSD_DEDPG(kw) = 0.0D0   ! (dE/dP)_T
+  REAL(8) :: EOSD_DRDPG(kw) = 0.0D0   ! (drho/dP)_T
+  REAL(8) :: EOSD_ETP(kw)   = 0.0D0   ! E at T*1.001
+  REAL(8) :: EOSD_ETM(kw)   = 0.0D0   ! E at T*0.999
 
   ! --- Element abundances, atomic masses, labels ---
   REAL(8)       :: YABUND(99)
@@ -1322,20 +1360,39 @@ MODULE mod_atlas_data
   ! hilines contributes 87k selected lines at 15000 K, 1.03M at 25000 K and
   ! 5.34M at 45000 K, none of which had ever entered a model.
   !
-  ! The value is measured, not chosen for roundness.  Running each Teff both
-  ! ways (molecules off vs on, log g 4.5, 30 iterations) gives:
+  ! The value is measured, not chosen for roundness.  Re-measured after the
+  ! ENERGY_DENSITY defect on the IFMOL=0 path was fixed, because the original
+  ! table was taken with GRDADB ~ 0.99 on the off arm -- it was measuring
+  ! convection being suppressed, not the EOS path, and both its columns were
+  ! wrong by one to two orders of magnitude.  Log g 4.5, 30 iterations, early
+  ! stop off, molecules=on vs off via the CLI (no rebuild):
   !
-  !   Teff     photospheric cost of molecules=off      deep flux error on->off
-  !   8000     max |dT| 3749 K, rms 692 K, -0.66%      7.56% -> 1.46%
-  !   9000     max |dT|  157 K, rms 38.5 K, -0.148%    7.05% -> 0.134%
-  !  10000     max |dT|  0.4 K, rms  0.1 K, +0.002%    6.52% -> 0.060%
+  !   Teff    max|dT|   rms dT   max|dT| at tau<1   max|flux| on -> off
+  !   8000      58.7 K   10.6 K             7.5 K   5.38% -> 4.81%
+  !   9000      20.6 K    2.9 K             3.3 K   1.05% -> 0.92%
+  !   9250      29.7 K    3.4 K             0.7 K   0.54% -> 0.50%
+  !   9500      38.0 K    5.2 K             0.2 K   0.26% -> 0.14%
+  !   9750      42.8 K    5.1 K             0.3 K   0.07% -> 0.08%
+  !  10250      32.7 K    4.6 K             0.1 K   0.26% -> 0.22%
   !
-  ! The transition is sharp between 9000 and 10000 K: molecules still set
-  ! the structure at 9000 K and are irrelevant at 10000 K.  Lowering the
-  ! gate would cure the sub-photospheric convergence artifact in the
-  ! 8000-10000 K band at the price of a real photospheric error, which is
-  ! the wrong trade -- that artifact is pre-existing and mild (the code
-  ! before this change gave 7.71% at 10000 K where it now gives 6.52%).
+  ! GRDADB agrees between the two arms to three decimals at every Teff, which
+  ! is the check that both paths are now sound.  Peak FLXCNV/F_tot falls from
+  ! 0.933 at 8000 K to 0.022 at 10250 K, the expected weakening of convection
+  ! through the A stars.
+  !
+  ! Two conclusions differ from the original table.  There is no sharp
+  ! transition between 9000 and 10000 K: the whole-atmosphere max|dT| is flat
+  ! to rising across the range (20.6, 29.7, 38.0, 42.8 K), not collapsing to
+  ! 0.4 K.  What does fall monotonically is the photospheric cost, which is
+  ! the column that matters because that is where the lines form: 7.5 K at
+  ! 8000 K, 3.3 K at 9000 K, then 0.7 K and below from 9250 K up.
+  !
+  ! So the gate is not perched on a cliff; it sits well inside a region where
+  ! molecules are photospherically irrelevant.  It could move down to ~9250 K
+  ! on this evidence, affecting 315 grid models, but the gain would be small
+  ! -- stages VI and above are negligibly populated in a 9250 K photosphere,
+  ! so little of hilines.bin would actually contribute -- against a real if
+  ! minor photospheric cost.  Left at 10000 K, now on valid numbers.
   REAL(8), PARAMETER :: TEFF_MOLEC_LIMIT = 10000.0D0
 
   ! CLI override for the gate above (molecules=auto|on|off).  AUTO keeps the
@@ -2843,7 +2900,22 @@ SUBROUTINE TCORR(MODE, RCOWT)
   ! they made the deep CZ susceptible to bistable fixed points.
   DO J = 1, NRHOX
     IF (IFCONV .EQ. 1 .AND. HRATIO(J) .GT. 0.0D0) THEN
-      ! Convective layer: skip damping
+      ! Convective layer: skip damping.
+      !
+      ! Experiment (cz_damp_del=X, default off).  The skip above is written
+      ! for the deep EFFICIENT convection zone, where nabla approaches
+      ! nabla_ad and accelerating a layer can move it to a different fixed
+      ! point than its neighbours.  Inefficient convection near the top of a
+      ! zone is a different regime: there nabla greatly exceeds nabla_ad, and
+      ! the undamped step supports a period-2 limit cycle (measured at the top
+      ! of the He II zone of an A star: T alternating over 4.6 K, flux error
+      ! +1.4/-1.8 percent about a mean of -0.19 percent).  When X > 0, re-enable
+      ! the sign-flip damping ONLY, and only where the superadiabatic excess
+      ! exceeds X, which excludes the efficient regime the skip protects.
+      ! Acceleration is never re-enabled here.
+      IF (CZ_DAMP_DEL .GT. 0.0D0 .AND. ITER .GT. 1 .AND. &
+          DLTDLP(J) - GRDADB(J) .GT. CZ_DAMP_DEL .AND. &
+          OLDT1(J) * T1(J) .LT. 0.0D0) T1(J) = T1(J) * 0.5D0
     ELSE IF (IFCONV .EQ. 1 .AND. J .GE. NRHOX/3) THEN
       ! Deep enough that damping shouldn't be applied
     ELSE IF (ITER .EQ. 1) THEN
@@ -8063,7 +8135,21 @@ SUBROUTINE COMPUTE_ONE_POP(CODE, MODE, NUMBER)
 
     ! --- Atomic-only path (no molecules) ---
     ! NELECT solves for electron density from Saha ionization alone.
-    IF (IFPRES .EQ. 1 .AND. ITEMP .NE. ITEMP_PREV) CALL NELECT
+    !
+    ! ENERGY_DENSITY must follow it whenever IFEDNS is armed.  NMOLEC carries
+    ! its EDENS assembly inline, so the IFMOL=1 path refreshes EDENS on every
+    ! populations call; NELECT does not, and the only two CALL ENERGY_DENSITY
+    ! sites sit outside this path.  CONVEC arms IFEDNS and takes four
+    ! finite differences of EDENS at T +/- 0.1% and P +/- 0.1% through this
+    ! routine, so without this call all four saw one stale EDENS and DEDT
+    ! collapsed to the radiation term CONVEC adds by hand -- 250x low at
+    ! logtau -1.75, driving HEATCP down and nabla_ad to 0.99 where the ideal
+    ! gas requires 0.4.  Measured with eos_dump; see
+    ! docs/HOT_BAND_DEEP_FLUX_DIAGNOSIS_V1.md in the grid suite.
+    IF (IFPRES .EQ. 1 .AND. ITEMP .NE. ITEMP_PREV) THEN
+      CALL NELECT
+      IF (IFEDNS .EQ. 1) CALL ENERGY_DENSITY
+    END IF
     ITEMP_PREV = ITEMP
 
     IF (CODE .EQ. 0.0D0) RETURN
@@ -8231,6 +8317,49 @@ CONTAINS
   END SUBROUTINE compute_partfcns
 
 END SUBROUTINE ENERGY_DENSITY
+
+!=========================================================================
+! SUBROUTINE WRITE_EOS_DUMP
+!
+! Diagnostic (eos_dump=FILE).  Writes the equation-of-state derivative
+! chain CONVEC used to build nabla_ad, one row per depth, then the caller
+! exits without iterating.  Run twice with molecules=on and molecules=off
+! from the same deck to compare the two EOS paths on one (T, P) structure.
+!
+! The chain being audited is, per depth:
+!
+!   HEATCP = DEDT - DEDPG*DPDT/DPDPG - PTOTAL/RHO^2*(DRDT - DRDPG*DPDT/DPDPG)
+!   DLRDLT = T/RHO*(DRDT - DRDPG*DPDT/DPDPG)
+!   GRDADB = -PTOTAL/RHO/T * DLRDLT / HEATCP
+!
+! so a wrong GRDADB is attributable to DEDT, DRDT, DEDPG or DRDPG, all of
+! which are printed alongside it.  For an ideal gas away from ionisation
+! GRDADB must be 0.4.
+!=========================================================================
+
+SUBROUTINE WRITE_EOS_DUMP
+
+  IMPLICIT NONE
+
+  INTEGER :: J, U
+
+  OPEN(NEWUNIT=U, FILE=TRIM(EOS_DUMP_FILE), STATUS='REPLACE', ACTION='WRITE')
+  WRITE(U,'(A,I0,A,F9.1,A,F6.3,A,I0)') '# ifmol=', IFMOL, ' teff=', TEFF, &
+    ' logg=', GLOG, ' nrhox=', NRHOX
+  WRITE(U,'(A)') '# J logtau T P PTOTAL RHO XNE XNATOM E_Tplus E_Tminus '// &
+    'DEDT DRDT DEDPG DRDPG HEATCP DLRDLT GRDADB DLTDLP'
+  DO J = 1, NRHOX
+    WRITE(U,'(I4,1X,F9.4,1X,17(1PE16.8,1X))') J, &
+      log10(max(TAUROS(J), 1.0D-30)), T(J), P(J), PTOTAL(J), RHO(J), &
+      XNE(J), XNATOM(J), EOSD_ETP(J), EOSD_ETM(J), &
+      EOSD_DEDT(J), EOSD_DRDT(J), EOSD_DEDPG(J), EOSD_DRDPG(J), &
+      HEATCP(J), DLRDLT(J), GRDADB(J), DLTDLP(J)
+  END DO
+  CLOSE(U)
+  WRITE(6,'(A,A)') ' EOS_DUMP written: ', TRIM(EOS_DUMP_FILE)
+  FLUSH(6)
+
+END SUBROUTINE WRITE_EOS_DUMP
 
 !=========================================================================
 ! SUBROUTINE NELECT
@@ -10888,6 +11017,11 @@ SUBROUTINE CONVEC(MLT_ONLY)
   REAL(8) :: SAVXNH2(kw)
   REAL(8) :: SAVXNMOL(kw, maxmol), SAVXNFPMOL(kw, maxmol)
   REAL(8) :: DILUT(kw)                 ! dilution factor 1 - exp(-τ_Ross)
+  REAL(8) :: FLXPRE(kw)                ! F_conv before the gap fill
+  REAL(8) :: HRGA, HRGB                ! bounding-layer convective fractions,
+                                       ! reported by cnvgap_log; not a gate
+  REAL(8) :: DELMIN                    ! most stable layer inside the gap
+  LOGICAL :: FILLIT                    ! gate verdict for the current gap
 
   REAL(8) :: DTDRHX(kw)    ! dT/d(RHOX) from DERIV
   REAL(8) :: ABCONV(kw)    ! convective opacity (harmonic mean at T±ΔT)
@@ -10983,7 +11117,7 @@ SUBROUTINE CONVEC(MLT_ONLY)
 
   ! --- Other locals ---
   INTEGER :: J
-  INTEGER :: JTOP, JBOT, JA, JB  ! gap-filling indices
+  INTEGER :: JTOP, JBOT, JA, JB, K  ! gap-filling indices
   REAL(8)  :: WGHT                 ! interpolation weight
 
   ! --- External functions ---
@@ -11086,6 +11220,14 @@ SUBROUTINE CONVEC(MLT_ONLY)
     DRDT  = (RHO1(J) - RHO2(J)) / T(J) * 500.0D0
     DEDPG = (EDENS3(J) - EDENS4(J)) / P(J) * 500.0D0
     DRDPG = (RHO3(J) - RHO4(J)) / P(J) * 500.0D0
+
+    ! Capture for eos_dump; see EOSD_* in mod_atlas_data.
+    EOSD_DEDT(J)  = DEDT
+    EOSD_DRDT(J)  = DRDT
+    EOSD_DEDPG(J) = DEDPG
+    EOSD_DRDPG(J) = DRDPG
+    EOSD_ETP(J)   = EDENS1(J)
+    EOSD_ETM(J)   = EDENS2(J)
 
     ! Thermodynamic quantities, ignoring P_turb and assuming P_rad ∝ T⁴
     DPDPG = 1.0D0
@@ -11375,22 +11517,66 @@ SUBROUTINE CONVEC(MLT_ONLY)
     END IF
   END DO
   IF (JTOP .GT. 0 .AND. JBOT .GT. JTOP + 1) THEN
-    DO J = JTOP + 1, JBOT - 1
-      IF (FLXCNV(J) .EQ. 0.0D0) THEN
-        ! Linear interpolation between nearest convective neighbours.
-        JA = J - 1
-        DO WHILE (JA .GT. JTOP .AND. FLXCNV(JA) .EQ. 0.0D0)
-          JA = JA - 1
-        END DO
-        JB = J + 1
-        DO WHILE (JB .LT. JBOT .AND. FLXCNV(JB) .EQ. 0.0D0)
-          JB = JB + 1
-        END DO
-        IF (FLXCNV(JA) .GT. 0.0D0 .AND. FLXCNV(JB) .GT. 0.0D0) THEN
-          WGHT = dble(J - JA) / dble(JB - JA)
-          FLXCNV(J) = FLXCNV(JA) * (1.0D0 - WGHT) + FLXCNV(JB) * WGHT
-        END IF
+    ! Decide per GAP, not per layer, and decide it from the pre-fill profile.
+    ! Two reasons.  The fill is a statement about one convection zone, so the
+    ! unit of decision is the gap.  And the original loop let JA walk onto
+    ! layers it had just written, so after the first filled layer it was
+    ! reading its own output -- which also made the trace hard to interpret.
+    !
+    ! The gate is the most stable layer inside the gap.  Interpolating
+    ! convective flux across a layer that is genuinely stable is what breaks
+    ! the hot band: A-type atmospheres carry two disjoint zones (He II near
+    ! log tau 0.4-1.1 and one at the base near 2.9-3.0), the fill bridges up
+    ! to 44 stable layers between them, and TCORR then treats those layers as
+    ! convective, forms a negative superadiabatic excess, and clamps on
+    ! DEL_FLOOR -- suppressing the flux-constancy correction by ~1e6.
+    !
+    ! Measured over 28 models, 12 iterations each (cnvgap_log; see
+    ! docs/HOT_BAND_DEEP_FLUX_DIAGNOSIS_V1.md), then confirmed by paired runs
+    ! against the unmodified build: hot-band bridges are refused 93-100
+    ! percent of the time and 8750/4.00 and 9500/4.00 converge where they
+    ! previously ran out of iterations at ~7 percent flux error.  Cool dwarfs
+    ! are untouched -- 2800/5.00 is bit-identical from three of four starting
+    ! decks, and improves 4.7x from the fourth.
+    !
+    ! Note this is a gate on the gap, not on the fill's own output: a pocket
+    ! that is genuinely inside one zone stays only mildly subadiabatic, so it
+    ! is still bridged.  Models from 4000 K to 6250 K never enter this code
+    ! at all -- they produce no gaps -- so the gate cannot affect them.
+    FLXPRE(1:NRHOX) = FLXCNV(1:NRHOX)
+    J = JTOP + 1
+    DO WHILE (J .LE. JBOT - 1)
+      IF (FLXPRE(J) .GT. 0.0D0) THEN
+        J = J + 1
+        CYCLE
       END IF
+      JA = J - 1
+      JB = J
+      DO WHILE (JB .LE. JBOT - 1 .AND. FLXPRE(JB) .EQ. 0.0D0)
+        JB = JB + 1
+      END DO
+      IF (FLXPRE(JA) .GT. 0.0D0 .AND. FLXPRE(JB) .GT. 0.0D0) THEN
+        HRGA = FLXPRE(JA) / (FLXPRE(JA) + max(FLXRAD(JA), 1.0D-30))
+        HRGB = FLXPRE(JB) / (FLXPRE(JB) + max(FLXRAD(JB), 1.0D-30))
+        DELMIN = 0.0D0
+        DO K = JA + 1, JB - 1
+          DELMIN = min(DELMIN, DLTDLP(K) - GRDADB(K))
+        END DO
+        FILLIT = DELMIN .GT. CNV_GAP_DEL_MIN
+        IF (FILLIT) THEN
+          DO K = JA + 1, JB - 1
+            WGHT = dble(K - JA) / dble(JB - JA)
+            FLXCNV(K) = FLXPRE(JA) * (1.0D0 - WGHT) + FLXPRE(JB) * WGHT
+          END DO
+        END IF
+        IF (CNVGAP_LOG) WRITE(6, &
+          '(A,I4,A,I4,A,I4,A,I4,A,L2,A,1PE10.3,A,1PE10.3,A,1PE11.3)') &
+          ' CNVGAP iter=', ITER, ' JA=', JA, ' JB=', JB, &
+          ' width=', JB - JA - 1, &
+          ' filled=', FILLIT, &
+          ' hrA=', HRGA, ' hrB=', HRGB, ' delmin=', DELMIN
+      END IF
+      J = JB
     END DO
   END IF
 
