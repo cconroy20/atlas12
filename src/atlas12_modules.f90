@@ -1509,7 +1509,14 @@ MODULE mod_atlas_data
   REAL(8)  :: ISOTOPE(10, 2, mion)
 
   ! --- Iteration control ---
-  INTEGER :: ITER, ifprnt(60) = 2, ifpnch(60) = 0, NUMITS = 0
+  ! IFPRNT and IFPNCH are indexed by iteration number and written across
+  ! 1..NUMITS, so their extent is the hard ceiling on numit.  Named rather than
+  ! repeated as a literal because atlas12c.f90 validates numit against the same
+  ! bound: if the two ever disagree, the DO I = 1, NUMITS loop that initialises
+  ! them writes past the end of both arrays with no diagnostic.
+  INTEGER, PARAMETER :: max_iterations = 200
+  INTEGER :: ITER, ifprnt(max_iterations) = 2, ifpnch(max_iterations) = 0, &
+             NUMITS = 0
 
   ! Phase-aware early stopping.  Only ordinary TCORR mode-3 evaluations
   ! contribute to the streak; polish trials and final verification passes do
@@ -1911,9 +1918,18 @@ MODULE mod_atlas_data
   REAL(8) :: NEWT_CHARGESQ(kw), NEWT_PTOTAL(kw)
   REAL(8) :: NEWT_RADEN(kw), NEWT_KNU(kw), NEWT_PRADK(kw)
   INTEGER :: NEWT_ITEMP, NEWT_IFEDNS
-  REAL(8) :: NEWT_ROSSTAB_ROSS(kw * 60)
-  REAL(8) :: NEWT_ROSSTAB_TABT(kw * 60)
-  REAL(8) :: NEWT_ROSSTAB_TABP(kw * 60)
+
+  ! ROSSTAB holds one entry per layer per iteration, so its extent is kw times
+  ! the iteration ceiling.  Declared here, above both the Newton snapshot copies
+  ! and the table itself, because the snapshot is taken by whole-array assignment
+  ! (NEWT_ROSSTAB_ROSS = ROSSTAB_ROSS): if the two extents ever disagree that is
+  ! a shape mismatch, and writing the larger into the smaller would corrupt
+  ! whatever follows it in the module.  One name, used by both.
+  INTEGER, PARAMETER :: ROSSTAB_MAXTAB = kw * max_iterations
+
+  REAL(8) :: NEWT_ROSSTAB_ROSS(ROSSTAB_MAXTAB)
+  REAL(8) :: NEWT_ROSSTAB_TABT(ROSSTAB_MAXTAB)
+  REAL(8) :: NEWT_ROSSTAB_TABP(ROSSTAB_MAXTAB)
   REAL(8) :: NEWT_ROSSTAB_ZEROT, NEWT_ROSSTAB_ZEROP
   REAL(8) :: NEWT_ROSSTAB_SLOPET, NEWT_ROSSTAB_SLOPEP
   INTEGER :: NEWT_ROSSTAB_NROSS
@@ -1935,7 +1951,30 @@ MODULE mod_atlas_data
 
   ! ROSSTAB persistent table -- promoted from SAVE'd locals so the
   ! Newton snapshot can include them.
-  INTEGER, PARAMETER :: ROSSTAB_MAXTAB = kw * 60
+  !
+  ! One entry per layer per iteration, so the extent must be kw * the iteration
+  ! ceiling.  It was kw * 60 while numit was capped at 60; once the cap moved to
+  ! max_iterations this silently stopped appending at iteration 61 -- NROSS
+  ! clamps and MODE 1 EXITs, so there is no out-of-bounds write, but the table
+  ! freezes at the first 60 iterations' worth while the structure keeps moving,
+  ! and MODE 2 then interpolates kappa_Ross from a state the model has left.
+  ! Measured on 8250/5.00 at numit=100: max|flux| drifted 1.4% -> 2.9% across
+  ! iterations 61-100 having merely oscillated in 0.7-2.5% before that.
+  !
+  ! Behaviour at numit <= 60 is unchanged: the kernel weights on NROSS, never on
+  ! MAXTAB, and NROSS reaches the same 4800 either way.
+  !
+  ! Two knock-on effects of the larger table, both judged acceptable.  Neighbour
+  ! spacing goes as 1/sqrt(NROSS), so at the full 16000 entries it is ~0.008 and
+  ! d^2 ~ 6e-5 falls just below SHEP_EPS = 1e-4, flattening the Shepard kernel
+  ! slightly toward a uniform average of its KFIT neighbours -- but those
+  ! neighbours are correspondingly closer, so the interpolant samples a tighter
+  ! region.  And MODE 2 scans the table linearly, twice; iteration wall time was
+  ! flat at 78 s while NROSS grew from 80 to 4800 on the run above, so that scan
+  ! is far from being the bottleneck.
+  !
+  ! ROSSTAB_MAXTAB is declared with the Newton snapshot arrays above, which must
+  ! share its extent.
   REAL(8) :: ROSSTAB_ROSS(ROSSTAB_MAXTAB)
   REAL(8) :: ROSSTAB_TABT(ROSSTAB_MAXTAB)
   REAL(8) :: ROSSTAB_TABP(ROSSTAB_MAXTAB)
@@ -3007,8 +3046,8 @@ SUBROUTINE TCORR(MODE, RCOWT)
       '                  K        K       K       K       K', &
       '          %           %         %                            ', &
       '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-      (I3, F8.3, F10.1, 4F8.1, &
-       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+      (I3, 1X,F8.3, 1X,F10.1, 4(1X,F9.1), &
+       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 1X,ES11.3, 1X,F8.3, 1X,ES11.2, &
        1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
     FLUSH(66)
   END IF
@@ -3855,8 +3894,8 @@ SUBROUTINE CZC_POLISH(EMIT_RECORD, APPLIED)
       '                  K        K       K       K       K', &
       '          %           %         %                            ', &
       '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-      (I3, F8.3, F10.1, 4F8.1, &
-       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+      (I3, 1X,F8.3, 1X,F10.1, 4(1X,F9.1), &
+       1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 1X,ES11.3, 1X,F8.3, 1X,ES11.2, &
        1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
     flush(66)
   END IF
@@ -4097,8 +4136,8 @@ SUBROUTINE CZC_WRITE_VERIFICATION_BLOCK(TAG)
     '                  K        K       K       K       K', &
     '          %           %         %                            ', &
     '     dyn/cm^2      1/cm^3        km       cm/s^2' / &
-    (I3, F8.3, F10.1, 4F8.1, &
-     1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 2F8.3, 1X,ES11.2, &
+    (I3, 1X,F8.3, 1X,F10.1, 4(1X,F9.1), &
+     1X,ES11.2, 1X,ES11.2, 1X,ES10.2, 1X,ES11.3, 1X,F8.3, 1X,ES11.2, &
      1X,ES12.3, 1X,ES12.3, 1X,ES10.1, 1X,ES11.2))
   FLUSH(66)
 
