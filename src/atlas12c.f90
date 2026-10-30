@@ -179,6 +179,7 @@ PROGRAM ATLAS12
         END SELECT
       CASE ('cnv_gap_del'); READ(val, *, IOSTAT=ISTAT) CNV_GAP_DEL_MIN
       CASE ('cz_damp_del'); READ(val, *, IOSTAT=ISTAT) CZ_DAMP_DEL
+      CASE ('linecap'); READ(val, *, IOSTAT=ISTAT) LINEDATA_CAP_LINES
       CASE ('cnvgap_log')
         CNVGAP_LOG = (TRIM(val) .EQ. 'on')
       CASE ('eos_dump')
@@ -256,6 +257,11 @@ PROGRAM ATLAS12
   IF (NUMITS .LT. 1 .OR. NUMITS .GT. max_iterations) THEN
     WRITE(6, '(A,I0,A,I0)') ' ERROR: numit must lie in 1..', max_iterations, &
       '; got ', NUMITS
+    CALL EXIT(1)
+  END IF
+  IF (LINEDATA_CAP_LINES .LT. 1 .OR. LINEDATA_CAP_LINES .GT. LINEDATA_CAP_MAX) THEN
+    WRITE(6, '(A,I0,A,I0)') ' ERROR: linecap must lie in 1..', LINEDATA_CAP_MAX, &
+      '; got ', LINEDATA_CAP_LINES
     CALL EXIT(1)
   END IF
   IF (CZC_POL_NHEAL .LT. 1 .OR. CZC_POL_NHEAL .GT. max_iterations) THEN
@@ -549,6 +555,9 @@ PROGRAM ATLAS12
     ELSE
       WRITE(6,'(A)')     '  cz damping       =  off   (historical CZ skip)'
     END IF
+    IF (LINEDATA_CAP_LINES .NE. LINEDATA_CAP_DEFAULT) &
+      WRITE(6,'(A,I10,A,F5.1,A)') '  line capacity    = ', LINEDATA_CAP_LINES, &
+        '   (', LINEDATA_CAP_LINES * 16.0D0 / 1.0D9, ' GB)'
     WRITE(6,'(A,I5)')    '  teff (K)         = ', INT(TEFF)
     WRITE(6,'(A,F5.2)')  '  logg             = ', GLOG
     IF (IFMOL .EQ. 1) THEN
@@ -861,6 +870,8 @@ CONTAINS
     WRITE(6, '(A)') '  cz_damp_del=X Re-enable TCORR sign-flip damping where the superadiabatic'
     WRITE(6, '(A)') '               excess exceeds X (default -1 = off, historical skip)'
     WRITE(6, '(A)') '  cnvgap_log=on Trace every gap CONVEC considers filling'
+    WRITE(6, '(A)') '  linecap=N    Lines SELECTLINES can store, 16 bytes each (default'
+    WRITE(6, '(A)') '               150000000 = 2.4 GB; max 500000000)'
     WRITE(6, '(A)') '  czc_polish=M Deep-CZ polish mode: off, legacy, transactional'
     WRITE(6, '(A)') '               (default legacy; transactional uses full-RT trial/rollback)'
     WRITE(6, '(A)') '  czc_nheal=N  Legacy terminal polish calls (default 8; 1..numit)'

@@ -2115,6 +2115,13 @@ MODULE mod_atlas_data
   ! --- In-memory line data storage (replaces fort.12 I/O) ---
   INTEGER(4), ALLOCATABLE :: LINEDATA(:,:)   ! (4, NLINES_STORED)
   INTEGER :: NLINES_STORED = 0
+  ! Lines SELECTLINES may store, 16 bytes each.  Fixed for the whole run; a
+  ! model that selects more stops with a LINEDATA overflow.  150M covers
+  ! solar-metallicity M stars, but metal-rich ones at Teff <= 3200 K exceed
+  ! it once H2O is read (~40-47M lines on its own).  Set by linecap=N.
+  INTEGER, PARAMETER :: LINEDATA_CAP_DEFAULT = 150000000
+  INTEGER, PARAMETER :: LINEDATA_CAP_MAX = 500000000   ! = MAX_LINES in SELECTLINES
+  INTEGER :: LINEDATA_CAP_LINES = LINEDATA_CAP_DEFAULT
 
   ! --- Complex-profile lines for XLINOP (replaces the fort.19 file) -----
   ! Filled once by SELECTLINES from gfall via read_gfall_for_atlas; XLINOP
@@ -20001,7 +20008,7 @@ SUBROUTINE SELECTLINES
   IF (IDEBUG .EQ. 1) WRITE(6,'(A)') ' RUNNING SELECTLINES'
 
   ! Allocate in-memory line storage (replaces fort.12)
-  LINEDATA_CAP = 150000000   ! 150M lines initial (~2.4 GB)
+  LINEDATA_CAP = LINEDATA_CAP_LINES   ! 150M (~2.4 GB) unless linecap=N
   IF (allocated(LINEDATA)) DEALLOCATE(LINEDATA)
   ALLOCATE(LINEDATA(4, LINEDATA_CAP), STAT=IOS)
   IF (IOS .NE. 0) THEN
@@ -20093,7 +20100,8 @@ SUBROUTINE SELECTLINES
 
         NLINES_STORED = NLINES_STORED + 1
         IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          WRITE(6, '(A,I12,A)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED, &
+            ' (raise linecap=N)'
           CALL EXIT(1)
         END IF
         LINEDATA(:, NLINES_STORED) = LINEREC
@@ -20183,7 +20191,8 @@ SUBROUTINE SELECTLINES
         CALL PACK_LINEDATA(LINEREC)
         NLINES_STORED = NLINES_STORED + 1
         IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          WRITE(6, '(A,I12,A)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED, &
+            ' (raise linecap=N)'
           CALL EXIT(1)
         END IF
         LINEDATA(:, NLINES_STORED) = LINEREC
@@ -20334,7 +20343,8 @@ SUBROUTINE SELECTLINES
         CALL PACK_LINEDATA(LINEREC)
         NLINES_STORED = NLINES_STORED + 1
         IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          WRITE(6, '(A,I12,A)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED, &
+            ' (raise linecap=N)'
           CALL EXIT(1)
         END IF
         LINEDATA(:, NLINES_STORED) = LINEREC
@@ -20455,7 +20465,8 @@ SUBROUTINE SELECTLINES
         CALL PACK_LINEDATA(LINEREC)
         NLINES_STORED = NLINES_STORED + 1
         IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          WRITE(6, '(A,I12,A)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED, &
+            ' (raise linecap=N)'
           CALL EXIT(1)
         END IF
         LINEDATA(:, NLINES_STORED) = LINEREC
@@ -20525,7 +20536,8 @@ SUBROUTINE SELECTLINES
         CALL PACK_LINEDATA(LINEREC)
         NLINES_STORED = NLINES_STORED + 1
         IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-          WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+          WRITE(6, '(A,I12,A)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED, &
+            ' (raise linecap=N)'
           CALL EXIT(1)
         END IF
         LINEDATA(:, NLINES_STORED) = LINEREC
@@ -20576,7 +20588,8 @@ SUBROUTINE SELECTLINES
       CALL PACK_LINEDATA(LINEREC)
       NLINES_STORED = NLINES_STORED + 1
       IF (NLINES_STORED .GT. LINEDATA_CAP) THEN
-        WRITE(6, '(A,I12)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED
+        WRITE(6, '(A,I12,A)') ' SELECTLINES: LINEDATA overflow at ', NLINES_STORED, &
+          ' (raise linecap=N)'
         CALL EXIT(1)
       END IF
       LINEDATA(:, NLINES_STORED) = LINEREC
