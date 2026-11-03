@@ -28,6 +28,10 @@
 !                       so turbv=0 silently did nothing.)
 !    more_output=<v>    (optional) if yes/true/1/on, also emit the
 !                       <model>.mol and <model>.linform files.  Default no.
+!    falcorr=<file>     (optional) FAL per-line corrections to wavelength,
+!                       log gf and vdW width (see mod_falcorr).  Default none.
+!    falcorr_strict=<v> (optional) yes (default): stop if an atomic catalog
+!                       line in the window is not found; no: warn and go on.
 !
 !  Units:
 !     5  input  : model atmosphere cards (CLI argument, read by READIN)
@@ -46,6 +50,7 @@ PROGRAM SYNTHE
   USE synthe_module
   USE mod_mklinelist, only: run_mklinelist, lte_lines, nlte_lines, nlines_lte, &
                             nlines_nlte, ICA4227
+  USE mod_falcorr,    only: falcorr_load, falcorr_report, falcorr_strict
   USE mod_parameters, only: LINE_CUTOFF, &
                             CA4227_MODE, CA4227_PP, CA4227_PS, CA4227_PX, &
                             CA4227_DLMAX, CA4227_WLA
@@ -99,7 +104,8 @@ PROGRAM SYNTHE
 
   CHARACTER(LEN=*), PARAMETER :: USAGE = &
     ' Usage: synthe_spectrv.exe <model_file> wlbeg=<nm> wlend=<nm> ' // &
-    '[resolu=<R>] [turbv=<kms>] [more_output=yes|no]'
+    '[resolu=<R>] [turbv=<kms>] [more_output=yes|no] [falcorr=<file>] ' // &
+    '[falcorr_strict=yes|no]'
 
   ! --- Fixed run parameters (formerly read from fort.93 / SYNBEG) -------
   !   ifvac = 1 : vacuum wavelengths throughout
@@ -111,6 +117,7 @@ PROGRAM SYNTHE
   ! --- Run parameters set from CLI --------------------------------------
   REAL(4)   :: turbv
   LOGICAL   :: more_output   ! print .mol (molecular densities) and .linform (tau tables)
+  CHARACTER(LEN=512) :: falcorr_file   ! FAL line-correction catalog, '' = none
 
   ! --- Model atmosphere header ------------------------------------------
   INTEGER   :: nedge
@@ -163,7 +170,7 @@ PROGRAM SYNTHE
   CHARACTER(LEN=512) :: cont_file
   ! Minimum supported resolving power (see the check below).
   REAL(8), PARAMETER :: RESOLU_MIN = 300000.0D0
-  CHARACTER(LEN=64)  :: tmparg
+  CHARACTER(LEN=600) :: tmparg   ! key=value; must hold falcorr=<512-char path>
   CHARACTER(256)     :: envval
   INTEGER            :: envlen, envstat, dotpos
 
@@ -200,6 +207,7 @@ PROGRAM SYNTHE
   !                      Accepted true values: yes, true, 1, on.
   !                      Accepted false values: no, false, 0, off.
   !                      Default: no.
+  !   falcorr=<file>   : FAL line-correction catalog (optional, see mod_falcorr)
   ! Output file basenames are model_file with extension stripped.
   ! -----------------------------------------------------------------------
   IF (COMMAND_ARGUMENT_COUNT() .LT. 1) THEN
@@ -214,6 +222,7 @@ PROGRAM SYNTHE
   wlbeg       = 0.0D0    ! sentinel
   wlend       = 0.0D0    ! sentinel
   more_output = .FALSE.
+  falcorr_file = ''
 
   DO i = 2, COMMAND_ARGUMENT_COUNT()
     CALL GET_COMMAND_ARGUMENT(i, tmparg)
@@ -227,6 +236,18 @@ PROGRAM SYNTHE
       CASE ('wlend');  READ(tmparg(eqpos+1:), *) wlend
       CASE ('resolu'); READ(tmparg(eqpos+1:), *) resolu
       CASE ('turbv');  READ(tmparg(eqpos+1:), *) turbv
+      CASE ('falcorr'); falcorr_file = ADJUSTL(tmparg(eqpos+1:))
+      CASE ('falcorr_strict')
+        SELECT CASE (TRIM(ADJUSTL(tmparg(eqpos+1:))))
+          CASE ('yes', 'YES', 'true', 'TRUE', '1', 'on', 'ON', 'y', 'Y')
+            falcorr_strict = .TRUE.
+          CASE ('no', 'NO', 'false', 'FALSE', '0', 'off', 'OFF', 'n', 'N')
+            falcorr_strict = .FALSE.
+          CASE DEFAULT
+            WRITE(6,'(A,A)') ' ERROR: falcorr_strict expects yes/no, got: ', &
+              TRIM(tmparg(eqpos+1:))
+            CALL EXIT(1)
+        END SELECT
       CASE ('more_output')
         SELECT CASE (TRIM(ADJUSTL(tmparg(eqpos+1:))))
           CASE ('yes', 'YES', 'true', 'TRUE', '1', 'on', 'ON', 'y', 'Y')
@@ -366,8 +387,10 @@ PROGRAM SYNTHE
   ! mod_mklinelist.  TEFF > TEFF_COOL_LIMIT skips H2O/TiO lists.
   WRITE(6,*) ''
   WRITE(6,*) 'Assembling line list...'
+  IF (LEN_TRIM(falcorr_file) .GT. 0) CALL falcorr_load(TRIM(falcorr_file))
   CALL run_mklinelist(wlbeg, wlend, resolu, TEFF, &
                       TRIM(DATADIR) // 'lines.list', DATADIR)
+  CALL falcorr_report(wlbeg, wlend)
 
   WRITE(6,'(A,I9,A,I9,A,I9)') ' Lines:  LTE =', nlines_lte, &
        '   NLTE =', nlines_nlte, '   total =', nlines_lte + nlines_nlte

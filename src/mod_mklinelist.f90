@@ -19,6 +19,7 @@
 ! ==============================================================================
 
 MODULE mod_mklinelist
+  USE mod_falcorr, ONLY: falcorr_lookup, FC_SRC_GFALL, FC_SRC_PREDICT
   IMPLICIT NONE
   PRIVATE
 
@@ -866,6 +867,7 @@ CONTAINS
     REAL(8)  :: effnsq, zeff, rsqup, rsqlo, eup, eup_d
     REAL(8)  :: gammar_d, gammas_d, gammaw_d, elo_d
     INTEGER  :: nelion_i
+    REAL(8)  :: fdwl, fdgf, fdgw     ! per-line FAL corrections (mod_falcorr)
 
     ! --- dynamic growth buffers ---
     INTEGER, PARAMETER :: CHUNK = 100000
@@ -952,8 +954,20 @@ CONTAINS
       IF (wlvac .GT. wlend + dellim(lim) * delfactor) CYCLE
       IF (auto_flag .EQ. 'COR') CYCLE
 
+      ! --- FAL per-line corrections (all zero unless falcorr= was given) ---
+      ! Keyed on the line as read, before any shift.  Unlike the whole-list
+      ! dwl/dgflog/dgammaw above these are per line; the vdW factor is applied
+      ! below, after the default-width block, so it scales whichever width the
+      ! line ends up with.
+      IF (falcorr_lookup(FC_SRC_GFALL, icode_r, wlvac, DBLE(REAL(MIN(ABS(e), ABS(ep)), 4)), &
+                         DBLE(gflog), iso1, iso2, fdwl, fdgf, fdgw)) THEN
+        wlvac = wlvac + fdwl
+        ixwl  = INT(LOG(wlvac) / ratiolg + 0.5D0)
+        nbuff = ixwl - ixwlbeg + 1
+      END IF
+
       ! --- oscillator strength and energy ---
-      gf    = 10.0**(gflog + dgflog + x1 + x2)
+      gf    = 10.0**(gflog + dgflog + x1 + x2 + REAL(fdgf, 4))
       elo_d = DBLE(MIN(ABS(e), ABS(ep)))
       eup_d = DBLE(MAX(ABS(e), ABS(ep)))
 
@@ -1013,6 +1027,7 @@ CONTAINS
           gammaw_d = 1.D-7 / zeff
         END IF
       END IF
+      IF (fdgw .NE. 0.0D0) gammaw_d = gammaw_d * 10.0D0**fdgw
 
       ! --- line type dispatch ---
       itype = 0
@@ -1264,6 +1279,7 @@ CONTAINS
     INTEGER :: ios, i, istart, istop, limitblue, limitred, newlimit
     INTEGER :: lengthfile, nstart, iwl1, nelionnew, nelion_i, nbuff
     INTEGER :: ixwl
+    REAL(8) :: fdwl, fdgf, fdgw     ! per-line FAL corrections (mod_falcorr)
 
     INTEGER, PARAMETER :: CHUNK = 200000
     TYPE(lte_line_t), ALLOCATABLE :: lte_buf(:)
@@ -1346,14 +1362,26 @@ CONTAINS
       IF (nelion_i .EQ. 0) CYCLE
 
       wlvac_d = EXP(iwl * ratiolog_r2e6)
-      freq    = 2.99792458D17 / wlvac_d
       gf_d    = tablog(iwords(5))
-      congf   = 0.01502D0 * gf_d / freq
       elo_d   = tablog(iwords(4))
+
+      ! --- FAL per-line corrections (all zero unless falcorr= was given) ---
+      ! Key as mkmasterll writes it: species code x 100 from nelion (valid
+      ! for ion stages I-VI, all FAL fits), log10 of the tablog gf, REAL(4) elo.
+      IF (falcorr_lookup(FC_SRC_PREDICT, ((nelion_i - 1) / 6 + 1) * 100 + MOD(nelion_i - 1, 6), &
+                         wlvac_d, DBLE(REAL(elo_d, 4)), &
+                         DBLE(REAL(LOG10(MAX(gf_d, 1.0D-300)), 4)), 0, 0, &
+                         fdwl, fdgf, fdgw)) THEN
+        wlvac_d = wlvac_d + fdwl
+        gf_d    = gf_d * 10.0D0**fdgf
+      END IF
+
+      freq    = 2.99792458D17 / wlvac_d
+      congf   = 0.01502D0 * gf_d / freq
       frq4pi  = freq * 12.5664D0
       gamrf   = tablog(iwords(6)) / frq4pi
       gamsf   = tablog(iwords(7)) / frq4pi
-      gamwf   = tablog(iwords(8)) / frq4pi
+      gamwf   = tablog(iwords(8)) / frq4pi * 10.0D0**fdgw
 
       ixwl  = INT(LOG(wlvac_d) / ratiolg + 0.5D0)
       nbuff = ixwl - ixwlbeg + 1

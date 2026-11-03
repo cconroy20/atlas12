@@ -296,6 +296,8 @@ Arguments:
 | `resolu=<R>`          | no       | Resolving power λ/Δλ (default 300 000) |
 | `turbv=<kms>`         | no       | Microturbulence in km/s. If > 0, **replaces** the model atmosphere's microturbulence at all depths; if omitted or ≤ 0 (default 0.0), the per-layer value from the input model is used |
 | `more_output=<yes\|no>` | no     | If yes, also write `.linform` and `.mol` diagnostic files (default no).  Accepted truthy values: `yes`, `true`, `1`, `on`, `y` (case-insensitive); falsy: `no`, `false`, `0`, `off`, `n`. |
+| `falcorr=<file>`      | no       | Apply FAL per-line corrections to wavelength, log gf and vdW width from this catalog (default none).  See "FAL line corrections" below |
+| `falcorr_strict=<yes\|no>` | no  | `yes` (default): stop if an atomic catalog line in the window is not found in the line list; `no`: warn and continue |
 
 The output basename is derived from the model filename by stripping the
 leading directory and trailing extension.  For example,
@@ -339,6 +341,40 @@ SYNTHE reads one self-contained file per element from `data/nlte/`
 The files are derived, not authored — see `data/nlte/README.txt` for
 provenance and the rebuild, and CHANGELOG for the physics, the grid's
 constraints and the measured effect on line profiles.
+
+### FAL line corrections (default off)
+
+`falcorr=<file>` applies per-line corrections fitted by FAL (FALv3) against six
+benchmark stars:
+
+    wlvac += dwl_nm      log gf += dloggf      gamma_vdW *= 10**dloggw
+
+Catalogs are produced and distributed by the FAL project; contact Phillip
+Cargile for one.  They are plain text and record their FAL version and the
+master line list they were built from, which SYNTHE echoes at startup.  The
+format is documented at the top of `src/mod_falcorr.f90`.  FAL fits against the `synthe2026`
+master line list, a full-precision dump of this code's own readers.  Each
+line is therefore found again by what `read_gfall` / `read_predict` already
+compute: species code, vacuum λ, REAL(4) E_low, raw log gf, iso1, iso2.  The
+tolerances are in `mod_falcorr`.
+
+- Atomic gfall and gfpred lines only.  FAL's molecular corrections are whole-band
+  factors per 20 Å window.  If a catalog carries molecular rows, SYNTHE
+  counts them in the report but does not apply them.
+- The vdW factor multiplies whatever width the line ends up with, including
+  SYNTHE's own default for lines whose gfall width is blank.  FAL put its
+  factor on Korg's Unsöld default for those (~0.06% of lines).
+- Every atomic catalog line inside `[wlbeg, wlend]` must be found.  One that is
+  not means the catalog was built against a different line-list generation
+  than `lines.list` names.  SYNTHE lists the first ten and stops;
+  `falcorr_strict=no` makes it warn and continue instead.
+- After the line list is built, a `FALCORR summary` block reports: catalog
+  size; atomic lines in the window; how many matched, by which reader; how many
+  did not; how many line-list records changed (duplicate source records
+  included); molecular rows skipped; and the range of Δλ, Δlog gf
+  (weakened/strengthened) and Δlog γ_vdW actually applied.
+- Without `falcorr=` nothing is looked up and output is bit-identical to a
+  build without this feature.
 
 ## Input Data
 

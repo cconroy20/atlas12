@@ -20,6 +20,16 @@ further hardening), the later entry stands.
 - The `mklinelist` line-list preprocessor (formerly the standalone `synbeg | rgfall | rpredict | rmolecasc | rh2ofast` shell pipeline) absorbed into the SYNTHE executable as `mod_mklinelist`, dispatching from a single plain-text `lines.list` manifest
 - SYNTHE three-program pipeline (XNFPELSYN, SYNTHE, SPECTRV) merged into a single executable with all inter-stage data flow in memory; intermediate binary scratch files (`fort.9`, `fort.10`, `fort.13`, `fort.14`, `fort.15`, `fort.93`, `spectrv.input`) eliminated
 - ASCII spectrum output written directly by SYNTHE (`.spec`), eliminating the standalone `syntoascanga` post-processing step
+- SYNTHE `falcorr=<file>` (2026-11-03): FAL per-line corrections (Δλ, Δlog gf, Δlog γ_vdW), new module `mod_falcorr`, hooked into `read_gfall` and `read_predict`.
+  - **Matching.** Lines are matched on (code, vacuum λ, REAL(4) E_low, raw log gf, iso1, iso2), the quantities `mkmasterll` dumps into the `synthe2026` master list FAL fits against.
+  - **Scope.** Atomic lines only: FAL's molecular corrections are window-local band factors.
+  - **Regression.** Without the option the output is bit-identical (516–520 nm solar run, `cmp`).
+  - **Matching test.** With the 100-window FAL v8 catalog, all 28,745 lines match over 479–681 nm; runtime 50 s vs 51 s without it.
+  - **Validation**, on the FAL v8 specdump pixels with a fitted Gaussian velocity kernel:
+    - SOL: rms data−model 0.0652 → 0.0339, against Korg's 0.0658 → 0.0337.
+    - ARC: 0.0824 → 0.0532, against Korg's 0.0780 → 0.0359. The shortfall is in the Mg b windows, where SYNTHE's strong-line wings in Arcturus already sit deeper than Korg's without corrections.
+  - An unmatched atomic catalog line inside the window is a hard stop (line-list generation mismatch); `falcorr_strict=no` makes it a warning. A `FALCORR summary` block reports matches by reader, misses, molecular rows skipped, and the corrections applied.
+  - The `tmparg` CLI buffer was widened from 64 to 600 characters; it truncated any real path.
 
 ## Numerical and physical
 
