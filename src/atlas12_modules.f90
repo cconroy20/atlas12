@@ -18947,7 +18947,7 @@ SUBROUTINE LINOP1
   !---------------------------------------------------------------------
   ! Main line loop (reads from in-memory LINEDATA array)
   !---------------------------------------------------------------------
-  DO LINE = 1, NLINES_STORED
+  LINES: DO LINE = 1, NLINES_STORED
     LINEREC = LINEDATA(:, LINE)
     CALL UNPACK_LINEDATA(LINEREC)
     IF (mod(LINE, 100000) .EQ. 1 .AND. ITER .EQ. 1 .AND. IDEBUG .EQ. 1) &
@@ -18995,9 +18995,12 @@ SUBROUTINE LINOP1
     DO WHILE (WLVAC .GE. WAVESET(NU))
       NU = NU + 1
       IF (NU .GE. NUMNU) THEN
-        ! Last point may miss blue line wings
+        ! Last point may miss blue line wings.  Skip the line: a bare CYCLE
+        ! here re-tested this DO WHILE, so NU ran past WAVESET(NUMNU) and
+        ! the wing loops wrote XLINES out of bounds (crashes in XLINOP).
+        NU = NUMNU
         IWLOLD = IWL
-        CYCLE
+        CYCLE LINES
       END IF
     END DO
 
@@ -19141,7 +19144,7 @@ SUBROUTINE LINOP1
     IF (IFLINE .EQ. 1) LINEUSED = LINEUSED + 1
 
     IWLOLD = IWL
-  END DO  ! LINE
+  END DO LINES
 
   RETURN
 
