@@ -20,6 +20,7 @@ and [atlas_to_do.md](atlas_to_do.md) — open items.
 - [Building](#building)
 - [Running ATLAS12](#running-atlas12)
   - [Teff-dependent switches](#teff-dependent-switches)
+  - [One model from stellar parameters](#one-model-from-stellar-parameters)
 - [Running SYNTHE](#running-synthe)
   - [NLTE departure coefficients (default off)](#nlte-departure-coefficients-default-off)
 - [Input Data](#input-data)
@@ -270,6 +271,37 @@ and skipped line lists appear as zero-count rows in the line-list summary.
 
 Equilibrium **condensation** is gated on the local temperature
 (`COND_TMAX`), not on Teff, so it does not appear in this table.
+
+### One model from stellar parameters
+
+`scripts/run_atlas12_model.py` runs one model from Teff, log g, [Fe/H],
+[α/Fe], Vmic, Y and α_MLT, with the composition and solver settings of the
+CWC v3 atmosphere grid (Python 3, standard library only):
+
+```
+python3 scripts/run_atlas12_model.py --teff 3500 --logg 1.0 --feh 0 --afe 0 \
+    --vmic 2.0 --y 0.25 --mlt 2.0 --start /path/to/start_decks --outdir out/
+```
+
+- **Composition.** Bergemann et al. (2025) solar abundances scaled by [Fe/H],
+  with [α/Fe] added to O, Ne, Mg, Si, S, Ar, Ca and Ti. Y is the helium mass
+  fraction. Metals are anchored to H, so [X/H] stays exact as Y changes. The
+  script writes these as an `abund=` file with `solar=berg25`.
+- **Solver.** `czc_polish=transactional early_stop=on numit=60
+  cnv_gap_del=-0.03`, and `cz_damp_del=0.1` only for log g > 2 (see
+  `cz_damp_del` above). `--atlas-arg key=value` adds or overrides any option.
+- **Start deck.** `--start` takes one deck, or a directory of decks named
+  `*_t<Teff>g<logg>.atm`. From a directory it uses the deck nearest in
+  (log Teff, log g). The default is the solar deck in `workdir/`, which
+  converges poorly far from the Sun.
+- **Checks.** At Teff ≤ 8000 K it refuses to start without
+  `data/mol/h2opokazatel.bin`, then confirms from the log that ATLAS12 read
+  it (a failed open is otherwise silent).
+- **Output.** It writes `<name>.abund`, `.atm`, `.flux`, `.iter` and `.log`,
+  and ends with a `CONVERGENCE:` line. The verdict is one of: converged at all
+  depths; converged only for −5 ≤ log τ ≤ 1 (enough for spectra, not for deep
+  boundary conditions); or not converged. A model is converged where its flux
+  error is at most 1% (maximum) and 0.5% (95th percentile).
 
 ## Running SYNTHE
 
