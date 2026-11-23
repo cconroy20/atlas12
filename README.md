@@ -390,20 +390,23 @@ line is therefore found again by what `read_gfall` / `read_predict` already
 compute: species code, vacuum λ, REAL(4) E_low, raw log gf, iso1, iso2.  The
 tolerances are in `mod_falcorr`.
 
-- Atomic gfall and gfpred lines only.  FAL's molecular corrections are whole-band
-  factors per 20 Å window.  If a catalog carries molecular rows, SYNTHE
-  counts them in the report but does not apply them.
+- Atomic gfall and gfpred lines, and molecular lines read by `read_molec_ascii`
+  / `read_molec_bin` (Δλ and Δlog gf only; FAL fits no molecular vdW width).
+  FAL's molecular corrections are whole-band factors per 20 Å window, not
+  per-line measurements.  The H2O and polyatomic readers are not hooked.
 - The vdW factor multiplies whatever width the line ends up with, including
   SYNTHE's own default for lines whose gfall width is blank.  FAL put its
   factor on Korg's Unsöld default for those (~0.06% of lines).
-- Every atomic catalog line inside `[wlbeg, wlend]` must be found.  One that is
+- Every atomic catalog line inside `[wlbeg, wlend]` must be found (molecular
+  rows are only counted).  One that is
   not means the catalog was built against a different line-list generation
   than `lines.list` names.  SYNTHE lists the first ten and stops;
   `falcorr_strict=no` makes it warn and continue instead.
 - After the line list is built, a `FALCORR summary` block reports: catalog
   size; atomic lines in the window; how many matched, by which reader; how many
   did not; how many line-list records changed (duplicate source records
-  included); molecular rows skipped; and the range of Δλ, Δlog gf
+  included); molecular rows in the window and how many matched; and the range
+  of Δλ, Δlog gf
   (weakened/strengthened) and Δlog γ_vdW actually applied.
 - Without `falcorr=` nothing is looked up and output is bit-identical to a
   build without this feature.

@@ -33,9 +33,13 @@
 !   sorted by wlvac_nm.  The corrections are applied exactly as falfit does:
 !     wlvac += dwl_nm,  log gf += dloggf,  gamma_vdW *= 10**dloggw
 !
-! Only the atomic readers (gfall, gfpred) are hooked.  A catalog may carry
-! molecular rows (code >= 100, mkfalcorr.py --include-mol); they are loaded and
-! counted in the report but never applied, and do not trip the unmatched check.
+! A catalog may also carry molecular rows (code >= 100, mkfalcorr.py
+! --include-mol).  read_molec_ascii and read_molec_bin apply their dwl and
+! dloggf (FAL fits no molecular vdW width; dloggw is ignored).  They are
+! whole-band factors per 20 A FAL window, not per-line measurements.  The H2O
+! and polyatomic readers are not hooked.  Molecular rows are counted in the
+! report but do not trip the unmatched check: two source records with the
+! same identity share the first matching catalog row.
 !
 ! Nothing here runs unless falcorr= is given: with no catalog loaded the lookup
 ! returns .FALSE. on its first test, so the synthesis is bit-identical.
@@ -47,7 +51,7 @@ MODULE mod_falcorr
 
   PUBLIC :: falcorr_load, falcorr_lookup, falcorr_report
   PUBLIC :: falcorr_active, falcorr_strict
-  PUBLIC :: FC_SRC_GFALL, FC_SRC_PREDICT
+  PUBLIC :: FC_SRC_GFALL, FC_SRC_PREDICT, FC_SRC_MOLEC
 
   ! Identity tolerances.  The tightest real separation they must resolve is
   ! the wavelength step of the sources (1e-4 nm gfall, 2.5e-4 nm gfpred) and
@@ -58,8 +62,8 @@ MODULE mod_falcorr
   REAL(8), PARAMETER :: TOL_GFLOG = 5.0D-4   ! dex
 
   ! Which reader matched a catalog line, for the report.
-  INTEGER, PARAMETER :: FC_SRC_GFALL = 1, FC_SRC_PREDICT = 2, FC_NSRC = 2
-  CHARACTER(LEN=6), PARAMETER :: FC_SRC_NAME(FC_NSRC) = ['gfall ', 'gfpred']
+  INTEGER, PARAMETER :: FC_SRC_GFALL = 1, FC_SRC_PREDICT = 2, FC_SRC_MOLEC = 3, FC_NSRC = 3
+  CHARACTER(LEN=6), PARAMETER :: FC_SRC_NAME(FC_NSRC) = ['gfall ', 'gfpred', 'molec ']
 
   LOGICAL :: falcorr_active = .FALSE.
   LOGICAL :: falcorr_strict = .TRUE.
@@ -147,7 +151,7 @@ CONTAINS
         ' atomic, ', nmol, ' molecular)'
       WRITE(6,'(a,f9.3,a,f9.3,a)') '   covering ', fc_wl(1), ' - ', fc_wl(nfc), ' nm'
       IF (nmol .GT. 0) WRITE(6,'(a)') &
-        '   molecular rows are reported but NOT applied (no molecular reader hook)'
+        '   molecular rows: applied by read_molec_ascii / read_molec_bin (dwl, dloggf)'
       IF (.NOT. falcorr_strict) WRITE(6,'(a)') &
         '   falcorr_strict = no: unmatched catalog lines will warn, not stop'
     ELSE
@@ -213,14 +217,14 @@ CONTAINS
   ! ============================================================================
   SUBROUTINE falcorr_report(wlbeg, wlend)
     REAL(8), INTENT(IN) :: wlbeg, wlend
-    INTEGER :: i, k, nin, nmol_in, nhit, nmiss, nmulti, nsynth, nshown
+    INTEGER :: i, k, nin, nmol_in, nmol_hit, nhit, nmiss, nmulti, nsynth, nshown
     INTEGER :: nsrc(FC_NSRC), nstrong, nweak, nvdw
     REAL(8) :: sabs_dwl, max_dwl, min_dgf, max_dgf, sabs_dgf, min_dgw, max_dgw
     CHARACTER(LEN=*), PARAMETER :: ROW = '(3x,a,t40,i9,a)'
 
     IF (.NOT. falcorr_active) RETURN
 
-    nin = 0; nmol_in = 0; nhit = 0; nmulti = 0; nsynth = 0; nsrc = 0
+    nin = 0; nmol_in = 0; nmol_hit = 0; nhit = 0; nmulti = 0; nsynth = 0; nsrc = 0
     nstrong = 0; nweak = 0; nvdw = 0
     sabs_dwl = 0.0D0; max_dwl = 0.0D0; sabs_dgf = 0.0D0
     min_dgf = HUGE(1.0D0); max_dgf = -HUGE(1.0D0)
@@ -229,6 +233,7 @@ CONTAINS
       IF (fc_wl(i) .LT. wlbeg .OR. fc_wl(i) .GT. wlend) CYCLE
       IF (fc_code(i) .GE. 10000) THEN
         nmol_in = nmol_in + 1
+        IF (fc_hits(i) .GT. 0) nmol_hit = nmol_hit + 1
         CYCLE
       END IF
       nin = nin + 1
@@ -256,14 +261,15 @@ CONTAINS
     WRITE(6,ROW) 'catalog lines, all wavelengths', nfc, ''
     WRITE(6,ROW) 'atomic lines in synthesis window', nin, ''
     WRITE(6,ROW) '  matched', nhit, ''
-    DO k = 1, FC_NSRC
+    DO k = 1, FC_NSRC - 1
       WRITE(6,ROW) '    by ' // TRIM(FC_SRC_NAME(k)) // ' reader', nsrc(k), ''
     END DO
     WRITE(6,ROW) '  NOT matched', nmiss, MERGE('   <-- see below', '                ', nmiss .GT. 0)
     WRITE(6,ROW) 'line-list records corrected', nsynth, &
       '   (incl. duplicate source records)'
     WRITE(6,ROW) '  catalog lines matching >1 record', nmulti, ''
-    WRITE(6,ROW) 'molecular in window, not applied', nmol_in, ''
+    WRITE(6,ROW) 'molecular lines in synthesis window', nmol_in, ''
+    WRITE(6,ROW) '  matched (molec readers)', nmol_hit, ''
     IF (nhit .GT. 0) THEN
       WRITE(6,'(3x,a,t40,f9.3,a,f8.3,a)') 'applied |dlambda| [mA]  mean / max', &
         1.0D4 * sabs_dwl / nhit, ' /', 1.0D4 * max_dwl, ''

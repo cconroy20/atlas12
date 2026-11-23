@@ -19,7 +19,7 @@
 ! ==============================================================================
 
 MODULE mod_mklinelist
-  USE mod_falcorr, ONLY: falcorr_lookup, FC_SRC_GFALL, FC_SRC_PREDICT
+  USE mod_falcorr, ONLY: falcorr_lookup, FC_SRC_GFALL, FC_SRC_PREDICT, FC_SRC_MOLEC
   IMPLICIT NONE
   PRIVATE
 
@@ -1460,6 +1460,7 @@ CONTAINS
     REAL(8)    :: gammar, gammas, gammaw, gamrf, gamsf, gamwf
     REAL(4)    :: fudge, x1, x2
     INTEGER    :: nelion, iso1, iso2
+    REAL(8)    :: fdwl, fdgf, fdgw     ! per-line FAL corrections (mod_falcorr)
 
     INTEGER, PARAMETER :: CHUNK = 200000
     TYPE(lte_line_t), ALLOCATABLE :: lte_buf(:)
@@ -1539,7 +1540,13 @@ CONTAINS
       CALL molec_dispatch(iso, icode, nelion, iso1, iso2, x1, x2, fudge)
       IF (nelion .EQ. 0) CYCLE
 
-      gf  = EXP((DBLE(gflog) + x1 + x2 + fudge) * 2.30258509299405D0)
+      ! --- FAL per-line corrections (see read_molec_ascii) ---
+      IF (falcorr_lookup(FC_SRC_MOLEC, icode * 100, wlvac_d, &
+                         DBLE(REAL(MIN(ABS(DBLE(e_r4)), ABS(DBLE(ep_r4))), 4)), &
+                         DBLE(gflog), iso1, iso2, fdwl, fdgf, fdgw)) &
+        wlvac_d = wlvac_d + fdwl
+
+      gf  = EXP((DBLE(gflog) + x1 + x2 + fudge + fdgf) * 2.30258509299405D0)
       elo = MIN(ABS(DBLE(e_r4)), ABS(DBLE(ep_r4)))
 
       ixwl   = INT(LOG(wlvac_d) / ratiolg + 0.5D0)
@@ -1619,6 +1626,7 @@ CONTAINS
     REAL(4)          :: gflog, xj, xjp, fudge, x1, x2
     INTEGER          :: loggr, icode, iso, nelion, iso1, iso2
     INTEGER          :: ios, ixwl, nbuff, nbad
+    REAL(8)          :: fdwl, fdgf, fdgw     ! per-line FAL corrections (mod_falcorr)
     CHARACTER(LEN=8) :: clabel, clabelp
     CHARACTER(LEN=160) :: linebuf
 
@@ -1692,7 +1700,14 @@ CONTAINS
       CALL molec_dispatch(iso, icode, nelion, iso1, iso2, x1, x2, fudge)
       IF (nelion .EQ. 0) CYCLE
 
-      gf  = EXP((gflog + x1 + x2 + fudge) * 2.30258509299405D0)
+      ! --- FAL per-line corrections (all zero unless falcorr= was given) ---
+      ! Keyed on the line as read; dwl and dlog gf only (FAL does not fit a
+      ! molecular vdW width).
+      IF (falcorr_lookup(FC_SRC_MOLEC, icode * 100, wlvac, &
+                         DBLE(REAL(MIN(ABS(e), ABS(ep)), 4)), DBLE(gflog), &
+                         iso1, iso2, fdwl, fdgf, fdgw)) wlvac = wlvac + fdwl
+
+      gf  = EXP((gflog + x1 + x2 + fudge + fdgf) * 2.30258509299405D0)
       elo = MIN(ABS(e), ABS(ep))
 
       ixwl   = INT(LOG(wlvac) / ratiolg + 0.5D0)
