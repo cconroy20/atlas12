@@ -307,7 +307,7 @@ python3 scripts/run_atlas12_model.py --teff 3500 --logg 1.0 --feh 0 --afe 0 \
 
 ```
 export ATLAS12=/path/to/atlas12/
-synthe.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>] [more_output=<yes|no>] [dump_lines=<yes|no>]
+synthe.exe <model_file> wlbeg=<nm> wlend=<nm> [resolu=<R>] [turbv=<kms>] [more_output=<yes|no>] [dump_lines=<yes|no>] [falcorr=<file>] [falcorr_strict=<yes|no>]
 ```
 
 The merged executable performs line-list construction, continuum opacity

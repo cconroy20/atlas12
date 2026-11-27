@@ -22,11 +22,11 @@ further hardening), the later entry stands.
 - ASCII spectrum output written directly by SYNTHE (`.spec`), eliminating the standalone `syntoascanga` post-processing step
 - SYNTHE's used-line dump split off from `more_output` onto its own `dump_lines=<yes|no>` argument, defaulting to yes so `more_output=yes` is unchanged.  The two outputs it gated differ by two orders of magnitude in size and are wanted for unrelated reasons: `.linform` is ~13 MB for a 25 nm window and is the only source of per-wavelength formation depths, while `.lines` is ~1 GB for the same window with the full list (9.4 M lines at ~106 bytes each) and exists for external line-list validation.  Producing formation depths across 355-2500 nm for five stars therefore meant writing, and immediately deleting, some 430 GB of unwanted ASCII; with `dump_lines=no` a chunk costs 12.4 s against 10 s for no diagnostics at all
 - SYNTHE `falcorr=<file>` (2026-11-03): FAL per-line corrections (Δλ, Δlog gf, Δlog γ_vdW), new module `mod_falcorr`, hooked into `read_gfall` and `read_predict`.
-  - **Matching.** Lines are matched on (code, vacuum λ, REAL(4) E_low, raw log gf, iso1, iso2), the quantities `mkmasterll` dumps into the `synthe2026` master list FAL fits against.
-  - **Scope.** Atomic lines only: FAL's molecular corrections are window-local band factors.  (Molecular rows are applied since 2026-11-23, next entry.)
-  - **Regression.** Without the option the output is bit-identical (516–520 nm solar run, `cmp`).
-  - **Matching test.** With the 100-window FAL v8 catalog, all 28,745 lines match over 479–681 nm; runtime 50 s vs 51 s without it.
-  - **Validation**, on the FAL v8 specdump pixels with a fitted Gaussian velocity kernel:
+  - Matching. Lines are matched on (code, vacuum λ, REAL(4) E_low, raw log gf, iso1, iso2), the quantities `mkmasterll` dumps into the `synthe2026` master list FAL fits against.
+  - Scope. Atomic lines only: FAL's molecular corrections are window-local band factors.  (Molecular rows are applied since 2026-11-23, next entry.)
+  - Regression. Without the option the output is bit-identical (516–520 nm solar run, `cmp`).
+  - Matching test. With the 100-window FAL v8 catalog, all 28,745 lines match over 479–681 nm; runtime 50 s vs 51 s without it.
+  - Validation, on the FAL v8 specdump pixels with a fitted Gaussian velocity kernel:
     - SOL: rms data−model 0.0652 → 0.0339, against Korg's 0.0658 → 0.0337.
     - ARC: 0.0824 → 0.0532, against Korg's 0.0780 → 0.0359. The shortfall is in the Mg b windows, where SYNTHE's strong-line wings in Arcturus already sit deeper than Korg's without corrections.
   - An unmatched atomic catalog line inside the window is a hard stop (line-list generation mismatch); `falcorr_strict=no` makes it a warning. A `FALCORR summary` block reports matches by reader, misses, molecular rows skipped, and the corrections applied.
@@ -35,10 +35,10 @@ further hardening), the later entry stands.
 ## Numerical and physical
 
 - SYNTHE `falcorr=`: molecular rows applied (2026-11-23).  `read_molec_ascii` and `read_molec_bin` now look each line up in the catalog and apply Δλ and Δlog gf; the H2O and polyatomic readers are not hooked (FAL v10 corrects CH, MgH, CaH, C2, CN, TiO only).
-  - **Regression.** With no catalog, and with an atomic-only catalog, the 479–681 nm solar `.spec` is byte-identical to the previous build.
-  - **Matching.** FAL v10 catalog with molecular rows: 28,879 / 28,879 atomic and 102,873 / 102,984 molecular rows matched; the rest are TiO rows whose identity duplicates another row with the same correction, so their source records are corrected too.
-  - **Validation**, rms data−model ×100 on the FAL v10 fitted pixels, six stars, Korg's broadening kernels, own linear continuum per 20 Å window; SYNTHE atomic-only → with molecular rows (Korg): SOL 1.68 → 1.63 (1.35), ARC 2.87 → 2.31 (2.16), PRO 0.98 → 0.98 (0.92), ACA 1.89 → 1.79 (1.57), ACB 2.41 → 2.31 (2.07), MUC 1.21 → 1.15 (0.91).  Two spurious CH lines of the input list (5480.62, 5603.09 Å vac) are removed by their band factors.  The MgH factors help Arcturus and worsen μ Cas over 5000–5220 Å, as they do in Korg.
-  - **Known gap.** Ba II 4935, 5855, 6143, 6498 Å have blank gfall damping and SYNTHE's default vdW width for them is ~30× a typical Fe I value, with or without a catalog; excluding ±1.5 Å around them SYNTHE / Korg rms is 1.02–1.07.
+  - Regression. With no catalog, and with an atomic-only catalog, the 479–681 nm solar `.spec` is byte-identical to the previous build.
+  - Matching. FAL v10 catalog with molecular rows: 28,879 / 28,879 atomic and 102,873 / 102,984 molecular rows matched; the rest are TiO rows whose identity duplicates another row with the same correction, so their source records are corrected too.
+  - Validation, rms data−model ×100 on the FAL v10 fitted pixels, six stars, Korg's broadening kernels, own linear continuum per 20 Å window; SYNTHE atomic-only → with molecular rows (Korg): SOL 1.68 → 1.63 (1.35), ARC 2.87 → 2.31 (2.16), PRO 0.98 → 0.98 (0.92), ACA 1.89 → 1.79 (1.57), ACB 2.41 → 2.31 (2.07), MUC 1.21 → 1.15 (0.91).  Two spurious CH lines of the input list (5480.62, 5603.09 Å vac) are removed by their band factors.  The MgH factors help Arcturus and worsen μ Cas over 5000–5220 Å, as they do in Korg.
+  - Known gap. Ba II 4935, 5855, 6143, 6498 Å have blank gfall damping and SYNTHE's default vdW width for them is ~30× a typical Fe I value, with or without a catalog; excluding ±1.5 Å around them SYNTHE / Korg rms is 1.02–1.07.
 - Atmosphere state arrays (T, P, ρ, χ, populations) promoted from REAL(4) to REAL(8)
 - Physical constants consolidated into `mod_constants` with CODATA 2018 values, replacing ~130 scattered literals
 - Atomic partition functions replaced with the Barklem & Collet (2016) tabulated U(T) calculated by direct NIST level summation, covering Z = 1..92 in ionization stages I–III; the legacy Kurucz hand-selected few-term sums used by `PFGROUND` (the low-T floor in `PFSAHA`) and the generic `NNN` interpolation table are retained as an internal safety net but are no longer the production data source.  Iron-group partition functions (Z = 20..28) still flow through `PFIRON` for its pressure-lowering correction, but the unperturbed POTLOW = 0 baseline is now anchored to B&C
